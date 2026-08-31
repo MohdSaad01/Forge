@@ -20,3 +20,14 @@ class UnsupportedDTypeError(ForgeError):
 
 class UnsupportedDeviceError(ForgeError):
     """Raised when a device is not recognized or not yet executable."""
+
+
+class GradientStateError(ForgeError):
+    """Raised for invalid autograd usage or an inconsistent gradient state.
+
+    Examples: calling ``backward()`` on a non-scalar tensor without an
+    explicit upstream gradient, calling ``backward()`` on a tensor that does
+    not require grad, requesting ``requires_grad`` on a non-floating dtype,
+    or calling ``backward()`` again on a graph already freed by a previous
+    call.
+    """

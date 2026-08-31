@@ -1,5 +1,6 @@
 The roadmap is not a fixed number of milestones or a predetermined endpoint. Milestones are added, split, merged, or reordered as implementation and testing reveal new requirements. A milestone represents a meaningful engineering increment, not a project phase limit.
-After completing each milestone or phase, Claude Code must provide the milestone/phase number followed by a very concise summary of what it completed.
+After completing each milestone or phase, Claude Code must update the project progress document with the milestone/phase number and a very concise summary of what was completed. This document should serve as a persistent record of project progress and must be kept up to date throughout development.
+
 
 Phase 1 — Core Foundations
 M1, M2, M3...
