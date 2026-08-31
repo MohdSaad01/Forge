@@ -31,3 +31,12 @@ class GradientStateError(ForgeError):
     or calling ``backward()`` again on a graph already freed by a previous
     call.
     """
+
+
+class ModuleError(ForgeError):
+    """Raised for invalid ``Module``/``Parameter`` composition or configuration.
+
+    Examples: assigning a `Parameter` or child `Module` before calling
+    `Module.__init__` (`super().__init__()`), or invoking a module whose
+    `forward()` has not been implemented.
+    """

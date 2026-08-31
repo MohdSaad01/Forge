@@ -277,6 +277,17 @@ class Tensor:
 
         return self._differentiable_wrap(result, (self,), backward_fn, "reshape")
 
+    def relu(self) -> "Tensor":
+        backend = get_backend(self._device)
+        result = backend.relu(self._data)
+
+        positive_mask = self._data > 0
+
+        def backward_fn(grad_output: np.ndarray):
+            return (np.where(positive_mask, grad_output, 0).astype(grad_output.dtype, copy=False),)
+
+        return self._differentiable_wrap(result, (self,), backward_fn, "relu")
+
     # -- Autograd ----------------------------------------------------------
 
     def backward(self, gradient: "Tensor | Any | None" = None) -> None:

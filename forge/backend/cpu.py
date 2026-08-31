@@ -37,3 +37,6 @@ class CPUBackend(Backend):
 
     def reshape(self, a: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
         return np.reshape(a, shape)
+
+    def relu(self, a: np.ndarray) -> np.ndarray:
+        return np.maximum(a, 0)

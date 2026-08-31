@@ -107,8 +107,10 @@ upstream gradient back to `x`'s original shape. A full reduction
 `x`'s original shape; no numerical computation is needed.
 
 ## Known limitations
-- No neural-network modules, parameters, optimizers, or losses (later
-  milestones).
+- No optimizers or losses (later milestones). Neural-network modules and
+  parameters exist as of Milestone 3 (`forge.nn`, see
+  `docs/architecture/modules.md`) and are built entirely on the autograd
+  system described here.
 - No CUDA autograd.
 - No `retain_graph`-style option to keep a graph alive across multiple
   `backward()` calls on the same non-leaf output.

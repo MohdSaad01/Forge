@@ -40,3 +40,6 @@ class Backend(ABC):
 
     @abstractmethod
     def reshape(self, a: np.ndarray, shape: tuple[int, ...]) -> np.ndarray: ...
+
+    @abstractmethod
+    def relu(self, a: np.ndarray) -> np.ndarray: ...
