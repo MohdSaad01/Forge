@@ -68,3 +68,14 @@ class DataError(ForgeError):
     dataset size, a transform applied to an incompatible sample, or invoking
     a `Dataset`/`Transform` base method that has not been implemented.
     """
+
+
+class TrainerError(ForgeError):
+    """Raised for invalid Trainer/metric configuration or usage.
+
+    Examples: a missing/invalid model, loss, or optimizer; an unsupported
+    device; a non-positive epoch count; a DataLoader that yields no batches;
+    a batch that is not a `(features, target)` tuple; a metric given
+    mismatched prediction/target shapes; or a metric's `compute()` called
+    with no samples seen.
+    """

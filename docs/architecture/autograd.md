@@ -106,6 +106,26 @@ upstream gradient back to `x`'s original shape. A full reduction
 `x.reshape(...)`'s backward rule reshapes the upstream gradient back to
 `x`'s original shape; no numerical computation is needed.
 
+## Suspending graph construction: `no_grad`
+As of Milestone 6, `forge.no_grad()` (`forge/autograd/engine.py`) is a
+context manager that suspends `Node`/`grad_fn` attachment entirely:
+```python
+with forge.no_grad():
+    prediction = model(x)   # requires_grad=False, grad_fn=None, regardless of model parameters
+```
+It is a single global flag (`is_grad_enabled()`), checked by
+`Tensor._differentiable_wrap` alongside the existing "any input requires
+grad" rule:
+```python
+requires_grad = is_grad_enabled() and any(t._requires_grad for t in inputs)
+```
+`__enter__`/`__exit__` save and restore the previous flag value (including
+on exception), so nested `no_grad()` blocks are safe and grad tracking
+always resumes correctly outside the `with` block. This is the mechanism
+`forge.training.Trainer.evaluate()` uses to run a forward pass without
+building or retaining a computation graph it will never call `backward()`
+on -- see `docs/architecture/training-engine.md`.
+
 ## Known limitations
 - No optimizers or losses (later milestones). Neural-network modules and
   parameters exist as of Milestone 3 (`forge.nn`, see
@@ -117,3 +137,6 @@ upstream gradient back to `x`'s original shape. A full reduction
 - Non-leaf tensors do not retain `.grad` (no `retain_grad()` equivalent).
 - No graph visualization/debugging tools beyond `grad_fn`/`is_leaf`
   inspection.
+- `no_grad()` is a single global flag, not per-tensor/per-thread state --
+  safe for Forge's single-threaded synchronous execution model, but not a
+  general context-management system.

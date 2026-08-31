@@ -63,3 +63,26 @@ multiprocessing workers, asynchronous prefetching, file-backed/image/tabular dat
 or `Trainer`/training engine in this milestone -- verified via a hand-written (non-`Trainer`)
 Dataset -> DataLoader -> `Linear` -> `MSELoss` -> `SGD` loop that reduces loss over an epoch. 246
 tests total (179 M1-M4 + 67 M5). See `docs/architecture/data-system.md`.
+
+## Phase 2 — Training Framework
+
+### M6 — Training engine
+Adds Forge's first training engine on top of the M1-M5 stack: new `forge/training/` package
+(`Trainer`, `TrainingHistory`, `EpochResult`, `EvaluationResult`, and a `Metric` abstraction with
+`MeanSquaredError`/`MeanAbsoluteError`/`Accuracy`). `Trainer` orchestrates the existing
+`Dataset`/`DataLoader`, `Module`, `Loss`, autograd, and `Optimizer` components -- it computes no
+gradients, updates no parameters, and implements no loss/optimizer/batching logic itself; each
+training step runs the same `zero_grad -> forward -> loss -> backward -> step` sequence Milestones
+1-5 already required by hand. New minimal autograd extension, `forge.no_grad()`
+(`forge/autograd/engine.py`) -- a single global flag checked by `Tensor._differentiable_wrap` that
+suspends graph construction, used by `Trainer.evaluate()` so an evaluation forward pass builds no
+autograd graph. `evaluate()` also switches the model to eval mode (propagated to nested modules via
+the existing M3 `Module.eval()`) and restores its prior mode afterward. Metrics aggregate by
+accumulating running sums/counts across batches (not averaging per-batch means), so unequal batch
+sizes are weighted correctly. New `TrainerError`. Verified with a deterministic linear-regression
+experiment (`Linear` + `MSELoss` + `SGD` via `Trainer.fit`, loss drops over two orders of magnitude,
+recovers the true `y = 3x1 - 2x2 + 1` weights) and a classification experiment (`Linear` -> `ReLU`
+-> `Linear` + `CrossEntropyLoss` + `SGD`, >=85% held-out accuracy), both with a validation loader
+evaluated each epoch and progress output on/off. No CUDA execution, early stopping, checkpointing,
+learning-rate schedules, or callbacks in this milestone. 304 tests total (246 M1-M5 + 58 M6). See
+`docs/architecture/training-engine.md`.

@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 from numpy.exceptions import AxisError
 
-from ..autograd import Node, run_backward
+from ..autograd import Node, is_grad_enabled, run_backward
 from ..autograd.functions import matmul_backward, reduce_grad_to_shape, sum_backward
 from ..backend import get_backend
 from ..backend.device import Device
@@ -98,8 +98,14 @@ class Tensor:
         backward_fn,
         name: str,
     ) -> "Tensor":
-        """Wrap a forward result, attaching a grad_fn if any input requires grad."""
-        requires_grad = any(t._requires_grad for t in inputs)
+        """Wrap a forward result, attaching a grad_fn if any input requires grad.
+
+        Skipped entirely inside `forge.no_grad()` (`is_grad_enabled()` is
+        `False`): the result is a plain, non-grad-requiring Tensor regardless
+        of its inputs, so no graph is built for a forward pass that will
+        never be differentiated.
+        """
+        requires_grad = is_grad_enabled() and any(t._requires_grad for t in inputs)
         grad_fn = Node(inputs, backward_fn, name) if requires_grad else None
         return Tensor._wrap(array, self._device, requires_grad=requires_grad, grad_fn=grad_fn)
 

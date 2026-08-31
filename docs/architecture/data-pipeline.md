@@ -16,8 +16,10 @@ Batches
 Trainer
 ```
 
-Implemented through `Batches` as of Milestone 5 (`forge.data`); `Trainer`
-does not exist yet (see `docs/development/roadmap.md`). Full details:
+Implemented through `Batches` as of Milestone 5 (`forge.data`). As of
+Milestone 6, `forge.training.Trainer` consumes `DataLoader` output to run
+the training/evaluation workflow -- see
+`docs/architecture/training-engine.md`. Full details:
 `docs/architecture/data-system.md`.
 
 ## Dataset

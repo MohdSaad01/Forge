@@ -165,5 +165,5 @@ not this milestone's abstractions.
   components.
 - `Normalize`/`Reshape`/`Flatten` operate on a single Tensor component only,
   not on nested/dict-shaped samples.
-- No `Trainer`/training engine consumes `DataLoader` output yet -- that is
-  the next milestone.
+- As of Milestone 6, `forge.training.Trainer` consumes `DataLoader` output
+  for training/evaluation -- see `docs/architecture/training-engine.md`.

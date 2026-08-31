@@ -88,3 +88,40 @@ def run_backward(root: Any, grad_array: np.ndarray) -> None:
                 pending[id(inp)] = grad
 
         tensor._grad_fn = None
+
+
+# -- no_grad --------------------------------------------------------------
+
+_grad_enabled = True
+
+
+def is_grad_enabled() -> bool:
+    """Whether differentiable Tensor operations currently attach a `grad_fn`."""
+    return _grad_enabled
+
+
+class no_grad:
+    """Context manager that suspends autograd graph construction.
+
+    A differentiable Tensor operation normally attaches a `Node` (`grad_fn`)
+    to its output whenever any input requires grad (see
+    `Tensor._differentiable_wrap`). Inside `no_grad()`, that check is
+    skipped regardless of `requires_grad`, so operations still run and
+    produce ordinary result values, but no `Node` is created and no graph
+    is retained -- the minimal mechanism `Trainer.evaluate()` needs to run
+    a forward pass it will never call `backward()` on without accumulating
+    graph memory for it. It is one global flag, not a per-tensor or
+    per-thread setting, and nests correctly (the previous state is restored
+    on `__exit__`, so a nested `no_grad()` is a no-op rather than
+    re-enabling grad early).
+    """
+
+    def __enter__(self) -> "no_grad":
+        global _grad_enabled
+        self._previous = _grad_enabled
+        _grad_enabled = False
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        global _grad_enabled
+        _grad_enabled = self._previous
