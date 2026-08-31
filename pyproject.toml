@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "forge"
 version = "0.1.0"
-description = "A from-scratch deep-learning framework."
+description = "A lightweight neural-network framework."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
-authors = [{ name = "Mohd Saad Ansari", email = "candychintu619@gmail.com" }]
+authors = [{ name = "Mohd Saad Ansari", email = "ansari.mohdsaad25@gmail.com" }]
 dependencies = [
     "numpy>=1.26",
 ]

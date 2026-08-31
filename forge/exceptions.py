@@ -79,3 +79,16 @@ class TrainerError(ForgeError):
     mismatched prediction/target shapes; or a metric's `compute()` called
     with no samples seen.
     """
+
+
+class PersistenceError(ForgeError):
+    """Raised for invalid model save/load usage or a malformed model file.
+
+    Examples: an unsupported/unregistered module type, a missing or corrupt
+    model file, an unsupported format version, a missing or shape/dtype-
+    mismatched parameter, an unsupported device recorded in the file, an
+    invalid save destination, or otherwise inconsistent saved model state.
+    Never raised as a side effect of executing arbitrary code found in a
+    model file -- reconstruction only ever calls explicitly registered
+    Forge/user module constructors (see `forge.serialization`).
+    """

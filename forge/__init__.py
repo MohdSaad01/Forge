@@ -8,13 +8,17 @@ layer built on top of both. Milestone 4 added loss functions (`nn.MSELoss`,
 consumes `Parameter` gradients to update model state. Milestone 5 added the
 `data` package (`Dataset`, `TensorDataset`, `DataLoader`, transforms) for
 representing training data and producing model-ready batches, independent of
-the model/loss/optimizer stack. Milestone 6 adds the `training` package
+the model/loss/optimizer stack. Milestone 6 added the `training` package
 (`Trainer`, metrics, `TrainingHistory`) that orchestrates all of the above
 into a reusable training/evaluation workflow, plus `no_grad()` -- a minimal
 autograd extension that suspends graph construction during evaluation.
+Milestone 7 adds the `serialization` package (`save_model`, `load_model`,
+`register_module`) for reconstructing a trained model's architecture and
+parameter state after the training process has exited -- see
+`docs/architecture/persistence.md`.
 """
 
-from . import data, nn, optim, random, training
+from . import data, nn, optim, random, serialization, training
 from .autograd import no_grad
 from .backend.device import Device
 from .exceptions import (
@@ -24,11 +28,13 @@ from .exceptions import (
     LossError,
     ModuleError,
     OptimizerError,
+    PersistenceError,
     ShapeMismatchError,
     TrainerError,
     UnsupportedDeviceError,
     UnsupportedDTypeError,
 )
+from .serialization import load_model, save_model
 from .tensor import DEFAULT_DTYPE, DType, Tensor
 
 __version__ = "0.1.0"
@@ -48,10 +54,14 @@ __all__ = [
     "OptimizerError",
     "DataError",
     "TrainerError",
+    "PersistenceError",
     "no_grad",
     "nn",
     "optim",
     "random",
     "data",
     "training",
+    "serialization",
+    "save_model",
+    "load_model",
 ]

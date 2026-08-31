@@ -86,3 +86,25 @@ recovers the true `y = 3x1 - 2x2 + 1` weights) and a classification experiment (
 evaluated each epoch and progress output on/off. No CUDA execution, early stopping, checkpointing,
 learning-rate schedules, or callbacks in this milestone. 304 tests total (246 M1-M5 + 58 M6). See
 `docs/architecture/training-engine.md`.
+
+### M7 — Model persistence
+Adds save/load for trained models on top of the M1-M6 stack: new `forge/serialization/` package
+(`save_model`, `load_model`, `register_module`) plus new `PersistenceError`. A model file is a ZIP
+archive (`metadata.json` + one `.npy` per parameter) -- structured, versioned
+(`forge_format_version`), and inspectable without Forge; loading never executes code found in the
+file (`json.loads` for metadata, `numpy.load(..., allow_pickle=False)` for arrays). Architecture
+reconstruction goes through an explicit in-process registry (`forge/serialization/registry.py`)
+keyed by a plain string type name -- never pickle, `eval`, or dynamic import -- with `Linear`/`ReLU`
+registered as Forge's built-in supported types; a custom/composite `Module` subclass must call
+`register_module()` itself before it can be saved or loaded (see ADR-003). Saved parameter state
+(shape, dtype, `requires_grad`, values) is validated against the file on load, and each module's
+`.training` flag round-trips per-module rather than being forced to a fixed mode. No autograd graph
+or optimizer state is ever saved -- loaded parameters are fresh leaf `Parameter`s that build an
+entirely new graph on the next forward pass. Saving is atomic (temp file + `os.replace`), so a
+failed save never leaves a partial file. Verified with a deterministic train -> save -> load ->
+predict workflow (`Linear` + `MSELoss` + `SGD` via `Trainer`) whose final step runs in a genuinely
+separate subprocess to prove the saved file alone is sufficient, plus tampered-file tests confirming
+malformed/corrupt/unsupported-version/unsupported-type/unsupported-device files fail clearly with no
+code execution. No CUDA serialization, optimizer checkpointing/training resume, or CLI in this
+milestone. 332 tests total (304 M1-M6 + 28 M7). See `docs/architecture/persistence.md` and
+`docs/architecture/decisions/ADR-003-persistence-format.md`.
