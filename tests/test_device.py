@@ -1,5 +1,6 @@
 import pytest
 
+import forge
 from forge import Device, Tensor
 from forge.exceptions import UnsupportedDeviceError
 
@@ -43,12 +44,20 @@ def test_tensor_on_cpu_succeeds():
     assert t.device.type == "cpu"
 
 
-def test_tensor_on_cuda_parses_but_fails_to_execute():
-    # The device string itself is valid (Device.parse succeeds), but Milestone 1
-    # has no CUDA backend, so constructing a tensor on it must fail clearly
-    # rather than silently falling back to CPU or pretending to execute.
-    with pytest.raises(UnsupportedDeviceError, match="CUDA"):
-        Tensor([1, 2, 3], device="cuda")
+def test_tensor_on_cuda_behaves_per_hardware_availability():
+    # The device string itself always parses (Device.parse succeeds). Whether
+    # constructing a tensor on it actually *works* depends on hardware/toolchain
+    # availability -- this CPU-tier test must not require CUDA to run, so it
+    # branches on `is_cuda_available()` rather than assuming either outcome.
+    # See tests/test_cuda_backend.py for CUDA-only hardware verification.
+    from forge.backend.cuda import is_cuda_available
+
+    if is_cuda_available():
+        t = Tensor([1, 2, 3], device="cuda")
+        assert t.device.type == "cuda"
+    else:
+        with pytest.raises(forge.CUDAError):
+            Tensor([1, 2, 3], device="cuda")
 
 
 def test_unknown_device_string_on_tensor_raises_clearly():

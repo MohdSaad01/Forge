@@ -81,6 +81,21 @@ class TrainerError(ForgeError):
     """
 
 
+class CUDAError(ForgeError):
+    """Raised for CUDA-specific backend failures.
+
+    Examples: CUDA unavailable (no driver, no compatible device, missing
+    `nvcc`/host compiler), CUDA backend initialization/compilation failure,
+    an operation or dtype the CUDA backend does not implement, a CUDA memory
+    allocation failure, or any other failure reported by the CUDA runtime.
+    Never raised as a disguise for a silent CPU fallback -- if this is
+    raised, no CUDA execution occurred for that call. Device-mismatch and
+    unrecognized-device-string errors remain `UnsupportedDeviceError`; this
+    type is specifically for the CUDA backend's own runtime/toolchain
+    failures and unsupported-operation cases.
+    """
+
+
 class PersistenceError(ForgeError):
     """Raised for invalid model save/load usage or a malformed model file.
 

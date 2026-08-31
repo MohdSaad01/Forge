@@ -24,6 +24,10 @@ class Backend(ABC):
         """Build backend storage from array-like data."""
 
     @abstractmethod
+    def to_numpy(self, storage: Any) -> np.ndarray:
+        """Materialize backend storage as a host NumPy array (used by `Tensor.to()`)."""
+
+    @abstractmethod
     def add(self, a: np.ndarray, b: np.ndarray) -> np.ndarray: ...
 
     @abstractmethod

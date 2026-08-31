@@ -1,13 +1,15 @@
 """Backend dispatch: which implementation executes a tensor's operations.
 
-Only CPU is registered in Milestone 1. Requesting a CUDA device parses fine
-(``Device.parse``) but dispatching to it fails clearly here -- CUDA is not
-executable yet, and Forge does not pretend otherwise.
+CPU is always registered and eagerly constructed. CUDA (Milestone 8) is
+registered by name but resolved lazily -- `forge.backend.cuda` (which pulls
+in `ctypes` and, on first real use, invokes `nvcc`) is only imported the
+first time a `"cuda"` device is actually requested, so a CPU-only
+environment never pays any CUDA-related cost or import-time risk.
 """
 
 from __future__ import annotations
 
-from ..exceptions import UnsupportedDeviceError
+from ..exceptions import CUDAError, UnsupportedDeviceError
 from .base import Backend
 from .cpu import CPUBackend
 from .device import Device
@@ -23,10 +25,14 @@ def get_backend(device: Device) -> Backend:
         return backend
 
     if device.type == "cuda":
-        raise UnsupportedDeviceError(
-            "CUDA execution is not implemented yet (Milestone 1 is CPU-only). "
-            "The device string 'cuda' can be named, but no CUDA backend exists to run on it."
-        )
+        if device.index not in (None, 0):
+            raise CUDAError(
+                f"Forge's CUDA backend targets a single device (index 0) in this milestone; "
+                f"got index {device.index}."
+            )
+        from .cuda.backend import get_cuda_backend
+
+        return get_cuda_backend()
     raise UnsupportedDeviceError(f"No backend registered for device type '{device.type}'.")
 
 

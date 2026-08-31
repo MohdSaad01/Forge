@@ -40,7 +40,7 @@
 ### Backends
 - Provide a backend/device abstraction.
 - CPU is the baseline backend.
-- CUDA is a first-class target and must use actual CUDA execution for supported operations.
+- CUDA is a first-class target and must use actual CUDA execution for supported operations. As of Milestone 8, a real CUDA backend exists for a small forward-only operation set (tensor transfer, `add`/`sub`/`mul`, `matmul`, `sum`, `reshape`) on the verified 940MX -- see `docs/architecture/cuda-backend.md`.
 
 ### CLI
 - Provide CLI entry points that call the same underlying framework services as the Python API.

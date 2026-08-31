@@ -1,9 +1,12 @@
+# Per-machine compiled CUDA kernel library (forge/backend/cuda/build.py).
+# Targets one specific GPU architecture and CUDA Toolkit install; never
+# portable across machines, so it is never committed -- each machine
+# compiles its own copy on first CUDA use.
+forge/backend/cuda/_forge_cuda_kernels_*.dll
+forge/backend/cuda/_forge_cuda_kernels_*.exp
+forge/backend/cuda/_forge_cuda_kernels_*.lib
+
 __pycache__/
 *.pyc
-*.egg-info/
-build/
-dist/
 .pytest_cache/
-.venv/
-venv/
-.idea/
+*.egg-info/

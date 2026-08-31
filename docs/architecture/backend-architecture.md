@@ -24,7 +24,14 @@ The backend boundary should answer:
 CPU is the reference backend for correctness and testability.
 
 ## CUDA
-CUDA is a real execution backend, not a label. Initial CUDA support should target a small, measured operation set and the verified 940MX environment. Kernel/toolchain choices should be compatible with Compute Capability 5.0 unless a deliberate compatibility decision changes this.
+CUDA is a real execution backend, not a label. As of Milestone 8, a small,
+measured operation set (tensor transfer, `add`/`sub`/`mul`, `matmul`,
+`sum`, `reshape`) executes as genuine CUDA kernels on the verified 940MX
+environment via an `nvcc`-compiled kernel library loaded through `ctypes`
+(see `docs/architecture/cuda-backend.md` and
+`docs/architecture/decisions/ADR-004-cuda-execution-strategy.md`). Kernels
+target Compute Capability 5.0. CUDA execution is forward-only in this
+milestone -- see `docs/architecture/cuda-backend.md`'s **Autograd** section.
 
 ## Consistency
 For operations implemented on both backends, tests should compare CPU and CUDA results using appropriate tolerances.

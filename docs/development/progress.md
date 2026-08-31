@@ -108,3 +108,36 @@ malformed/corrupt/unsupported-version/unsupported-type/unsupported-device files 
 code execution. No CUDA serialization, optimizer checkpointing/training resume, or CLI in this
 milestone. 332 tests total (304 M1-M6 + 28 M7). See `docs/architecture/persistence.md` and
 `docs/architecture/decisions/ADR-003-persistence-format.md`.
+
+## Phase 4 — GPU/CUDA (reordered ahead of Phase 3, Data & Model Ecosystem)
+
+### M8 — Initial CUDA backend
+Adds Forge's first real CUDA execution backend on top of the M1-M7 stack: new
+`forge/backend/cuda/` package (`kernels.cu` -- CUDA C++ kernel source; `build.py` -- locates
+`nvcc`/MSVC and compiles the kernels into a shared library, lazily, on first CUDA use; `backend.py`
+-- `CUDAStorage`, `CUDABackend`, `get_cuda_backend()`, `is_cuda_available()`), a new
+`Tensor.to(device)` for explicit CPU<->CUDA transfer, `Backend.to_numpy()` (new abstract method,
+trivial on CPU) for materializing backend storage as a host array, and a new `CUDAError` exception.
+Kernels are compiled with `nvcc -arch=sm_50` (the verified 940MX's Compute Capability) and loaded
+via the standard-library `ctypes` -- no PyTorch/TensorFlow/CuPy/JAX dependency, per ADR-004. The
+operation set is deliberately small: tensor creation/transfer (any dtype, raw byte copy),
+`add`/`sub`/`mul` (`float32`/`float64`, exact-shape only -- no CUDA broadcasting), `matmul` (the
+same four 1D/2D cases the CPU backend supports, via a naive one-thread-per-output kernel),
+`sum` (full reduction only), and `reshape` (a device-to-device copy with new shape metadata, no
+allocator). `relu`/`exp`/`log` are required by the `Backend` ABC but raise `CUDAError` on CUDA in
+this milestone -- no kernel exists for them yet. `CUDAStorage` holds a real `cudaMalloc` pointer,
+never a NumPy array relabeled as CUDA (tested structurally). CUDA autograd is explicitly out of
+scope: `Tensor._differentiable_wrap` and `Tensor.backward()` both raise `UnsupportedDeviceError` for
+any non-CPU differentiable operation or backward call, and `.to()` always produces a
+`requires_grad=False` leaf, rather than building a graph the existing NumPy-based backward closures
+cannot correctly traverse. Verified on the actual development GPU (940MX, CC 5.0, driver 582.53,
+CUDA Toolkit 12.6): all 54 new CUDA tests (`tests/test_cuda_backend.py`,
+`tests/test_cuda_consistency.py`) pass when run on this hardware, covering device dispatch (proven
+structurally distinct from `CPUBackend`), CPU<->CUDA transfer correctness, real kernel execution for
+every supported op, CPU/CUDA numerical consistency (`float32`/`float64`, multiple matmul shapes),
+and clear failure for every unsupported case (broadcasting, axis-wise sum, `relu`/`exp`/`log`,
+non-float dtypes, device mismatch, autograd-on-CUDA, invalid device index). The same suites were
+also run with `PATH` stripped of the CUDA toolchain to confirm all 54 skip cleanly with zero
+failures and the 332 CPU-only tests are entirely unaffected. 386 tests total (332 M1-M7 + 54 M8).
+See `docs/architecture/cuda-backend.md` and
+`docs/architecture/decisions/ADR-004-cuda-execution-strategy.md`.

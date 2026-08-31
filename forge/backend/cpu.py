@@ -20,6 +20,9 @@ class CPUBackend(Backend):
     def from_array(self, data: Any, dtype: "np.dtype | None") -> np.ndarray:
         return np.array(data, dtype=dtype)
 
+    def to_numpy(self, storage: Any) -> np.ndarray:
+        return storage
+
     def add(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         return np.add(a, b)
 

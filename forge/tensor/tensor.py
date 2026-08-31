@@ -45,13 +45,21 @@ class Tensor:
         backend = get_backend(self._device)
 
         if isinstance(data, Tensor):
+            if data._device != self._device:
+                raise UnsupportedDeviceError(
+                    f"Cannot construct a Tensor on device '{self._device}' directly from a "
+                    f"Tensor already on device '{data._device}'. Call "
+                    f"tensor.to('{self._device}') to move it explicitly first."
+                )
             data = data._data
 
         np_dtype = resolve_dtype(dtype)
-        if np_dtype is None and not isinstance(data, np.ndarray):
+        if np_dtype is None and not hasattr(data, "dtype"):
             # Raw Python data (lists/scalars) has no dtype of its own to
             # preserve, so apply Forge's stable default instead of NumPy's
-            # platform-dependent inference.
+            # platform-dependent inference. Anything that already carries a
+            # concrete dtype (a NumPy array/scalar, or another backend's
+            # storage, e.g. CUDAStorage) keeps it instead.
             np_dtype = infer_default_dtype(np.asarray(data).dtype)
         try:
             array = backend.from_array(data, np_dtype)
@@ -106,6 +114,14 @@ class Tensor:
         never be differentiated.
         """
         requires_grad = is_grad_enabled() and any(t._requires_grad for t in inputs)
+        if requires_grad and self._device.type != "cpu":
+            raise UnsupportedDeviceError(
+                "Automatic differentiation is only supported on the 'cpu' device in this "
+                f"milestone; got a differentiable '{name}' operation on device "
+                f"'{self._device}'. Construct tensors with requires_grad=False to run this "
+                "operation on this device, or perform gradient-tracked operations on CPU. "
+                "See docs/architecture/cuda-backend.md."
+            )
         grad_fn = Node(inputs, backward_fn, name) if requires_grad else None
         return Tensor._wrap(array, self._device, requires_grad=requires_grad, grad_fn=grad_fn)
 
@@ -314,6 +330,30 @@ class Tensor:
 
         return self._differentiable_wrap(result, (self,), backward_fn, "log")
 
+    # -- Device transfer -----------------------------------------------------
+
+    def to(self, device: "str | Device") -> "Tensor":
+        """Explicitly move this tensor's data to another device, copying it.
+
+        Never happens implicitly as a side effect of another operation (see
+        `_binary_op`'s device-mismatch check) -- this is the one sanctioned
+        way to cross devices. The result is always a fresh leaf tensor with
+        `requires_grad=False`, regardless of this tensor's own gradient
+        state: Forge does not support automatic differentiation across a
+        device transfer in this milestone (see
+        `docs/architecture/cuda-backend.md`), and never fakes it by quietly
+        keeping the source tensor's graph alive.
+        """
+        target = Device.parse(device)
+        if target == self._device:
+            return self
+
+        target_backend = get_backend(target)
+        source_backend = get_backend(self._device)
+        host_array = source_backend.to_numpy(self._data)
+        new_storage = target_backend.from_array(host_array, host_array.dtype)
+        return Tensor._wrap(new_storage, target, requires_grad=False)
+
     # -- Autograd ----------------------------------------------------------
 
     def backward(self, gradient: "Tensor | Any | None" = None) -> None:
@@ -327,6 +367,11 @@ class Tensor:
         ``backward()`` again on the same non-leaf output raises
         ``GradientStateError``; build a new forward pass instead.
         """
+        if self._device.type != "cpu":
+            raise UnsupportedDeviceError(
+                f"backward() is only supported for tensors on device 'cpu' in this milestone; "
+                f"got device '{self._device}'. See docs/architecture/cuda-backend.md."
+            )
         if not self._requires_grad:
             raise GradientStateError("backward() called on a tensor that does not require grad.")
         if not self._is_leaf and self._grad_fn is None:
