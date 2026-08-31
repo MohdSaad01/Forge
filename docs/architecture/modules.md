@@ -80,7 +80,8 @@ Parameter.grad (Parameter is a leaf Tensor)
 ```
 
 ## Known limitations
-- No optimizer -- gradients are computed but nothing updates `Parameter` data yet (Milestone 4+).
 - No layer whose forward behavior differs by `.training` (dropout, batch norm) yet; the mode plumbing exists for later milestones to use.
 - No module serialization (`state_dict`-equivalent) yet.
 - `forge.random` is a single global generator, not a per-module or thread-local RNG.
+
+As of Milestone 4, an optimizer (`forge.optim.SGD`) exists and updates `Parameter` data from `.grad` -- see `docs/architecture/optimization.md`.

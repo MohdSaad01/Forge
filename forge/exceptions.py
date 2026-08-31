@@ -40,3 +40,20 @@ class ModuleError(ForgeError):
     `Module.__init__` (`super().__init__()`), or invoking a module whose
     `forward()` has not been implemented.
     """
+
+
+class LossError(ForgeError):
+    """Raised for invalid loss-function inputs.
+
+    Examples: a prediction/target shape mismatch, a classification target
+    with the wrong shape or a non-integer dtype, an out-of-range class
+    index, or invoking a loss whose `forward()` has not been implemented.
+    """
+
+
+class OptimizerError(ForgeError):
+    """Raised for invalid optimizer configuration or usage.
+
+    Examples: a non-positive learning rate, or invoking an optimizer whose
+    `step()` has not been implemented.
+    """

@@ -288,6 +288,26 @@ class Tensor:
 
         return self._differentiable_wrap(result, (self,), backward_fn, "relu")
 
+    def exp(self) -> "Tensor":
+        backend = get_backend(self._device)
+        result = backend.exp(self._data)
+
+        def backward_fn(grad_output: np.ndarray):
+            return (grad_output * result,)
+
+        return self._differentiable_wrap(result, (self,), backward_fn, "exp")
+
+    def log(self) -> "Tensor":
+        backend = get_backend(self._device)
+        result = backend.log(self._data)
+
+        input_data = self._data
+
+        def backward_fn(grad_output: np.ndarray):
+            return (grad_output / input_data,)
+
+        return self._differentiable_wrap(result, (self,), backward_fn, "log")
+
     # -- Autograd ----------------------------------------------------------
 
     def backward(self, gradient: "Tensor | Any | None" = None) -> None:

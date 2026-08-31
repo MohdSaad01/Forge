@@ -43,3 +43,9 @@ class Backend(ABC):
 
     @abstractmethod
     def relu(self, a: np.ndarray) -> np.ndarray: ...
+
+    @abstractmethod
+    def exp(self, a: np.ndarray) -> np.ndarray: ...
+
+    @abstractmethod
+    def log(self, a: np.ndarray) -> np.ndarray: ...

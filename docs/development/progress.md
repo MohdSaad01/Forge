@@ -31,3 +31,19 @@ the M1 ops, since ReLU could not be expressed with the existing operation set. N
 deterministic `Linear` parameter initialization (`Uniform(-1/sqrt(in_features),
 1/sqrt(in_features))`). New `ModuleError`. No optimizer, training engine, or CUDA in this
 milestone. 136 tests total. See `docs/architecture/modules.md`.
+
+### M4 — Losses and optimizer
+Completes the optimization foundation on top of the M1-M3 Tensor/autograd/nn stack: new
+`forge/nn/loss.py` (`Loss` base class, `MSELoss`, `CrossEntropyLoss`) and new `forge/optim/`
+package (`Optimizer` base class, `SGD`). Two new differentiable Tensor primitives,
+`Tensor.exp()`/`Tensor.log()` (`Backend.exp`/`log`, `CPUBackend` `np.exp`/`np.log`), following the
+same Tensor -> Backend -> autograd `Node` pattern `.relu()` established in M3 -- needed for a
+numerically stable `CrossEntropyLoss` (log-sum-exp trick, shifted by a non-differentiable per-row
+max computed via NumPy). `SGD.step()` mutates `Parameter._data` in place via NumPy rather than
+Tensor ops, so it never attaches a `grad_fn` or extends the autograd graph. New `LossError`,
+`OptimizerError`. Verified with a deterministic linear-regression experiment (`Linear` + `MSELoss`
++ `SGD`, loss drops from ~4.9 to ~6e-5 over 200 steps, recovers the true `y = 3x1 - 2x2 + 1`
+weights) and a classification experiment (`Linear` -> `ReLU` -> `Linear` + `CrossEntropyLoss` +
+`SGD`, 100% final accuracy on a separable synthetic set). No training engine, DataLoader, dataset
+abstraction, persistence, or CUDA loss/optimizer support in this milestone. 179 tests total. See
+`docs/architecture/optimization.md`.

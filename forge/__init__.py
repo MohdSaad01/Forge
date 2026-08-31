@@ -2,16 +2,20 @@
 
 Milestone 1 established the Tensor abstraction and the CPU execution
 boundary. Milestone 2 added gradient tracking and reverse-mode autodiff on
-top of that Tensor. Milestone 3 adds the `nn` module/parameter composition
-layer built on top of both.
+top of that Tensor. Milestone 3 added the `nn` module/parameter composition
+layer built on top of both. Milestone 4 adds loss functions (`nn.MSELoss`,
+`nn.CrossEntropyLoss`) and the `optim` optimizer package (`optim.SGD`) that
+consumes `Parameter` gradients to update model state.
 """
 
-from . import nn, random
+from . import nn, optim, random
 from .backend.device import Device
 from .exceptions import (
     ForgeError,
     GradientStateError,
+    LossError,
     ModuleError,
+    OptimizerError,
     ShapeMismatchError,
     UnsupportedDeviceError,
     UnsupportedDTypeError,
@@ -31,6 +35,9 @@ __all__ = [
     "UnsupportedDeviceError",
     "GradientStateError",
     "ModuleError",
+    "LossError",
+    "OptimizerError",
     "nn",
+    "optim",
     "random",
 ]

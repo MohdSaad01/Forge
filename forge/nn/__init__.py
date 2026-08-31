@@ -1,14 +1,16 @@
-"""Forge's neural-network composition layer (Milestone 3).
+"""Forge's neural-network composition layer (Milestone 3 + 4).
 
 Built entirely on the existing Tensor/autograd system: `Module`/`Parameter`
 provide composition and discovery, while every numerical computation in
-`Linear`/`ReLU` runs through ordinary differentiable Tensor operations. See
-`docs/architecture/modules.md`.
+`Linear`/`ReLU`/the loss functions runs through ordinary differentiable
+Tensor operations. See `docs/architecture/modules.md` and
+`docs/architecture/optimization.md`.
 """
 
 from .activation import ReLU
 from .linear import Linear
+from .loss import CrossEntropyLoss, Loss, MSELoss
 from .module import Module
 from .parameter import Parameter
 
-__all__ = ["Module", "Parameter", "Linear", "ReLU"]
+__all__ = ["Module", "Parameter", "Linear", "ReLU", "Loss", "MSELoss", "CrossEntropyLoss"]

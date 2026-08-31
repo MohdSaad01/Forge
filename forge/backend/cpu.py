@@ -40,3 +40,9 @@ class CPUBackend(Backend):
 
     def relu(self, a: np.ndarray) -> np.ndarray:
         return np.maximum(a, 0)
+
+    def exp(self, a: np.ndarray) -> np.ndarray:
+        return np.exp(a)
+
+    def log(self, a: np.ndarray) -> np.ndarray:
+        return np.log(a)
