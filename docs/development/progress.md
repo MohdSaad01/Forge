@@ -47,3 +47,19 @@ weights) and a classification experiment (`Linear` -> `ReLU` -> `Linear` + `Cros
 `SGD`, 100% final accuracy on a separable synthetic set). No training engine, DataLoader, dataset
 abstraction, persistence, or CUDA loss/optimizer support in this milestone. 179 tests total. See
 `docs/architecture/optimization.md`.
+
+### M5 — Dataset, DataLoader, and transforms
+Adds the data pipeline foundation on top of the M1-M4 Tensor/nn stack, independent of
+`Module`/`Loss`/`Optimizer`/a training engine: new `forge/data/` package (`Dataset` base class,
+`TensorDataset` -- an in-memory array-backed dataset over one or more aligned Tensors, `Subset`,
+`random_split`), `DataLoader` (batching, optional shuffling with deterministic ordering given a
+supplied `numpy.random.Generator` or `forge.random`'s process-global generator, explicit
+`drop_last` partial-batch handling), and a small composable transform set (`Transform`, `Compose`,
+`ToTensor`, `Normalize`, `Reshape`, `Flatten`, `Lambda`). `TensorDataset` wires `transform` to the
+features position and `target_transform` to the target position separately, so a feature transform
+cannot silently reach a label. Batches are always Forge `Tensor`s (or tuples of them), never raw
+NumPy, assembled via `np.stack` over each sample's underlying storage. New `DataError`. No
+multiprocessing workers, asynchronous prefetching, file-backed/image/tabular dataset conveniences,
+or `Trainer`/training engine in this milestone -- verified via a hand-written (non-`Trainer`)
+Dataset -> DataLoader -> `Linear` -> `MSELoss` -> `SGD` loop that reduces loss over an epoch. 246
+tests total (179 M1-M4 + 67 M5). See `docs/architecture/data-system.md`.

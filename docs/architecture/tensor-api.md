@@ -1,4 +1,4 @@
-# Tensor API (Milestone 1 + 2 + 3 + 4)
+# Tensor API (Milestone 1 + 2 + 3 + 4 + 5)
 
 ## Package layout
 ```
@@ -9,6 +9,8 @@ forge/
     nn/        Module, Parameter, Linear, ReLU (M3), Loss, MSELoss, CrossEntropyLoss (M4)
                (see docs/architecture/modules.md, docs/architecture/optimization.md)
     optim/     Optimizer, SGD (M4, see docs/architecture/optimization.md)
+    data/      Dataset, TensorDataset, Subset, random_split, DataLoader, transforms (M5,
+               see docs/architecture/data-system.md)
     random.py  process-global default RNG for deterministic init (M3)
     exceptions.py
 ```
@@ -34,4 +36,4 @@ Autograd methods (M2): `.backward(gradient=None)` runs reverse-mode differentiat
 `forge.backend.get_backend(device)` dispatches to a registered `Backend` implementation. Only `"cpu"` is registered in M1/M2 (`CPUBackend`, a thin NumPy wrapper). `Device.parse` can name a `"cuda"` device without a backend existing for it — naming and executing are deliberately separate steps so CUDA support can be added later without changing the public Tensor API.
 
 ## Not yet implemented
-No training engine, dataset/DataLoader abstraction, persistence, or CUDA execution. Neural-network modules/parameters exist as of Milestone 3 (`forge.nn`, see `docs/architecture/modules.md`); losses and an SGD optimizer exist as of Milestone 4 (`forge.nn.MSELoss`/`CrossEntropyLoss`, `forge.optim.SGD`, see `docs/architecture/optimization.md`). See `docs/development/roadmap.md`.
+No training engine or CUDA execution. Neural-network modules/parameters exist as of Milestone 3 (`forge.nn`, see `docs/architecture/modules.md`); losses and an SGD optimizer exist as of Milestone 4 (`forge.nn.MSELoss`/`CrossEntropyLoss`, `forge.optim.SGD`, see `docs/architecture/optimization.md`); a dataset/DataLoader/transform abstraction exists as of Milestone 5 (`forge.data`, see `docs/architecture/data-system.md`). See `docs/development/roadmap.md`.

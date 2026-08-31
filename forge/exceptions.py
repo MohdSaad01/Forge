@@ -57,3 +57,14 @@ class OptimizerError(ForgeError):
     Examples: a non-positive learning rate, or invoking an optimizer whose
     `step()` has not been implemented.
     """
+
+
+class DataError(ForgeError):
+    """Raised for invalid dataset/DataLoader/transform configuration or usage.
+
+    Examples: mismatched sample counts between tensors in a `TensorDataset`,
+    an out-of-range or invalid dataset index, an invalid `DataLoader` batch
+    size or configuration, `random_split` lengths that do not sum to the
+    dataset size, a transform applied to an incompatible sample, or invoking
+    a `Dataset`/`Transform` base method that has not been implemented.
+    """
