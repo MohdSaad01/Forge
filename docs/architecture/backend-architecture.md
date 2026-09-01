@@ -30,8 +30,12 @@ measured operation set (tensor transfer, `add`/`sub`/`mul`, `matmul`,
 environment via an `nvcc`-compiled kernel library loaded through `ctypes`
 (see `docs/architecture/cuda-backend.md` and
 `docs/architecture/decisions/ADR-004-cuda-execution-strategy.md`). Kernels
-target Compute Capability 5.0. CUDA execution is forward-only in this
-milestone -- see `docs/architecture/cuda-backend.md`'s **Autograd** section.
+target Compute Capability 5.0. CUDA execution is forward-only -- see
+`docs/architecture/cuda-backend.md`'s **Autograd** section. As of Milestone
+9, `relu` is also a real CUDA kernel, `add`/`sub`/`mul` additionally support
+one targeted row-broadcast shape (needed for a batched `Linear`'s bias add),
+and this operation set is reachable through `nn.Module.to("cuda")` -- see
+`docs/architecture/cuda-backend.md` and `docs/architecture/modules.md`.
 
 ## Consistency
 For operations implemented on both backends, tests should compare CPU and CUDA results using appropriate tolerances.

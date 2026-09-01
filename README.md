@@ -1,6 +1,6 @@
 # Forge
 
-**Forge** is a general deep-learning framework for building, training, evaluating, and deploying neural-network models. It provides flexible data pipelines, model persistence, CPU/CUDA execution, and performance benchmarking with the core ML machinery implemented from the ground up.
+**Forge** is a general deep learning framework for building, training, evaluating, and deploying neural-network models. It provides flexible data pipelines, model persistence, CPU/CUDA execution, and performance benchmarking with the core ML machinery implemented from the ground up.
 
 ## Status
 Early development. See `docs/development/roadmap.md`.

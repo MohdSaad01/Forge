@@ -85,6 +85,17 @@ def test_sum_full_reduction_consistency(dtype, shape):
 
 
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_relu_consistency(dtype):
+    data = [[-3.0, 2.5, 0.0], [1.5, -0.1, 4.0]]
+    cpu, cuda = _both(data, dtype)
+    cpu_result = cpu.relu()
+    cuda_result = cuda.relu()
+    assert cuda_result.dtype == cpu_result.dtype
+    assert cuda_result.shape == cpu_result.shape
+    np.testing.assert_allclose(cuda_result.to("cpu").numpy(), cpu_result.numpy(), **TOL)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
 def test_reshape_consistency(dtype):
     cpu, cuda = _both([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype)
     cpu_result = cpu.reshape(2, 3)
@@ -105,4 +116,25 @@ def test_chained_ops_consistency():
     cpu_result = (x_cpu @ w_cpu).sum()
     cuda_result = (x_cuda @ w_cuda).sum()
 
+    np.testing.assert_allclose(cuda_result.to("cpu").numpy(), cpu_result.numpy(), **TOL)
+
+
+def test_chained_linear_relu_linear_consistency():
+    """Matches the exact op sequence a `Linear -> ReLU -> Linear` model forward runs."""
+    rng = np.random.default_rng(3)
+    x = rng.standard_normal((5, 4)).astype(np.float32)
+    w1 = rng.standard_normal((4, 6)).astype(np.float32)
+    b1 = rng.standard_normal((6,)).astype(np.float32)
+    w2 = rng.standard_normal((6, 2)).astype(np.float32)
+    b2 = rng.standard_normal((2,)).astype(np.float32)
+
+    def run(to_device):
+        xt, w1t, b1t, w2t, b2t = (to_device(Tensor(v)) for v in (x, w1, b1, w2, b2))
+        h = (xt @ w1t + b1t).relu()
+        return h @ w2t + b2t
+
+    cpu_result = run(lambda t: t)
+    cuda_result = run(lambda t: t.to("cuda"))
+
+    assert cuda_result.shape == cpu_result.shape
     np.testing.assert_allclose(cuda_result.to("cpu").numpy(), cpu_result.numpy(), **TOL)

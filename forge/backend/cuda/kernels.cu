@@ -96,6 +96,98 @@ ELEMENTWISE_LAUNCHER(cf_sub, k_sub, double, f64)
 ELEMENTWISE_LAUNCHER(cf_mul, k_mul, float, f32)
 ELEMENTWISE_LAUNCHER(cf_mul, k_mul, double, f64)
 
+// -- row-broadcast elementwise kernels (Milestone 9) ---------------------------
+//
+// M8's elementwise add/sub/mul required exact-matching shapes -- no CUDA
+// broadcasting at all. That is too narrow to run the existing `nn.Linear`
+// forward (`x @ weight + bias`) on a *batched* input: the matmul result is
+// (batch, out_features), the bias is (out_features,). Rather than adding
+// general N-dimensional broadcasting (out of scope) or special-casing
+// `Linear` (explicitly disallowed by the milestone brief) or copying to CPU
+// to broadcast there (a disguised CPU fallback, also disallowed), this adds
+// exactly the one broadcast shape Linear actually needs: a 2D "matrix"
+// (rows, cols) combined elementwise with a 1D "vector" (cols,), the vector
+// value reused for every row. `vec_is_left` preserves operand order for
+// non-commutative `sub`. Every other shape mismatch still raises `CUDAError`
+// (see `CUDABackend._elementwise`) -- this is a targeted addition, not
+// general CUDA broadcasting support.
+
+template <typename T>
+__global__ void k_add_bcast(const T* mat, const T* vec, T* out, long long rows, long long cols, int vec_is_left) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = rows * cols;
+    if (i < total) {
+        long long col = i % cols;
+        out[i] = mat[i] + vec[col];
+    }
+    (void)vec_is_left;  // addition is commutative; operand order does not matter
+}
+
+template <typename T>
+__global__ void k_sub_bcast(const T* mat, const T* vec, T* out, long long rows, long long cols, int vec_is_left) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = rows * cols;
+    if (i < total) {
+        long long col = i % cols;
+        out[i] = vec_is_left ? (vec[col] - mat[i]) : (mat[i] - vec[col]);
+    }
+}
+
+template <typename T>
+__global__ void k_mul_bcast(const T* mat, const T* vec, T* out, long long rows, long long cols, int vec_is_left) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = rows * cols;
+    if (i < total) {
+        long long col = i % cols;
+        out[i] = mat[i] * vec[col];
+    }
+    (void)vec_is_left;  // multiplication is commutative; operand order does not matter
+}
+
+#define BCAST_LAUNCHER(NAME, KERNEL, TYPE, SUFFIX)                                        \
+    extern "C" __declspec(dllexport) int NAME##_bcast_##SUFFIX(                           \
+        const TYPE* mat, const TYPE* vec, TYPE* out,                                      \
+        long long rows, long long cols, int vec_is_left) {                                \
+        long long total = rows * cols;                                                    \
+        int blocks, threads;                                                              \
+        launch_config(total, blocks, threads);                                            \
+        KERNEL<TYPE><<<blocks, threads>>>(mat, vec, out, rows, cols, vec_is_left);         \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+BCAST_LAUNCHER(cf_add, k_add_bcast, float, f32)
+BCAST_LAUNCHER(cf_add, k_add_bcast, double, f64)
+BCAST_LAUNCHER(cf_sub, k_sub_bcast, float, f32)
+BCAST_LAUNCHER(cf_sub, k_sub_bcast, double, f64)
+BCAST_LAUNCHER(cf_mul, k_mul_bcast, float, f32)
+BCAST_LAUNCHER(cf_mul, k_mul_bcast, double, f64)
+
+// -- unary kernels ------------------------------------------------------------
+//
+// relu is new in Milestone 9 -- required to run the existing high-level
+// `nn.ReLU` module on CUDA. exp/log remain unimplemented (out of scope).
+
+template <typename T>
+__global__ void k_relu(const T* a, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) {
+        T v = a[i];
+        out[i] = v > static_cast<T>(0) ? v : static_cast<T>(0);
+    }
+}
+
+#define UNARY_LAUNCHER(NAME, KERNEL, TYPE, SUFFIX)                                        \
+    extern "C" __declspec(dllexport) int NAME##_##SUFFIX(                                 \
+        const TYPE* a, TYPE* out, long long n) {                                          \
+        int blocks, threads;                                                              \
+        launch_config(n, blocks, threads);                                                \
+        KERNEL<TYPE><<<blocks, threads>>>(a, out, n);                                     \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+UNARY_LAUNCHER(cf_relu, k_relu, float, f32)
+UNARY_LAUNCHER(cf_relu, k_relu, double, f64)
+
 // -- matmul (naive, one thread per output element) ---------------------------
 //
 // Correctness-first as directed by the milestone brief: no tiling/shared

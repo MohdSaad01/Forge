@@ -141,3 +141,48 @@ also run with `PATH` stripped of the CUDA toolchain to confirm all 54 skip clean
 failures and the 332 CPU-only tests are entirely unaffected. 386 tests total (332 M1-M7 + 54 M8).
 See `docs/architecture/cuda-backend.md` and
 `docs/architecture/decisions/ADR-004-cuda-execution-strategy.md`.
+
+### M9 — CUDA Module execution and device movement
+Extends the M8 CUDA backend from raw `Tensor` execution to high-level
+`nn.Module` execution: `Module.to(device)` (`forge/nn/module.py`)
+recursively moves every `Parameter` in a module tree to a target device, in
+place, via a new private `Tensor._move_storage_()` primitive -- the in-place
+counterpart to the existing value-semantics `Tensor.to()`, chosen so a moved
+`Parameter` keeps its Python identity, shape, dtype, and `requires_grad`
+(any stale `.grad` is cleared). `Module.to()` mutates and returns `self`,
+matching the existing `train()`/`eval()` convention; a new `Module.device`
+property reports the single device shared by a tree's `Parameter`s (`None`
+if it owns none, `ModuleError` if it finds more than one). Two CUDA kernel
+gaps blocking real `Linear -> ReLU -> Linear` execution were closed: a real
+`relu` kernel (`cf_relu_{f32,f64}`, replacing M8's "unsupported" stub), and
+a targeted row-broadcast addition to `add`/`sub`/`mul`
+(`cf_{add,sub,mul}_bcast_{f32,f64}`) supporting exactly the `(rows, cols) +
+(cols,)` shape a batched `Linear`'s bias add needs -- general N-D
+broadcasting remains out of scope. `Linear`/`ReLU` needed no CUDA-specific
+forward code: `x @ weight + bias` and `x.relu()` dispatch to CUDA purely
+through the existing Tensor -> Backend boundary. A pre-existing bug in
+`Tensor.relu()`'s backward closure (`self._data > 0` computed eagerly,
+before the CUDA-unsupported check used to make it unreachable) was fixed by
+making the comparison lazy inside the closure, since it is now reachable
+for a genuine CUDA forward pass. Because `Module.to()` preserves
+`requires_grad=True`, a CUDA model's forward pass must run inside the
+existing `forge.no_grad()` (unchanged from Milestone 6) to avoid the
+already-tested M8 guard that refuses to build a graph on a non-CPU device;
+`backward()` on a CUDA-resident output still raises `UnsupportedDeviceError`
+unconditionally, matching M8's untouched autograd boundary. `Trainer`,
+losses, and persistence remain entirely CPU-only and unmodified; a
+CUDA-moved model fed to either now fails clearly (a device-mismatched
+forward op for `Trainer`, an `UnsupportedDeviceError` from `Parameter.numpy()`
+for `save_model`) rather than silently doing the wrong thing. Verified on
+the actual development GPU (940MX, CC 5.0, driver 582.53, CUDA Toolkit
+12.6): all CUDA tests (`tests/test_cuda_backend.py`,
+`tests/test_cuda_consistency.py`, and the new `tests/test_module_cuda.py`,
+86 tests total) pass directly on this machine, including a real
+`Linear -> ReLU -> Linear` model moved to CUDA whose forward output (under
+`no_grad()`) numerically matches an identically-initialized CPU model, a
+structural check (monkeypatched `CPUBackend`) that this forward pass never
+calls `CPUBackend`, and confirmation that CUDA backward still fails. The
+same suites skip cleanly (`86 skipped`, `0 failed`) with the CUDA toolchain
+removed from `PATH`, and the CPU-only suite (338 tests) is unaffected. 424
+tests total (338 CPU-only + 86 CUDA). See `docs/architecture/cuda-backend.md`
+and `docs/architecture/modules.md`.

@@ -1,6 +1,7 @@
 import pytest
 
-from forge.exceptions import ModuleError
+from forge.backend.cuda import is_cuda_available
+from forge.exceptions import ModuleError, UnsupportedDeviceError
 from forge.nn import Linear, Module, Parameter
 
 
@@ -154,3 +155,53 @@ def test_train_accepts_explicit_mode_argument():
     m.train(False)
     assert m.training is False
     assert m.layer1.training is False
+
+
+# -- device movement (Milestone 9) ----------------------------------------
+
+
+def test_to_cpu_is_a_no_op_and_returns_self():
+    m = TwoLayer()
+    weight_before = m.layer1.weight
+    result = m.to("cpu")
+    assert result is m
+    assert m.layer1.weight is weight_before
+    assert m.layer1.weight.device.type == "cpu"
+
+
+def test_to_invalid_device_string_raises_clearly():
+    m = TwoLayer()
+    with pytest.raises(UnsupportedDeviceError):
+        m.to("not-a-real-device")
+
+
+def test_to_returns_self_matching_train_eval_convention():
+    m = Simple()
+    assert m.to("cpu") is m
+
+
+def test_module_device_is_none_without_parameters():
+    class NoParams(Module):
+        def forward(self, x):
+            return x
+
+    assert NoParams().device is None
+
+
+def test_module_device_reports_cpu_by_default():
+    m = TwoLayer()
+    assert m.device.type == "cpu"
+
+
+def test_module_to_cuda_behaves_per_hardware_availability():
+    """Branches on hardware availability so this CPU-tier test never requires CUDA
+    -- see tests/test_module_cuda.py for the full CUDA-hardware verification."""
+    m = TwoLayer()
+    if is_cuda_available():
+        m.to("cuda")
+        assert m.device.type == "cuda"
+    else:
+        from forge.exceptions import CUDAError
+
+        with pytest.raises(CUDAError):
+            m.to("cuda")

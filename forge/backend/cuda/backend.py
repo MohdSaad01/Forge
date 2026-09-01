@@ -16,12 +16,13 @@ trusted, so CUDA's asynchronous execution model can never be mistaken for a
 completed, verified operation.
 
 Deliberately small operation set (per the milestone brief): tensor
-creation/transfer, `add`/`sub`/`mul` (exact-shape only -- no CUDA
-broadcasting in this milestone), `matmul` (the same 1D/2D cases the CPU
-backend supports), and `sum` (full reduction only, no `axis`). `relu`/`exp`/
-`log` are required by the `Backend` ABC but are not implemented for CUDA in
-this milestone; calling them raises `CUDAError` rather than silently running
-on CPU.
+creation/transfer, `add`/`sub`/`mul` (exact-shape, plus one targeted
+row-broadcast shape added in Milestone 9 -- see `_elementwise` -- still no
+general CUDA broadcasting), `matmul` (the same 1D/2D cases the CPU backend
+supports), `sum` (full reduction only, no `axis`), and, as of Milestone 9,
+`relu`. `exp`/`log` remain required by the `Backend` ABC but are not
+implemented for CUDA; calling them raises `CUDAError` rather than silently
+running on CPU.
 """
 
 from __future__ import annotations
@@ -76,6 +77,13 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
             fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
             fn.restype = ctypes.c_int
 
+            bcast_fn = getattr(lib, f"cf_{op}_bcast_{suffix}")
+            bcast_fn.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int,
+            ]
+            bcast_fn.restype = ctypes.c_int
+
         matmul_fn = getattr(lib, f"cf_matmul_{suffix}")
         matmul_fn.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
@@ -86,6 +94,10 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         sum_fn = getattr(lib, f"cf_sum_{suffix}")
         sum_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
         sum_fn.restype = ctypes.c_int
+
+        relu_fn = getattr(lib, f"cf_relu_{suffix}")
+        relu_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+        relu_fn.restype = ctypes.c_int
 
 
 def _load_library() -> "ctypes.CDLL":
@@ -228,20 +240,44 @@ class CUDABackend(Backend):
     # -- elementwise ops -------------------------------------------------------
 
     def _elementwise(self, a: CUDAStorage, b: CUDAStorage, op: str) -> CUDAStorage:
-        if a.shape != b.shape:
+        dtype = self._require_compute_dtype(a, b, op=op)
+
+        if a.shape == b.shape:
+            n = a.size
+            out_ptr = self._alloc(n * dtype.itemsize)
+            fn = getattr(self._lib, f"cf_{op}_{_SUFFIX[dtype]}")
+            code = fn(a.ptr, b.ptr, out_ptr, ctypes.c_longlong(n))
+            self._check(code, op)
+            self._synchronize(op)
+            return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
+        # Milestone 9: the one broadcast shape Linear's `x @ weight + bias`
+        # needs -- a 2D (rows, cols) matrix combined with a 1D (cols,)
+        # vector, e.g. a batched matmul result plus a bias. See kernels.cu's
+        # comment above `k_add_bcast` for why this is a targeted addition
+        # rather than general CUDA broadcasting.
+        if a.ndim == 2 and b.ndim == 1 and a.shape[1] == b.shape[0]:
+            mat, vec, vec_is_left, out_shape = a, b, 0, a.shape
+        elif a.ndim == 1 and b.ndim == 2 and b.shape[1] == a.shape[0]:
+            mat, vec, vec_is_left, out_shape = b, a, 1, b.shape
+        else:
             raise CUDAError(
-                f"CUDA '{op}' does not support broadcasting in this milestone "
-                f"(got shapes {a.shape} and {b.shape}); operands must have exactly the same shape. "
+                f"CUDA '{op}' does not support general broadcasting in this milestone -- only "
+                "exact-shape operands, or a (rows, cols) matrix combined with a (cols,) vector "
+                f"(e.g. a Linear bias add), are supported; got shapes {a.shape} and {b.shape}. "
                 "Broadcast on CPU first, or reshape explicitly, before moving to CUDA."
             )
-        dtype = self._require_compute_dtype(a, b, op=op)
-        n = a.size
-        out_ptr = self._alloc(n * dtype.itemsize)
-        fn = getattr(self._lib, f"cf_{op}_{_SUFFIX[dtype]}")
-        code = fn(a.ptr, b.ptr, out_ptr, ctypes.c_longlong(n))
-        self._check(code, op)
-        self._synchronize(op)
-        return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
+        rows, cols = mat.shape
+        out_ptr = self._alloc(rows * cols * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_{op}_bcast_{_SUFFIX[dtype]}")
+        code = fn(
+            mat.ptr, vec.ptr, out_ptr,
+            ctypes.c_longlong(rows), ctypes.c_longlong(cols), ctypes.c_int(vec_is_left),
+        )
+        self._check(code, f"{op} (row-broadcast)")
+        self._synchronize(f"{op} (row-broadcast)")
+        return CUDAStorage(out_ptr, out_shape, dtype, self._lib)
 
     def add(self, a: Any, b: Any) -> CUDAStorage:
         return self._elementwise(a, b, "add")
@@ -316,13 +352,19 @@ class CUDABackend(Backend):
             self._check(code, "reshape (device-to-device copy)")
         return CUDAStorage(new_ptr, shape, a.dtype, self._lib)
 
-    # -- explicitly unsupported in this milestone --------------------------------
+    # -- unary elementwise ops (Milestone 9) --------------------------------------
 
-    def relu(self, a: Any) -> Any:
-        raise CUDAError(
-            "The CUDA backend does not implement relu() in this milestone. "
-            "Move the tensor to CPU with .to('cpu') to use it."
-        )
+    def relu(self, a: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(a, op="relu")
+        n = a.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_relu_{_SUFFIX[dtype]}")
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n))
+        self._check(code, "relu")
+        self._synchronize("relu")
+        return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
+    # -- explicitly unsupported in this milestone --------------------------------
 
     def exp(self, a: Any) -> Any:
         raise CUDAError(

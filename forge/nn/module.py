@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
+from ..backend.device import Device
 from ..exceptions import ModuleError
 from .parameter import Parameter
 
@@ -129,6 +130,56 @@ class Module:
     def eval(self) -> "Module":
         """Equivalent to `self.train(False)`."""
         return self.train(False)
+
+    # -- Device movement (Milestone 9) ---------------------------------------
+
+    def to(self, device: "str | Device") -> "Module":
+        """Move every Parameter owned by this module (recursively) to `device`, in place.
+
+        Mutates and returns `self` -- the same convention `train()`/`eval()`
+        already use -- rather than constructing a copy of the module tree;
+        see `docs/architecture/modules.md` for the full rationale. Every
+        `Parameter` keeps its Python identity, shape, dtype, and
+        `requires_grad`; only its backing storage device changes, via
+        `Tensor._move_storage_()` (the in-place counterpart of
+        `Tensor.to()`). No autograd graph is built or altered by this call
+        -- every `Parameter` is already a leaf, and stays one. Any
+        previously accumulated `.grad` is cleared (see
+        `Tensor._move_storage_`'s docstring).
+
+        No child-module state beyond `Parameter`s exists to move in this
+        milestone (Forge has no buffer concept yet). Raises
+        `UnsupportedDeviceError` for an unrecognized device string, exactly
+        like `Tensor.to()`.
+        """
+        target = Device.parse(device)
+        for module in self.modules():
+            for param in module._parameters.values():
+                param._move_storage_(target)
+        return self
+
+    @property
+    def device(self) -> "Device | None":
+        """The single device shared by every Parameter owned by this module tree.
+
+        `None` if this module (and every descendant) owns no Parameters --
+        Forge does not assume every Module has one device (e.g. a bare
+        `ReLU`). Raises `ModuleError` if Parameters are found on more than
+        one device: normal usage (construct on one device, or call
+        `.to(device)`) always leaves a coherent tree, so this signals a
+        manually-assembled inconsistency (e.g. reassigning one child's
+        Parameter to a different device by hand) rather than silently
+        picking one device to report.
+        """
+        devices = {param.device for param in self.parameters()}
+        if not devices:
+            return None
+        if len(devices) > 1:
+            raise ModuleError(
+                f"{type(self).__name__} has Parameters on inconsistent devices: "
+                f"{sorted(str(d) for d in devices)}. Call .to(device) to make them coherent."
+            )
+        return next(iter(devices))
 
     # -- Invocation -----------------------------------------------------
 

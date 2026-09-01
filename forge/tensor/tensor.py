@@ -303,9 +303,17 @@ class Tensor:
         backend = get_backend(self._device)
         result = backend.relu(self._data)
 
-        positive_mask = self._data > 0
+        input_data = self._data
 
         def backward_fn(grad_output: np.ndarray):
+            # Computed lazily, inside the closure, rather than eagerly above:
+            # `input_data > 0` is a NumPy comparison and would crash for a
+            # CUDA `CUDAStorage` input. It is safe here because a
+            # backward_fn is only ever invoked from CPU-only backward()
+            # (`_differentiable_wrap` refuses to attach a grad_fn for a
+            # differentiable op on a non-CPU device in the first place), so
+            # by the time this runs, `input_data` is always a NumPy array.
+            positive_mask = input_data > 0
             return (np.where(positive_mask, grad_output, 0).astype(grad_output.dtype, copy=False),)
 
         return self._differentiable_wrap(result, (self,), backward_fn, "relu")
@@ -353,6 +361,34 @@ class Tensor:
         host_array = source_backend.to_numpy(self._data)
         new_storage = target_backend.from_array(host_array, host_array.dtype)
         return Tensor._wrap(new_storage, target, requires_grad=False)
+
+    def _move_storage_(self, device: "str | Device") -> None:
+        """In-place device transfer, preserving this object's identity (Milestone 9).
+
+        Unlike `Tensor.to()` (value semantics: always returns a *fresh* leaf
+        tensor, `self` untouched), this mutates `self._data`/`self._device`
+        directly -- the mechanism `Module.to(device)` uses to move
+        `Parameter`s so that `model.fc1.weight` is the exact same Python
+        object before and after the call, matching the way `SGD.step()`
+        already mutates `Parameter._data` in place rather than reassigning
+        it (see `docs/architecture/optimization.md`). `requires_grad`,
+        `is_leaf` (always `True` for a `Parameter`), and `grad_fn` (always
+        `None` for a leaf) are untouched by this move. Any accumulated
+        `.grad` is cleared: it was computed for the *previous* device's
+        data, and CUDA has no backward support to recompute it there (see
+        `docs/architecture/cuda-backend.md`), so leaving it in place would
+        silently pair a stale gradient with new data.
+        """
+        target = Device.parse(device)
+        if target == self._device:
+            return
+        source_backend = get_backend(self._device)
+        target_backend = get_backend(target)
+        host_array = source_backend.to_numpy(self._data)
+        new_storage = target_backend.from_array(host_array, host_array.dtype)
+        self._data = new_storage
+        self._device = target
+        self.grad = None
 
     # -- Autograd ----------------------------------------------------------
 

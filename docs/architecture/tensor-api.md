@@ -1,4 +1,4 @@
-# Tensor API (Milestone 1 + 2 + 3 + 4 + 5)
+# Tensor API (Milestone 1 + 2 + 3 + 4 + 5 + 8 + 9)
 
 ## Package layout
 ```
@@ -35,5 +35,17 @@ Autograd methods (M2): `.backward(gradient=None)` runs reverse-mode differentiat
 ## Backend boundary
 `forge.backend.get_backend(device)` dispatches to a registered `Backend` implementation. `"cpu"` (`CPUBackend`, a thin NumPy wrapper) is always available. As of Milestone 8, `"cuda"` dispatches to a real `CUDABackend`, built lazily on first use; `Device.parse` continues to name a `"cuda"` device independently of whether a backend can actually execute on it (naming and executing remain deliberately separate steps).
 
+## Module-level device movement (Milestone 9)
+`forge.nn.Module.to(device)` (see `docs/architecture/modules.md`) recursively
+moves a module tree's `Parameter`s (`Tensor` subclasses) between devices,
+using a new private in-place counterpart to `Tensor.to()`,
+`Tensor._move_storage_(device)`: unlike the public `.to()` (value semantics,
+always a fresh `requires_grad=False` leaf), this mutates `self._data`/
+`self._device` directly so a `Parameter`'s object identity and
+`requires_grad` flag survive the move. It is not part of the public Tensor
+API -- ordinary code should use `Tensor.to()` (for a plain `Tensor`) or
+`Module.to()` (for a `Module`'s `Parameter`s), never call
+`_move_storage_()` directly.
+
 ## Not yet implemented
-No CUDA autograd (forward CUDA execution only, see `docs/architecture/cuda-backend.md`), no CUDA `Trainer`/persistence integration. Neural-network modules/parameters exist as of Milestone 3 (`forge.nn`, see `docs/architecture/modules.md`); losses and an SGD optimizer exist as of Milestone 4 (`forge.nn.MSELoss`/`CrossEntropyLoss`, `forge.optim.SGD`, see `docs/architecture/optimization.md`); a dataset/DataLoader/transform abstraction exists as of Milestone 5 (`forge.data`, see `docs/architecture/data-system.md`); a training engine exists as of Milestone 6 (`forge.training.Trainer`, see `docs/architecture/training-engine.md`); model persistence exists as of Milestone 7 (`forge.save_model`/`load_model`, see `docs/architecture/persistence.md`); a CUDA backend exists as of Milestone 8 (see `docs/architecture/cuda-backend.md`). See `docs/development/roadmap.md`.
+No CUDA autograd (forward CUDA execution only, see `docs/architecture/cuda-backend.md`), no CUDA `Trainer`/persistence integration, no CUDA `exp`/`log`, no general CUDA elementwise broadcasting (one targeted row-broadcast shape is supported, see `docs/architecture/cuda-backend.md`). Neural-network modules/parameters exist as of Milestone 3 (`forge.nn`, see `docs/architecture/modules.md`); losses and an SGD optimizer exist as of Milestone 4 (`forge.nn.MSELoss`/`CrossEntropyLoss`, `forge.optim.SGD`, see `docs/architecture/optimization.md`); a dataset/DataLoader/transform abstraction exists as of Milestone 5 (`forge.data`, see `docs/architecture/data-system.md`); a training engine exists as of Milestone 6 (`forge.training.Trainer`, see `docs/architecture/training-engine.md`); model persistence exists as of Milestone 7 (`forge.save_model`/`load_model`, see `docs/architecture/persistence.md`); a CUDA backend exists as of Milestone 8 (see `docs/architecture/cuda-backend.md`); `Module.to(device)`, CUDA `relu`, and CUDA `Linear`/`ReLU` module execution exist as of Milestone 9 (see `docs/architecture/cuda-backend.md` and `docs/architecture/modules.md`). See `docs/development/roadmap.md`.
