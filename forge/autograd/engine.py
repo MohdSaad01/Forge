@@ -7,17 +7,22 @@ reachable from a root tensor in reverse topological order, accumulating
 gradients into leaves.
 
 This module works with Tensor-like objects via duck typing (``is_leaf``,
-``requires_grad``, ``_grad_fn``, ``_accumulate_grad``) rather than importing
-``forge.tensor.Tensor`` directly, so the graph engine has no dependency on
-the concrete Tensor implementation and there is no import cycle between the
-two packages.
+``requires_grad``, ``device``, ``_grad_fn``, ``_accumulate_grad``) rather
+than importing ``forge.tensor.Tensor`` directly, so the graph engine has no
+dependency on the concrete Tensor implementation and there is no import
+cycle between the two packages. As of Milestone 10, a ``Node``'s
+``backward_fn`` itself is backend-aware -- see
+``docs/architecture/autograd.md``'s **Backend-aware backward dispatch**
+section -- but the graph engine here stays backend-*agnostic*: it never
+performs numerical work itself, it only combines whatever gradient values
+``backward_fn`` returns (a raw ``numpy.ndarray`` for a CPU tensor, a
+``CUDAStorage`` for a CUDA tensor) via ``get_backend(tensor.device).add()``
+when more than one consumer contributes to the same tensor's gradient.
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable
-
-import numpy as np
 
 
 class Node:
@@ -28,7 +33,7 @@ class Node:
     def __init__(
         self,
         inputs: "tuple[Any, ...]",
-        backward_fn: "Callable[[np.ndarray], tuple[np.ndarray | None, ...]]",
+        backward_fn: "Callable[[Any], tuple[Any, ...]]",
         name: str,
     ):
         self.inputs = inputs
@@ -55,14 +60,20 @@ def _topological_order(root: Any) -> list:
     return order
 
 
-def run_backward(root: Any, grad_array: np.ndarray) -> None:
+def run_backward(root: Any, grad_array: Any) -> None:
     """Propagate ``grad_array`` (the upstream gradient for ``root``) through the graph.
 
     Each non-leaf tensor's ``grad_fn`` is dropped once its gradient has been
     consumed, releasing the graph rather than keeping it alive indefinitely.
     """
+    # Deferred import: `forge.backend` never imports `forge.autograd`, so
+    # this has nowhere to cycle back to; kept import-local (rather than at
+    # module scope) purely to match the lazy-import style the rest of the
+    # backend boundary already uses (see `forge/backend/__init__.py`).
+    from ..backend import get_backend
+
     order = _topological_order(root)
-    pending: dict[int, np.ndarray] = {id(root): grad_array}
+    pending: dict[int, Any] = {id(root): grad_array}
 
     for tensor in reversed(order):
         grad_output = pending.pop(id(tensor), None)
@@ -83,7 +94,12 @@ def run_backward(root: Any, grad_array: np.ndarray) -> None:
             if grad is None or not inp.requires_grad:
                 continue
             if id(inp) in pending:
-                pending[id(inp)] = pending[id(inp)] + grad
+                # Two consumers contributed a gradient to the same tensor:
+                # combine them via that tensor's own backend rather than a
+                # bare `+` (a CUDAStorage has no `__add__`; this reuses the
+                # existing elementwise-add kernel instead of introducing a
+                # second accumulation mechanism).
+                pending[id(inp)] = get_backend(inp.device).add(pending[id(inp)], grad)
             else:
                 pending[id(inp)] = grad
 

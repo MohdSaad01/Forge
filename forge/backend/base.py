@@ -53,3 +53,41 @@ class Backend(ABC):
 
     @abstractmethod
     def log(self, a: np.ndarray) -> np.ndarray: ...
+
+    # -- backward (Milestone 10) ------------------------------------------
+    #
+    # Operation-specific gradient math, one implementation per backend, so
+    # `Tensor`'s backward closures (`forge/tensor/tensor.py`) never contain
+    # backend-specific (NumPy vs. CUDAStorage) code themselves -- they just
+    # call `get_backend(device).<op>_backward(...)`. `a`/`b`/`grad_output`
+    # are raw backend storage (a `np.ndarray` for `CPUBackend`, a
+    # `CUDAStorage` for `CUDABackend`), matching every other `Backend` method.
+
+    @abstractmethod
+    def add_backward(self, grad_output: Any, a: Any, b: Any) -> "tuple[Any, Any]": ...
+
+    @abstractmethod
+    def sub_backward(self, grad_output: Any, a: Any, b: Any) -> "tuple[Any, Any]": ...
+
+    @abstractmethod
+    def mul_backward(self, grad_output: Any, a: Any, b: Any) -> "tuple[Any, Any]": ...
+
+    @abstractmethod
+    def matmul_backward(self, grad_output: Any, a: Any, b: Any) -> "tuple[Any, Any]": ...
+
+    @abstractmethod
+    def sum_backward(
+        self, grad_output: Any, original_shape: "tuple[int, ...]", ndim: int, axis, keepdims: bool
+    ) -> Any: ...
+
+    @abstractmethod
+    def reshape_backward(self, grad_output: Any, original_shape: "tuple[int, ...]") -> Any: ...
+
+    @abstractmethod
+    def relu_backward(self, grad_output: Any, a: Any) -> Any: ...
+
+    # -- optimizer (Milestone 10) ------------------------------------------
+
+    @abstractmethod
+    def sgd_step(self, data: Any, grad: Any, lr: float) -> Any:
+        """In-place `data -= lr * grad`; returns `data` (same object where possible)."""

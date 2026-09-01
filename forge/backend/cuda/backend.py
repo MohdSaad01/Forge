@@ -99,6 +99,32 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         relu_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
         relu_fn.restype = ctypes.c_int
 
+        # -- backward-only kernels (Milestone 10) --
+        neg_fn = getattr(lib, f"cf_neg_{suffix}")
+        neg_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+        neg_fn.restype = ctypes.c_int
+
+        for name in (f"cf_relu_backward_{suffix}", f"cf_scale_{suffix}"):
+            fn = getattr(lib, name)
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+            fn.restype = ctypes.c_int
+
+        transpose_fn = getattr(lib, f"cf_transpose_{suffix}")
+        transpose_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong]
+        transpose_fn.restype = ctypes.c_int
+
+        reduce_rows_fn = getattr(lib, f"cf_reduce_rows_{suffix}")
+        reduce_rows_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong]
+        reduce_rows_fn.restype = ctypes.c_int
+
+        sgd_step_fn = getattr(lib, f"cf_sgd_step_{suffix}")
+        sgd_step_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_double, ctypes.c_longlong]
+        sgd_step_fn.restype = ctypes.c_int
+
+        broadcast_scalar_fn = getattr(lib, f"cf_broadcast_scalar_{suffix}")
+        broadcast_scalar_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+        broadcast_scalar_fn.restype = ctypes.c_int
+
 
 def _load_library() -> "ctypes.CDLL":
     global _lib_cache
@@ -204,7 +230,15 @@ class CUDABackend(Backend):
                 self._check(code, "device-to-device copy")
             return CUDAStorage(new_ptr, data.shape, data.dtype, self._lib)
 
-        host = np.ascontiguousarray(np.array(data, dtype=dtype))
+        host = np.array(data, dtype=dtype)
+        original_shape = host.shape
+        host = np.ascontiguousarray(host)
+        if host.shape != original_shape:
+            # `np.ascontiguousarray` silently promotes a 0-d array to shape
+            # (1,) (it guarantees ndim >= 1) -- reshape back so a CUDA
+            # scalar tensor (e.g. a loss, or `x.sum()`) keeps shape (),
+            # matching the CPU backend and `Tensor`'s own shape contract.
+            host = host.reshape(original_shape)
         if host.dtype not in _TRANSFERABLE_DTYPES:
             supported = ", ".join(str(d) for d in _TRANSFERABLE_DTYPES)
             raise CUDAError(f"Unsupported dtype for a CUDA tensor: '{host.dtype}'. Supported: {supported}.")
@@ -377,6 +411,166 @@ class CUDABackend(Backend):
             "The CUDA backend does not implement log() in this milestone. "
             "Move the tensor to CPU with .to('cpu') to use it."
         )
+
+    # -- backward helpers (Milestone 10) ---------------------------------------
+    #
+    # Private, CUDA-only composition helpers used by the `*_backward` methods
+    # below. Each wraps one real kernel (`kernels.cu`'s "backward-only
+    # kernels" section) and returns a fresh `CUDAStorage` -- gradient
+    # computation for a CUDA graph never leaves the device.
+
+    def _neg(self, a: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(a, op="neg")
+        n = a.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_neg_{_SUFFIX[dtype]}")
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n))
+        self._check(code, "neg")
+        self._synchronize("neg")
+        return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
+    def _scale(self, scalar: CUDAStorage, vec: CUDAStorage) -> CUDAStorage:
+        """`scalar` (a 0-d/scalar CUDAStorage) times `vec`, elementwise -- read entirely on-device."""
+        dtype = self._require_compute_dtype(scalar, vec, op="scale")
+        n = vec.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_scale_{_SUFFIX[dtype]}")
+        code = fn(scalar.ptr, vec.ptr, out_ptr, ctypes.c_longlong(n))
+        self._check(code, "scale")
+        self._synchronize("scale")
+        return CUDAStorage(out_ptr, vec.shape, dtype, self._lib)
+
+    def _transpose(self, a: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(a, op="transpose")
+        if a.ndim != 2:
+            raise CUDAError(f"CUDA transpose (a matmul-backward helper) requires a 2D tensor, got shape {a.shape}.")
+        rows, cols = a.shape
+        out_ptr = self._alloc(rows * cols * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_transpose_{_SUFFIX[dtype]}")
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+        self._check(code, "transpose")
+        self._synchronize("transpose")
+        return CUDAStorage(out_ptr, (cols, rows), dtype, self._lib)
+
+    def _reduce_rows(self, mat: CUDAStorage) -> CUDAStorage:
+        """Sum a (rows, cols) matrix down to a (cols,) vector -- undoes row-broadcast."""
+        dtype = self._require_compute_dtype(mat, op="reduce_rows")
+        rows, cols = mat.shape
+        out_ptr = self._alloc(cols * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_reduce_rows_{_SUFFIX[dtype]}")
+        code = fn(mat.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+        self._check(code, "reduce_rows (row-broadcast gradient reduction)")
+        self._synchronize("reduce_rows")
+        return CUDAStorage(out_ptr, (cols,), dtype, self._lib)
+
+    def _row_broadcast_kind(self, a: CUDAStorage, b: CUDAStorage) -> str:
+        """Classify `(a, b)`'s shape relationship, matching `_elementwise`'s forward rule."""
+        if a.shape == b.shape:
+            return "exact"
+        if a.ndim == 2 and b.ndim == 1 and a.shape[1] == b.shape[0]:
+            return "a_mat_b_vec"
+        if a.ndim == 1 and b.ndim == 2 and b.shape[1] == a.shape[0]:
+            return "a_vec_b_mat"
+        raise CUDAError(
+            f"CUDA backward does not support this broadcast shape combination: {a.shape} and {b.shape}."
+        )
+
+    # -- backward (Milestone 10) -----------------------------------------------
+
+    def add_backward(self, grad_output: CUDAStorage, a: CUDAStorage, b: CUDAStorage):
+        kind = self._row_broadcast_kind(a, b)
+        if kind == "exact":
+            return grad_output, grad_output
+        if kind == "a_mat_b_vec":
+            return grad_output, self._reduce_rows(grad_output)
+        return self._reduce_rows(grad_output), grad_output
+
+    def sub_backward(self, grad_output: CUDAStorage, a: CUDAStorage, b: CUDAStorage):
+        kind = self._row_broadcast_kind(a, b)
+        if kind == "exact":
+            return grad_output, self._neg(grad_output)
+        if kind == "a_mat_b_vec":
+            # out = a(mat) - b(vec)
+            return grad_output, self._neg(self._reduce_rows(grad_output))
+        # a_vec_b_mat: out = a(vec) - b(mat)
+        return self._reduce_rows(grad_output), self._neg(grad_output)
+
+    def mul_backward(self, grad_output: CUDAStorage, a: CUDAStorage, b: CUDAStorage):
+        kind = self._row_broadcast_kind(a, b)
+        if kind == "exact":
+            return self.mul(grad_output, b), self.mul(grad_output, a)
+        if kind == "a_mat_b_vec":
+            return self.mul(grad_output, b), self._reduce_rows(self.mul(grad_output, a))
+        # a_vec_b_mat
+        return self._reduce_rows(self.mul(grad_output, b)), self.mul(grad_output, a)
+
+    def matmul_backward(self, grad_output: CUDAStorage, a: CUDAStorage, b: CUDAStorage):
+        if a.ndim == 1 and b.ndim == 1:
+            return self._scale(grad_output, b), self._scale(grad_output, a)
+        if a.ndim == 2 and b.ndim == 1:
+            M, K = a.shape
+            grad_col = self.reshape(grad_output, (M, 1))
+            b_row = self.reshape(b, (1, K))
+            grad_a = self.matmul(grad_col, b_row)  # (M,1) @ (1,K) = (M,K)
+            grad_b = self.matmul(self._transpose(a), grad_output)  # (K,M) @ (M,) = (K,)
+            return grad_a, grad_b
+        if a.ndim == 1 and b.ndim == 2:
+            K, N = b.shape
+            grad_a = self.matmul(b, grad_output)  # (K,N) @ (N,) = (K,)
+            a_col = self.reshape(a, (K, 1))
+            grad_row = self.reshape(grad_output, (1, N))
+            grad_b = self.matmul(a_col, grad_row)  # (K,1) @ (1,N) = (K,N)
+            return grad_a, grad_b
+        # a.ndim == 2 and b.ndim == 2
+        grad_a = self.matmul(grad_output, self._transpose(b))
+        grad_b = self.matmul(self._transpose(a), grad_output)
+        return grad_a, grad_b
+
+    def sum_backward(
+        self, grad_output: CUDAStorage, original_shape: "tuple[int, ...]", ndim: int, axis, keepdims: bool
+    ) -> CUDAStorage:
+        if axis is not None:
+            # Forward CUDA `sum(axis=...)` already raises CUDAError (see
+            # `sum` above), so a backward closure for a non-None axis can
+            # never actually be built -- this branch is defensive, not a
+            # reachable path from `Tensor.sum()`.
+            raise CUDAError(
+                "CUDA sum() backward supports only a full reduction (axis=None) in this milestone; "
+                f"got axis={axis!r}."
+            )
+        dtype = self._require_compute_dtype(grad_output, op="sum_backward")
+        n = 1
+        for s in original_shape:
+            n *= s
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_broadcast_scalar_{_SUFFIX[dtype]}")
+        code = fn(grad_output.ptr, out_ptr, ctypes.c_longlong(n))
+        self._check(code, "sum backward (broadcast)")
+        self._synchronize("sum backward")
+        return CUDAStorage(out_ptr, original_shape, dtype, self._lib)
+
+    def reshape_backward(self, grad_output: CUDAStorage, original_shape: "tuple[int, ...]") -> CUDAStorage:
+        return self.reshape(grad_output, original_shape)
+
+    def relu_backward(self, grad_output: CUDAStorage, a: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(grad_output, a, op="relu_backward")
+        n = a.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_relu_backward_{_SUFFIX[dtype]}")
+        code = fn(grad_output.ptr, a.ptr, out_ptr, ctypes.c_longlong(n))
+        self._check(code, "relu backward")
+        self._synchronize("relu backward")
+        return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
+    # -- optimizer (Milestone 10) -----------------------------------------------
+
+    def sgd_step(self, data: CUDAStorage, grad: CUDAStorage, lr: float) -> CUDAStorage:
+        dtype = self._require_compute_dtype(data, grad, op="sgd_step")
+        fn = getattr(self._lib, f"cf_sgd_step_{_SUFFIX[dtype]}")
+        code = fn(data.ptr, grad.ptr, ctypes.c_double(lr), ctypes.c_longlong(data.size))
+        self._check(code, "sgd_step")
+        self._synchronize("sgd_step")
+        return data
 
 
 _backend_singleton: "CUDABackend | None" = None

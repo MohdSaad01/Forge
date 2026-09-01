@@ -15,7 +15,6 @@ import numpy as np
 from numpy.exceptions import AxisError
 
 from ..autograd import Node, is_grad_enabled, run_backward
-from ..autograd.functions import matmul_backward, reduce_grad_to_shape, sum_backward
 from ..backend import get_backend
 from ..backend.device import Device
 from ..exceptions import (
@@ -112,16 +111,18 @@ class Tensor:
         `False`): the result is a plain, non-grad-requiring Tensor regardless
         of its inputs, so no graph is built for a forward pass that will
         never be differentiated.
+
+        As of Milestone 10, this is not restricted to the 'cpu' device: any
+        device whose `Backend` implements the operation's forward method
+        (already called by the caller, above) and its `*_backward`
+        counterpart (see `forge/backend/base.py`) can attach a `grad_fn`
+        here. An operation with no CUDA backward support (`exp`/`log`) never
+        reaches this point on a CUDA tensor in the first place -- its
+        forward call already raised `CUDAError` before `_differentiable_wrap`
+        was invoked, which is the more localized place to fail (see
+        `docs/architecture/cuda-backend.md`).
         """
         requires_grad = is_grad_enabled() and any(t._requires_grad for t in inputs)
-        if requires_grad and self._device.type != "cpu":
-            raise UnsupportedDeviceError(
-                "Automatic differentiation is only supported on the 'cpu' device in this "
-                f"milestone; got a differentiable '{name}' operation on device "
-                f"'{self._device}'. Construct tensors with requires_grad=False to run this "
-                "operation on this device, or perform gradient-tracked operations on CPU. "
-                "See docs/architecture/cuda-backend.md."
-            )
         grad_fn = Node(inputs, backward_fn, name) if requires_grad else None
         return Tensor._wrap(array, self._device, requires_grad=requires_grad, grad_fn=grad_fn)
 
@@ -178,12 +179,14 @@ class Tensor:
             return other
         return Tensor(other, device=self._device)
 
-    def _binary_op(self, other: Any, backend_method: str, op_symbol: str, local_grads) -> "Tensor":
+    def _binary_op(self, other: Any, backend_method: str, op_symbol: str) -> "Tensor":
         """Apply a broadcasting elementwise op.
 
-        ``local_grads(grad_output, a_data, b_data)`` returns the raw
-        (pre-broadcast-reduction) gradients for ``self`` and ``other``; this
-        method reduces each back down to its input's shape.
+        The backward rule is looked up on the same backend as the forward
+        call (`backend.<backend_method>_backward`, e.g. `backend.add_backward`)
+        so gradient computation for a CUDA operand executes as real CUDA
+        kernels, never NumPy math against CUDA storage (see
+        `docs/architecture/autograd.md`).
         """
         other_t = self._coerce(other)
         if other_t._device != self._device:
@@ -202,32 +205,28 @@ class Tensor:
         backend = get_backend(self._device)
         result = getattr(backend, backend_method)(self._data, other_t._data)
 
-        a_shape, b_shape = self.shape, other_t.shape
         a_data, b_data = self._data, other_t._data
+        backward_method = getattr(backend, f"{backend_method}_backward")
 
-        def backward_fn(grad_output: np.ndarray):
-            grad_a_raw, grad_b_raw = local_grads(grad_output, a_data, b_data)
-            return (
-                reduce_grad_to_shape(grad_a_raw, a_shape),
-                reduce_grad_to_shape(grad_b_raw, b_shape),
-            )
+        def backward_fn(grad_output):
+            return backward_method(grad_output, a_data, b_data)
 
         return self._differentiable_wrap(result, (self, other_t), backward_fn, op_symbol)
 
     def __add__(self, other: Any) -> "Tensor":
-        return self._binary_op(other, "add", "+", lambda g, a, b: (g, g))
+        return self._binary_op(other, "add", "+")
 
     def __radd__(self, other: Any) -> "Tensor":
         return self.__add__(other)
 
     def __sub__(self, other: Any) -> "Tensor":
-        return self._binary_op(other, "sub", "-", lambda g, a, b: (g, -g))
+        return self._binary_op(other, "sub", "-")
 
     def __rsub__(self, other: Any) -> "Tensor":
-        return self._coerce(other)._binary_op(self, "sub", "-", lambda g, a, b: (g, -g))
+        return self._coerce(other)._binary_op(self, "sub", "-")
 
     def __mul__(self, other: Any) -> "Tensor":
-        return self._binary_op(other, "mul", "*", lambda g, a, b: (g * b, g * a))
+        return self._binary_op(other, "mul", "*")
 
     def __rmul__(self, other: Any) -> "Tensor":
         return self.__mul__(other)
@@ -257,8 +256,8 @@ class Tensor:
 
         a_data, b_data = self._data, other_t._data
 
-        def backward_fn(grad_output: np.ndarray):
-            return matmul_backward(grad_output, a_data, b_data)
+        def backward_fn(grad_output):
+            return backend.matmul_backward(grad_output, a_data, b_data)
 
         return self._differentiable_wrap(result, (self, other_t), backward_fn, "@")
 
@@ -275,8 +274,8 @@ class Tensor:
 
         original_shape, ndim = self.shape, self.ndim
 
-        def backward_fn(grad_output: np.ndarray):
-            return (sum_backward(grad_output, original_shape, ndim, axis, keepdims),)
+        def backward_fn(grad_output):
+            return (backend.sum_backward(grad_output, original_shape, ndim, axis, keepdims),)
 
         return self._differentiable_wrap(result, (self,), backward_fn, "sum")
 
@@ -294,8 +293,8 @@ class Tensor:
 
         original_shape = self.shape
 
-        def backward_fn(grad_output: np.ndarray):
-            return (grad_output.reshape(original_shape),)
+        def backward_fn(grad_output):
+            return (backend.reshape_backward(grad_output, original_shape),)
 
         return self._differentiable_wrap(result, (self,), backward_fn, "reshape")
 
@@ -305,16 +304,12 @@ class Tensor:
 
         input_data = self._data
 
-        def backward_fn(grad_output: np.ndarray):
-            # Computed lazily, inside the closure, rather than eagerly above:
-            # `input_data > 0` is a NumPy comparison and would crash for a
-            # CUDA `CUDAStorage` input. It is safe here because a
-            # backward_fn is only ever invoked from CPU-only backward()
-            # (`_differentiable_wrap` refuses to attach a grad_fn for a
-            # differentiable op on a non-CPU device in the first place), so
-            # by the time this runs, `input_data` is always a NumPy array.
-            positive_mask = input_data > 0
-            return (np.where(positive_mask, grad_output, 0).astype(grad_output.dtype, copy=False),)
+        def backward_fn(grad_output):
+            # Dispatches through the backend (`Backend.relu_backward`) so a
+            # CUDA input's mask/multiply runs as a real CUDA kernel -- see
+            # `docs/architecture/cuda-backend.md`. Never copies `input_data`
+            # to CPU to compute the mask.
+            return (backend.relu_backward(grad_output, input_data),)
 
         return self._differentiable_wrap(result, (self,), backward_fn, "relu")
 
@@ -347,9 +342,12 @@ class Tensor:
         `_binary_op`'s device-mismatch check) -- this is the one sanctioned
         way to cross devices. The result is always a fresh leaf tensor with
         `requires_grad=False`, regardless of this tensor's own gradient
-        state: Forge does not support automatic differentiation across a
-        device transfer in this milestone (see
-        `docs/architecture/cuda-backend.md`), and never fakes it by quietly
+        state: a device *transfer* is not itself a differentiable operation
+        in Forge (there is no gradient rule for "copy across the host/device
+        boundary"), independent of whether the source or target device can
+        run autograd on its own -- CUDA can, as of Milestone 10 (see
+        `docs/architecture/cuda-backend.md`), but `.to()` still never carries
+        `requires_grad` across the copy, and never fakes it by quietly
         keeping the source tensor's graph alive.
         """
         target = Device.parse(device)
@@ -375,8 +373,8 @@ class Tensor:
         `is_leaf` (always `True` for a `Parameter`), and `grad_fn` (always
         `None` for a leaf) are untouched by this move. Any accumulated
         `.grad` is cleared: it was computed for the *previous* device's
-        data, and CUDA has no backward support to recompute it there (see
-        `docs/architecture/cuda-backend.md`), so leaving it in place would
+        data (and, being a leaf's own `.grad`, is itself a plain tensor with
+        no graph to recompute it from), so leaving it in place would
         silently pair a stale gradient with new data.
         """
         target = Device.parse(device)
@@ -402,12 +400,16 @@ class Tensor:
         graph feeding this tensor is freed as it is consumed, so calling
         ``backward()`` again on the same non-leaf output raises
         ``GradientStateError``; build a new forward pass instead.
+
+        As of Milestone 10, this runs on any device whose backend
+        implements the graph's operations' backward rules -- CPU and CUDA,
+        for the operations each supports (see
+        `docs/architecture/cuda-backend.md`). An explicit upstream
+        ``gradient`` must already be on this tensor's own device (raises
+        `UnsupportedDeviceError` otherwise) -- exactly like every other
+        binary Tensor operation, a device transfer across ``backward()``'s
+        boundary is never performed implicitly.
         """
-        if self._device.type != "cpu":
-            raise UnsupportedDeviceError(
-                f"backward() is only supported for tensors on device 'cpu' in this milestone; "
-                f"got device '{self._device}'. See docs/architecture/cuda-backend.md."
-            )
         if not self._requires_grad:
             raise GradientStateError("backward() called on a tensor that does not require grad.")
         if not self._is_leaf and self._grad_fn is None:
@@ -416,6 +418,7 @@ class Tensor:
                 "Run a new forward pass to compute gradients again."
             )
 
+        backend = get_backend(self._device)
         if gradient is None:
             if self.shape != ():
                 raise GradientStateError(
@@ -423,15 +426,28 @@ class Tensor:
                     f"output of shape {self.shape}; only scalar outputs default to a "
                     "gradient of 1."
                 )
-            grad_array = np.ones((), dtype=self._data.dtype)
+            grad_array = backend.from_array(np.ones((), dtype=self._data.dtype), self._data.dtype)
         else:
             grad_tensor = gradient if isinstance(gradient, Tensor) else Tensor(gradient, device=self._device)
+            if grad_tensor._device != self._device:
+                raise UnsupportedDeviceError(
+                    f"Upstream gradient device '{grad_tensor._device}' does not match this "
+                    f"tensor's device '{self._device}'. Move it explicitly with .to() first."
+                )
             if grad_tensor.shape != self.shape:
                 raise ShapeMismatchError(
                     f"Upstream gradient shape {grad_tensor.shape} does not match "
                     f"output shape {self.shape}."
                 )
-            grad_array = grad_tensor._data.astype(self._data.dtype, copy=False)
+            grad_array = grad_tensor._data
+            if grad_array.dtype != self._data.dtype:
+                if self._device.type == "cpu":
+                    grad_array = grad_array.astype(self._data.dtype, copy=False)
+                else:
+                    raise UnsupportedDTypeError(
+                        f"Upstream gradient dtype '{grad_array.dtype}' does not match this "
+                        f"tensor's dtype '{self._data.dtype}' on device '{self._device}'."
+                    )
 
         run_backward(self, grad_array)
 
@@ -439,8 +455,11 @@ class Tensor:
         """Clear this tensor's accumulated gradient."""
         self.grad = None
 
-    def _accumulate_grad(self, grad_array: np.ndarray) -> None:
+    def _accumulate_grad(self, grad_array) -> None:
         if self.grad is None:
-            self.grad = Tensor._wrap(np.array(grad_array, dtype=self._data.dtype), self._device)
+            if self._device.type == "cpu":
+                grad_array = np.array(grad_array, dtype=self._data.dtype)
+            self.grad = Tensor._wrap(grad_array, self._device)
         else:
-            self.grad = Tensor._wrap(self.grad._data + grad_array, self._device)
+            backend = get_backend(self._device)
+            self.grad = Tensor._wrap(backend.add(self.grad._data, grad_array), self._device)

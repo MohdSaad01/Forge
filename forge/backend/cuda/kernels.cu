@@ -188,6 +188,144 @@ __global__ void k_relu(const T* a, T* out, long long n) {
 UNARY_LAUNCHER(cf_relu, k_relu, float, f32)
 UNARY_LAUNCHER(cf_relu, k_relu, double, f64)
 
+// -- backward-only kernels (Milestone 10) -------------------------------------
+//
+// Real CUDA kernels backing CUDA autograd's backward rules
+// (`CUDABackend.*_backward` in `backend.py`), so backward computation for a
+// CUDA graph never copies to CPU. Each is a small, targeted addition mirroring
+// an existing forward kernel's shape rather than a general-purpose primitive:
+// `k_neg` (sub's second gradient), `k_relu_backward` (ReLU's derivative,
+// computed directly from the saved input -- no separate mask kernel),
+// `k_scale` (a device-resident scalar times a vector, for the 1D.1D matmul
+// case -- the scalar is read via a device pointer so no value ever crosses
+// back to the host), `k_transpose` (matmul backward's `.T`), and
+// `k_reduce_rows` (undoes the row-broadcast add/sub/mul forward kernels'
+// broadcast by summing a (rows, cols) upstream gradient down to the (cols,)
+// vector operand's shape -- the one broadcast-reduction shape actually needed,
+// not a general axis-sum).
+
+template <typename T>
+__global__ void k_neg(const T* a, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = -a[i];
+}
+
+UNARY_LAUNCHER(cf_neg, k_neg, float, f32)
+UNARY_LAUNCHER(cf_neg, k_neg, double, f64)
+
+template <typename T>
+__global__ void k_relu_backward(const T* grad_output, const T* input, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = input[i] > static_cast<T>(0) ? grad_output[i] : static_cast<T>(0);
+}
+
+ELEMENTWISE_LAUNCHER(cf_relu_backward, k_relu_backward, float, f32)
+ELEMENTWISE_LAUNCHER(cf_relu_backward, k_relu_backward, double, f64)
+
+template <typename T>
+__global__ void k_scale(const T* scalar, const T* vec, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = (*scalar) * vec[i];
+}
+
+ELEMENTWISE_LAUNCHER(cf_scale, k_scale, float, f32)
+ELEMENTWISE_LAUNCHER(cf_scale, k_scale, double, f64)
+
+template <typename T>
+__global__ void k_transpose(const T* in, T* out, long long rows, long long cols) {
+    long long r = blockIdx.y * static_cast<long long>(blockDim.y) + threadIdx.y;
+    long long c = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (r < rows && c < cols) out[c * rows + r] = in[r * cols + c];
+}
+
+#define TRANSPOSE_LAUNCHER(TYPE, SUFFIX)                                                  \
+    extern "C" __declspec(dllexport) int cf_transpose_##SUFFIX(                           \
+        const TYPE* in, TYPE* out, long long rows, long long cols) {                      \
+        dim3 threads(16, 16);                                                             \
+        dim3 blocks(static_cast<unsigned int>((cols + 15) / 16),                          \
+                    static_cast<unsigned int>((rows + 15) / 16));                         \
+        k_transpose<TYPE><<<blocks, threads>>>(in, out, rows, cols);                      \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+TRANSPOSE_LAUNCHER(float, f32)
+TRANSPOSE_LAUNCHER(double, f64)
+
+template <typename T>
+__global__ void k_reduce_rows(const T* mat, T* out, long long rows, long long cols) {
+    long long col = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (col < cols) {
+        T acc = static_cast<T>(0);
+        for (long long r = 0; r < rows; ++r) {
+            acc += mat[r * cols + col];
+        }
+        out[col] = acc;
+    }
+}
+
+#define REDUCE_ROWS_LAUNCHER(TYPE, SUFFIX)                                                \
+    extern "C" __declspec(dllexport) int cf_reduce_rows_##SUFFIX(                         \
+        const TYPE* mat, TYPE* out, long long rows, long long cols) {                     \
+        int blocks, threads;                                                              \
+        launch_config(cols, blocks, threads);                                             \
+        k_reduce_rows<TYPE><<<blocks, threads>>>(mat, out, rows, cols);                   \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+REDUCE_ROWS_LAUNCHER(float, f32)
+REDUCE_ROWS_LAUNCHER(double, f64)
+
+// -- SGD parameter update (Milestone 10) ---------------------------------------
+//
+// In-place `param -= lr * grad`, executed entirely on-device so a CUDA
+// Parameter never needs a host round-trip to be optimized. `lr` is passed by
+// value (a plain launch argument, like `rows`/`cols` elsewhere in this file --
+// it is Python-side hyperparameter state, not tensor data) and cast to `T`
+// inside the kernel so one launcher works for both float32 and float64
+// parameters.
+
+template <typename T>
+__global__ void k_sgd_step(T* param, const T* grad, double lr, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) param[i] -= static_cast<T>(lr) * grad[i];
+}
+
+#define SGD_STEP_LAUNCHER(TYPE, SUFFIX)                                                   \
+    extern "C" __declspec(dllexport) int cf_sgd_step_##SUFFIX(                            \
+        TYPE* param, const TYPE* grad, double lr, long long n) {                          \
+        int blocks, threads;                                                              \
+        launch_config(n, blocks, threads);                                                \
+        k_sgd_step<TYPE><<<blocks, threads>>>(param, grad, lr, n);                        \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+SGD_STEP_LAUNCHER(float, f32)
+SGD_STEP_LAUNCHER(double, f64)
+
+// -- sum backward: broadcast a single value to every output element -----------
+//
+// `x.sum()`'s backward rule needs the one upstream scalar written into every
+// element of `x`'s original shape. `scalar` is read via a device pointer (the
+// same convention `k_scale` uses), so no value ever crosses back to the host.
+
+template <typename T>
+__global__ void k_broadcast_scalar(const T* scalar, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = *scalar;
+}
+
+#define BROADCAST_SCALAR_LAUNCHER(TYPE, SUFFIX)                                           \
+    extern "C" __declspec(dllexport) int cf_broadcast_scalar_##SUFFIX(                    \
+        const TYPE* scalar, TYPE* out, long long n) {                                     \
+        int blocks, threads;                                                              \
+        launch_config(n, blocks, threads);                                                \
+        k_broadcast_scalar<TYPE><<<blocks, threads>>>(scalar, out, n);                    \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+BROADCAST_SCALAR_LAUNCHER(float, f32)
+BROADCAST_SCALAR_LAUNCHER(double, f64)
+
 // -- matmul (naive, one thread per output element) ---------------------------
 //
 // Correctness-first as directed by the milestone brief: no tiling/shared

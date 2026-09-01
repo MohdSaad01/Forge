@@ -9,7 +9,12 @@ tensors are backed by genuine device memory (not a NumPy array wearing a
 operations fail with a clear `CUDAError` rather than silently running on
 CPU. `relu` is a real CUDA kernel as of Milestone 9 (see `test_module_cuda.py`
 for high-level `nn.Module`/`Linear`/`ReLU` CUDA execution tests); `exp`/`log`
-remain unsupported. See `docs/architecture/cuda-backend.md`.
+remain unsupported. As of Milestone 10, CUDA tensors support reverse-mode
+autograd for this module's supported forward operations -- see
+`tests/test_cuda_autograd.py` -- so this file's own forward-only tests build
+their differentiable-op examples with `requires_grad=False` leaves (the
+default) to stay focused on forward execution. See
+`docs/architecture/cuda-backend.md`.
 """
 
 from __future__ import annotations
@@ -300,24 +305,31 @@ def test_constructing_tensor_across_devices_without_to_raises_clearly():
         Tensor(cuda_t, device="cpu")
 
 
-# -- Autograd boundary: forward-only in this milestone -------------------------
+# -- Autograd: forward and backward supported for this module's ops (Milestone 10) --
+#
+# See `tests/test_cuda_autograd.py` for the full CUDA autograd test suite
+# (numerical CPU/CUDA gradient comparisons, Linear/ReLU/multi-layer backward,
+# device-mismatch errors, exp/log's clear CUDAError). These two tests just
+# confirm the *this-module's-scope* forward-only boundary from Milestones 8/9
+# is now gone: a differentiable op on a grad-requiring CUDA tensor no longer
+# raises, and `backward()` is no longer restricted to `cpu`.
 
 
-def test_differentiable_op_on_cuda_tensor_raises_clearly():
-    a = Tensor([1.0, 2.0], requires_grad=True).to("cuda")
-    # .to() always produces requires_grad=False; force it back on to exercise
-    # the guard directly, simulating a hypothetical future CUDA leaf Parameter.
-    a._requires_grad = True
-    b = Tensor([3.0, 4.0]).to("cuda")
-    b._requires_grad = True
-    with pytest.raises(UnsupportedDeviceError, match="[Aa]utomatic differentiation"):
-        a + b
+def test_differentiable_op_on_cuda_tensor_no_longer_raises():
+    a = Tensor([1.0, 2.0], device="cuda", requires_grad=True)
+    b = Tensor([3.0, 4.0], device="cuda", requires_grad=True)
+    c = a + b
+    assert c.requires_grad is True
+    assert c.grad_fn is not None
+    assert c.device.type == "cuda"
 
 
-def test_backward_on_cuda_tensor_raises_clearly():
+def test_backward_on_cuda_tensor_no_longer_raises():
     t = Tensor([1.0, 2.0], device="cuda", requires_grad=True)
-    with pytest.raises(UnsupportedDeviceError, match="cpu"):
-        t.backward(Tensor([1.0, 1.0], device="cuda"))
+    t.backward(Tensor([1.0, 1.0], device="cuda"))
+    assert t.grad is not None
+    assert t.grad.device.type == "cuda"
+    np.testing.assert_allclose(t.grad.to("cpu").numpy(), [1.0, 1.0], **TOL)
 
 
 def test_transfer_never_carries_requires_grad_across_devices():

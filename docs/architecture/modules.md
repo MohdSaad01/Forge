@@ -1,4 +1,4 @@
-# Modules and Parameters (Milestone 3 + 9)
+# Modules and Parameters (Milestone 3 + 9; CUDA autograd boundary updated in Milestone 10)
 
 ## Package layout
 ```
@@ -198,6 +198,6 @@ Parameter.grad (Parameter is a leaf Tensor)
 - `forge.random` is a single global generator, not a per-module or thread-local RNG.
 - No buffer concept (see **No buffers to move** above) -- `Module.to()` moves `Parameter`s only.
 - `Module.to()` moves `Parameter`s, never a module's plain Python attributes -- an `in_features`-style config int, or any non-Tensor/non-Module attribute, is left exactly as constructed.
-- A CUDA-resident model's forward pass must run inside `forge.no_grad()` (see `docs/architecture/cuda-backend.md`); a bare forward call raises `UnsupportedDeviceError`, since `Module.to()` preserves `requires_grad=True` and CUDA autograd is unsupported.
+- As of Milestone 10, a CUDA-resident model's forward pass no longer needs `forge.no_grad()`: since `Module.to()` preserves `requires_grad=True` and CUDA autograd is now supported for `Linear`/`ReLU`'s operations, a bare forward call succeeds and builds a real graph, and `backward()` on the result runs on CUDA -- see `docs/architecture/cuda-backend.md`'s **CUDA autograd** section. `no_grad()` remains available (and still suspends graph construction on CUDA exactly as on CPU) for inference-only forward passes.
 
 As of Milestone 4, an optimizer (`forge.optim.SGD`) exists and updates `Parameter` data from `.grad` -- see `docs/architecture/optimization.md`. As of Milestone 9, `Module.to(device)` moves a module tree's `Parameter`s between CPU and CUDA -- see **Device movement** above and `docs/architecture/cuda-backend.md`.

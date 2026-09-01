@@ -241,14 +241,18 @@ def test_cuda_full_model_forward_matches_cpu():
     np.testing.assert_allclose(cuda_out.to("cpu").numpy(), cpu_out.numpy(), **TOL)
 
 
-def test_cuda_full_model_forward_without_no_grad_raises_immediately():
-    """Parameters keep requires_grad=True after `.to()`; building a graph on CUDA is
-    still unsupported (unchanged M8 boundary), so a bare (non-`no_grad`) forward call
-    raises immediately rather than silently succeeding or building a broken graph."""
+def test_cuda_full_model_forward_without_no_grad_now_builds_a_graph():
+    """Parameters keep requires_grad=True after `.to()`. As of Milestone 10, CUDA
+    autograd is supported for this model's operations, so a bare (non-`no_grad`)
+    forward call now succeeds and builds a real graph -- superseding the M8/M9
+    boundary where this raised `UnsupportedDeviceError` (see `test_cuda_autograd.py`
+    for the full CUDA-autograd test suite)."""
     model = MLP().to("cuda")
     x_cuda = Tensor(np.zeros((2, 4), dtype=np.float32)).to("cuda")
-    with pytest.raises(UnsupportedDeviceError, match="[Aa]utomatic differentiation"):
-        model(x_cuda)
+    out = model(x_cuda)
+    assert out.requires_grad is True
+    assert out.grad_fn is not None
+    assert out.device.type == "cuda"
 
 
 def test_cuda_model_forward_does_not_call_cpu_backend(monkeypatch):
@@ -274,16 +278,25 @@ def test_cuda_model_forward_does_not_call_cpu_backend(monkeypatch):
     assert isinstance(out._data, CUDAStorage)
 
 
-# -- Autograd boundary -----------------------------------------------------------
+# -- Autograd (Milestone 10) ------------------------------------------------------
+#
+# The full CUDA-autograd test suite (numerical CPU/CUDA gradient comparisons,
+# device-mismatch errors, multi-layer models, SGD) lives in
+# `tests/test_cuda_autograd.py`. This one test stays here because it is
+# specifically about *this file's* `MLP` -- proving a real, non-`no_grad`
+# forward/backward round trip through the high-level Module/Linear/ReLU API
+# now succeeds and produces CUDA-resident parameter gradients, superseding
+# the M8/M9 "CUDA backward always raises" boundary.
 
 
-def test_cuda_model_backward_fails_clearly():
+def test_cuda_model_backward_now_produces_cuda_resident_gradients():
     model = MLP().to("cuda")
     x_cuda = Tensor(np.random.default_rng(9).standard_normal((3, 4)).astype(np.float32)).to("cuda")
-    with forge.no_grad():
-        out = model(x_cuda)
-    with pytest.raises(UnsupportedDeviceError, match="cpu"):
-        out.sum().backward()
+    out = model(x_cuda)
+    out.sum().backward()
+    for name, param in model.named_parameters():
+        assert param.grad is not None, name
+        assert param.grad.device.type == "cuda", name
 
 
 # -- Persistence / Trainer boundaries (documented, not implemented in M9) --------

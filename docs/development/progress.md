@@ -186,3 +186,66 @@ same suites skip cleanly (`86 skipped`, `0 failed`) with the CUDA toolchain
 removed from `PATH`, and the CPU-only suite (338 tests) is unaffected. 424
 tests total (338 CPU-only + 86 CUDA). See `docs/architecture/cuda-backend.md`
 and `docs/architecture/modules.md`.
+
+### M10 — CUDA autograd
+Extends the M8-M9 CUDA backend from forward-only execution to full
+reverse-mode autograd, closing the "No CUDA autograd" limitation carried
+since Milestone 8: a CUDA computation graph now builds and differentiates
+entirely on the GPU, with CUDA-resident gradients and a CUDA-executing
+`SGD.step()`, with no CPU fallback at any point. Backward computation
+became backend-aware rather than a second autograd engine -- seven new
+`Backend` ABC methods (`add_backward`, `sub_backward`, `mul_backward`,
+`matmul_backward`, `sum_backward`, `reshape_backward`, `relu_backward`) plus
+`sgd_step`, implemented once in `CPUBackend` (NumPy math relocated from the
+now-deleted `forge/autograd/functions.py`) and once in `CUDABackend` (real
+CUDA kernels: `cf_neg`, `cf_relu_backward`, `cf_scale`, `cf_transpose`,
+`cf_reduce_rows`, `cf_broadcast_scalar`, `cf_sgd_step`, composed with
+existing forward kernels wherever the math allows it -- e.g. `matmul`
+backward reuses the forward `matmul`/`reshape` kernels against a freshly
+transposed operand). `Tensor`'s backward closures (`forge/tensor/tensor.py`)
+became thin wrappers calling `get_backend(device).<op>_backward(...)`;
+`forge/autograd/engine.py`'s graph-traversal logic (`Node`, `run_backward`,
+`no_grad`) needed no device-specific changes beyond dispatching
+multi-consumer gradient accumulation through `Backend.add()` (a
+`CUDAStorage` has no `__add__`). See ADR-005 for the full design rationale.
+`Tensor.backward()` dropped its CPU-only restriction and gained explicit
+device/dtype consistency checks for an upstream `gradient` argument;
+`Tensor._differentiable_wrap` dropped the M8 guard that refused to attach a
+`grad_fn` on a non-CPU device (an unsupported CUDA op like `exp`/`log`
+still fails clearly, but now via its own forward call raising `CUDAError`,
+before `_differentiable_wrap` is ever reached, rather than via a separate
+device check). `Module.to("cuda")`'s long-standing "forward pass must run
+inside `forge.no_grad()`" boundary is gone: a bare CUDA forward call now
+builds a real graph, and `backward()` on CUDA output now succeeds. A real,
+unrelated latent bug was found and fixed along the way:
+`CUDABackend.from_array` used `np.ascontiguousarray`, which silently
+promotes a 0-d array to shape `(1,)` -- invisible until a genuine CUDA
+scalar (a loss, or `x.sum()`) was produced and used in further arithmetic,
+which Milestone 10's real training-loop verification was the first thing
+to actually exercise. Supported CUDA backward operations are deliberately
+the same small set M8-M9 support forward: `add`/`sub`/`mul` (exact-shape
+and the one row-broadcast shape), `matmul` (1D/2D), `sum` (full reduction),
+`reshape`, `relu` -- `exp`/`log` remain CPU-only in both directions, and
+CUDA `sum(axis=...)`/general N-D broadcasting remain unsupported forward,
+so backward never needs to handle them either. Verified on the actual
+development GPU (940MX, CC 5.0, driver 582.53, CUDA Toolkit 12.6): the new
+`tests/test_cuda_autograd.py` plus updated `tests/test_cuda_backend.py`/
+`tests/test_module_cuda.py` (121 CUDA tests total; 459 tests overall) pass
+directly on this machine, covering CPU/CUDA gradient agreement for every
+supported operation (including both row-broadcast operand orders and all
+four matmul 1D/2D cases, plus a finite-difference check), ReLU backward
+across positive/negative/zero/mixed inputs, a real `Linear` and a
+`Linear -> ReLU -> Linear` multi-layer model whose CUDA-resident gradients
+match CPU, gradient accumulation across multiple consumers of one CUDA
+tensor, device/dtype-mismatch errors on `backward()`, `exp`/`log` still
+failing clearly, `no_grad()` still suspending CUDA graph construction, a
+structural check that a full CUDA model forward+backward pass calls zero
+`CPUBackend` methods, CUDA `SGD` matching an equivalent CPU step, and a
+real 20-epoch CUDA training loop (`TensorDataset` -> `DataLoader` ->
+`Linear.to("cuda")` -> `MSELoss` -> `SGD`) that drops loss over 20x and
+recovers the true regression weights. The full suite was also run with the
+CUDA toolchain stripped from `PATH` to confirm all 121 CUDA tests skip
+cleanly (`338 passed, 121 skipped`, `0 failed`). `Trainer`/`DataLoader`/
+persistence remain CPU-only and unmodified, per the milestone's explicit
+scope. See `docs/architecture/autograd.md`, `docs/architecture/cuda-backend.md`,
+`docs/architecture/decisions/ADR-005-backend-aware-autograd.md`.

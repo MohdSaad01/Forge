@@ -1,4 +1,4 @@
-# Losses and Optimization (Milestone 4)
+# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10)
 
 ## Package layout
 ```
@@ -67,10 +67,12 @@ parameter = parameter - learning_rate * gradient
 `step()` skips any parameter whose `.grad is None` (e.g. a parameter unused by the current forward pass) rather than treating it as an error -- consistent with autograd only accumulating `.grad` for tensors actually reached by `backward()`.
 
 ### Parameter mutation does not extend the autograd graph
-`SGD.step()` updates `param._data -= lr * param.grad._data` -- a direct, in-place NumPy mutation of the parameter's backing storage, not a Tensor arithmetic expression (`param - lr * param.grad` would go through `Tensor.__sub__`/`__mul__`, allocate a new `Tensor`, and -- since `lr * param.grad` does not itself require grad but the result would still be freshly wrapped -- reassigning `param` to that new Tensor would replace the actual `Parameter` object model code and the optimizer both hold a reference to, breaking identity). Mutating `._data` in place instead:
-- Never attaches a `grad_fn`: `param.grad_fn` stays `None` and `param.is_leaf` stays `True` after `step()`.
+`SGD.step()` calls `param._data = backend.sgd_step(param._data, param.grad._data, self.lr)`, where `backend = get_backend(param.device)` (Milestone 10) -- a direct, in-place storage mutation of the parameter's backing data, not a Tensor arithmetic expression (`param - lr * param.grad` would go through `Tensor.__sub__`/`__mul__`, allocate a new `Tensor`, and -- since `lr * param.grad` does not itself require grad but the result would still be freshly wrapped -- reassigning `param` to that new Tensor would replace the actual `Parameter` object model code and the optimizer both hold a reference to, breaking identity). This is the same reasoning that drove the original Milestone 4 design (`param._data -= lr * param.grad._data`, plain NumPy in-place arithmetic); Milestone 10 only changes *how* that in-place update is performed, not *why* it is in-place:
+- **CPU**: `CPUBackend.sgd_step` still does `data -= lr * grad; return data` -- identical to the Milestone 4 behavior, `param._data` stays the same `np.ndarray` object.
+- **CUDA**: `CUDABackend.sgd_step` launches one kernel (`cf_sgd_step`, `param[i] -= lr * grad[i]`) that mutates the existing `CUDAStorage` buffer in place and returns the same object -- no new `cudaMalloc`, no host round-trip. See `docs/architecture/cuda-backend.md`'s **CUDA `SGD.step()`** section.
+- Never attaches a `grad_fn`: `param.grad_fn` stays `None` and `param.is_leaf` stays `True` after `step()`, on either device.
 - Preserves the `Parameter` object's identity, so `model.fc1.weight` and the optimizer's stored reference stay the same object across every step.
-- Matches the spec's framing directly: an optimizer update is a state change, not a differentiable model operation.
+- Matches the spec's framing directly: an optimizer update is a state change, not a differentiable model operation. `SGD` itself contains no CUDA-specific code -- `Backend.sgd_step` is the one dispatch point, matching every other operation's `Tensor -> Backend` boundary; there is no separate `CUDA_SGD` class.
 
 ## Gradient lifecycle
 The expected training sequence, unchanged from the spec:
@@ -86,6 +88,6 @@ optimizer.step()        # in-place parameter update from .grad; no new graph
 ## Known limitations
 - SGD only: no momentum, Adam, RMSProp, weight decay, or learning-rate schedules.
 - No training engine/`Trainer`, `DataLoader`, or dataset abstraction yet -- the training loop above is written by hand in this milestone.
-- Losses and the optimizer are CPU-only, matching the rest of Forge at this milestone; no CUDA-specific loss/optimizer path exists.
+- Losses remain CPU-only in practice where they depend on `.exp()`/`.log()` (`CrossEntropyLoss`; CUDA has no kernel for either -- see `docs/architecture/cuda-backend.md`), but `MSELoss` (built only from `-`, `*`, `.sum()`) works on CUDA like any other differentiable Tensor expression. As of Milestone 10, `SGD` is device-aware via `Backend.sgd_step()` -- see **Parameter mutation does not extend the autograd graph** above; no CUDA-specific optimizer class exists.
 - `CrossEntropyLoss` supports exactly the `(batch_size, num_classes)` / `(batch_size,)` shape convention; no class weighting, label smoothing, or ignored-index support.
 - `Tensor.log()` has no domain validation; calling it directly (outside `CrossEntropyLoss`'s controlled use) on non-positive values produces NumPy's usual `-inf`/`nan` rather than a Forge-level error.
