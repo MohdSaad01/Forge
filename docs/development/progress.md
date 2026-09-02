@@ -726,3 +726,88 @@ tests skip cleanly (`556 passed, 269 skipped`, `0 failed`). See
 `docs/architecture/optimization.md`'s **Adam** section and
 `docs/architecture/cuda-backend.md`'s **CUDA Adam** section.
 MaxPool2d** section.
+
+### M19 — Forge command-line interface
+Adds a thin `forge`/`python -m forge` command-line adapter on top of the
+existing persistence and benchmark APIs: a new `forge/cli/` package
+(`main.py` -- top-level `argparse` command tree and dispatch; `model.py`/
+`checkpoint.py` -- `inspect`/`convert` subcommands; `benchmark.py` -- a
+pass-through to the existing `benchmarks` package; `errors.py` -- `CLIError`,
+the CLI's own user-facing error type; `_archive_info.py` -- shared, read-only
+archive-metadata access) plus `forge/__main__.py` and a `forge` console-script
+entry point (`pyproject.toml`'s new `[project.scripts]`). `forge/__init__.py`
+was not changed -- `import forge` still never imports `forge.cli`, matching
+the same "not required for normal package import" principle Milestone 11
+established for `benchmarks/`.
+
+**`model inspect`/`checkpoint inspect` deliberately never call `load_model()`/
+`load_checkpoint()`.** Both read only `metadata.json` via
+`forge.serialization.archive.read_archive()` -- the same low-level primitive
+those two higher-level functions call internally -- and walk the saved
+module-tree JSON directly (`_archive_info.py`'s `walk_modules`/
+`walk_parameters`), rather than reconstructing a live `Module`/`Optimizer`.
+This was a deliberate departure from the milestone brief's general "call
+`load_model`/`load_checkpoint`" guidance, made for three reasons specific to
+inspection, all verified by test: (1) `load_checkpoint()`'s documented
+contract includes overwriting `forge.random`'s process-global RNG state as
+part of restoring a checkpoint -- exactly the state mutation Milestone 19's
+"inspect commands must be read-only" requirement forbids, so `checkpoint
+inspect` cannot safely call it; (2) reading metadata only never touches a
+backend, so both inspect commands work identically on a CPU-only machine
+regardless of whether the archive itself was saved on CUDA (unlike
+`load_model`/`load_checkpoint`, which need a real CUDA backend to restore a
+CUDA-recorded archive onto its own device); (3) it does not require the
+saved module/optimizer types to be registered in the current process, since
+their names/configs/shapes already sit in the archive's plain JSON metadata.
+`model convert`/`checkpoint convert`, which are not read-only operations,
+call `forge.load_model()`/`save_model()`/`load_checkpoint()`/
+`save_checkpoint()` directly and unmodified -- exactly as a Python caller
+would -- inheriting `load_checkpoint()`'s RNG side effect as expected/
+documented behavior for that command, and Forge's existing explicit-device,
+no-silent-fallback policy (an unavailable `--device cuda` fails clearly,
+never falling back to CPU).
+
+`forge benchmark` forwards every argument after `benchmark` unparsed to
+`benchmarks.run.main()` (via `argparse.parse_known_args()` at the top level,
+after an `argparse.REMAINDER` positional was tried first and found to drop a
+leading `--flag` when nested under `add_subparsers()` -- a known `argparse`
+limitation, not a Forge-specific bug), so `--categories`/`--output`/category
+selection logic remains defined in exactly one place. Since `benchmarks/` is
+deliberately excluded from `forge`'s own package installation (Milestone
+11), this command only works from within the Forge repository; run outside
+it, the lazy `from benchmarks.run import main` import fails and is turned
+into one clear `CLIError` rather than a raw `ImportError` traceback.
+
+`forge/cli/main.py` catches both `CLIError` and `forge.exceptions.ForgeError`
+(covering essentially every ordinary user error other functions raise --
+missing file, malformed archive, unsupported format version, unavailable
+CUDA) in one place, printing `Error: ...` to stderr and exiting 1 with no
+traceback; `argparse`'s own errors (invalid `--device` choice, unknown
+command, missing required argument) keep their standard exit status 2; any
+other, truly unexpected exception is left to propagate with its full
+traceback rather than being swallowed.
+
+New test file `tests/test_cli.py` (26 tests, invoking `forge.cli.main.main()`
+directly rather than via subprocess -- the exact function both entry points
+call): `--help`/unknown-command/missing-subcommand exit codes; model/
+checkpoint inspection in both text and `--json` form; a structural proof that
+`model inspect` never calls `is_cuda_available()` even when the inspected
+archive's metadata is tampered to record `"device": "cuda"`; a direct proof
+that `checkpoint inspect` leaves `forge.random.get_state()` byte-for-byte
+unchanged; missing-file/malformed-archive/unsupported-version error handling
+for both inspect commands; CPU->CPU model and checkpoint conversion round
+trips (including a checkpoint with real trained Adam state); invalid
+`--device` choice and missing-output-directory handling; CUDA-unavailable
+conversion handling via a monkeypatched `is_cuda_available` (deterministic,
+no hardware required); the `forge benchmark` argument-forwarding contract
+(monkeypatched `benchmarks.run.main`) and its missing-package error path; and
+two hardware-required tests (`pytest.mark.skipif(not is_cuda_available())`,
+matching every other CUDA suite's convention) driving real
+`forge model convert`/`forge checkpoint convert` CPU->CUDA->CPU round trips
+through the actual CLI entry point and confirming genuine `CUDAStorage`
+(model parameters and Adam `m`/`v` state alike) at each step -- never a NumPy
+array relabeled as CUDA. 891 tests total (24 new CPU-only CLI tests plus 2
+new hardware-verified CUDA CLI tests), verified directly on the development
+GPU (940MX, CC 5.0, driver 582.53, CUDA Toolkit 12.6); the full suite
+(`python -m pytest`) passes with `0 failed`. See `docs/development/cli.md`
+for the full command reference.
