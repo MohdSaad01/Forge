@@ -811,3 +811,43 @@ new hardware-verified CUDA CLI tests), verified directly on the development
 GPU (940MX, CC 5.0, driver 582.53, CUDA Toolkit 12.6); the full suite
 (`python -m pytest`) passes with `0 failed`. See `docs/development/cli.md`
 for the full command reference.
+
+## Phase 9 — Validation & Release
+
+### M20 — End-to-end MNIST example and validation suite
+A realistic integration workload exercising the framework core together, not new framework
+features. New `examples/mnist/` package: `dataset.py` (`MNISTDataset`, a `forge.data.Dataset`
+parsing the standard IDX file format, plus `download_mnist()` fetching the four standard files via
+plain `urllib` from a public mirror -- never downloaded implicitly), `model.py` (`build_model()`, a
+~27.6k-parameter `Conv2d/ReLU/MaxPool2d x2 -> Flatten -> Linear/ReLU/Linear` CNN built entirely from
+existing `forge.nn` layers), `train.py` (a runnable CLI script wiring
+`MNISTDataset -> DataLoader -> Trainer -> CrossEntropyLoss -> Adam`, with `--device cpu|cuda`,
+`--resume` for checkpoint continuation, and a model-persistence round-trip check), and `README.md`.
+`examples/` was made an importable package (`examples/__init__.py`, `examples/mnist/__init__.py`)
+so `tests/` can exercise `build_model()` directly without a download.
+
+Hardware-verified end to end on both devices (real MNIST, this repository's CPU and the 940MX):
+CPU reached 90.1%/97.0% train/val accuracy after 1 epoch (0.346 -> loss), 97.1%/97.8% after a
+`--resume`-continued second epoch; CUDA matched within floating-point tolerance at the same seed
+(90.1%/97.0%) and ran at roughly 1.5-1.7x CPU sample throughput on this small architecture/batch
+size -- a real but modest speedup, reported as observed rather than tuned. Verified directly:
+`forge model inspect`/`forge checkpoint inspect` (M19 CLI) against `train.py`'s generated
+artifacts; CUDA residency of every `Parameter`, every `Parameter.grad`, and Adam's `m`/`v` state
+(no `CPUBackend` fallback); checkpoint save -> reload -> resume continuing epoch/global_step
+correctly; and reloaded-model prediction consistency (CPU and CUDA).
+
+Two new CI-run test files use a fast synthetic `(N, 1, 28, 28)` stand-in dataset (10
+distinguishable-stripe classes) rather than the real ~11MB download, per the milestone brief's
+"integration tests must not require the full dataset": `tests/test_mnist_example_integration.py`
+(7 tests, CPU) covers dataset/model shape, training loss reduction with accuracy well above the
+10%-chance baseline, parameter updates, checkpoint save/restore (model state, Adam state,
+epoch/global_step, device), **resume equivalence** (continuous `N+M`-epoch training vs.
+`N`-epochs -> checkpoint -> reload -> `M`-epochs matching within `1e-5`, using `shuffle=False` so
+no caller-owned `DataLoader` generator state is left uncontrolled), model save/load prediction
+consistency, and CLI inspection of generated artifacts. `tests/test_mnist_example_cuda_integration.py`
+(4 tests, `pytest.mark.skipif(not is_cuda_available())`, hardware-verified on the 940MX) mirrors the
+training/residency/checkpoint/persistence tests on CUDA. 902 tests total (891 existing + 11 new);
+the full suite (`python -m pytest`) passes with `0 failed` -- no existing test was modified, and no
+framework code changed (the milestone required none). `examples/mnist/data/` and
+`examples/mnist/artifacts*/` (downloaded data, generated run outputs) are `.gitignore`d as
+machine-local and reproducible. See `examples/mnist/README.md` for the full reproduction guide.
