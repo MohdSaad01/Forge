@@ -18,7 +18,7 @@ import pytest
 import forge
 from forge import Tensor, no_grad
 from forge.exceptions import PersistenceError
-from forge.nn import Linear, Module, ReLU
+from forge.nn import Conv2d, Linear, MaxPool2d, Module, ReLU
 from forge.serialization import load_model, register_module, save_model
 from forge.serialization.archive import METADATA_ENTRY, PARAMETERS_DIR
 
@@ -116,6 +116,114 @@ def test_linear_without_bias_round_trips(tmp_path):
 
     assert loaded.bias is None
     assert set(dict(loaded.named_parameters())) == {"weight"}
+
+
+# -- Conv2d / MaxPool2d round-trip (Milestone 15) --------------------------
+
+
+def test_save_load_conv2d_restores_architecture_and_parameters(tmp_path):
+    model = Conv2d(3, 5, kernel_size=(3, 4), stride=2, padding=1)
+    path = tmp_path / "conv2d.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    assert isinstance(loaded, Conv2d)
+    assert loaded.in_channels == 3
+    assert loaded.out_channels == 5
+    assert loaded.kernel_size == (3, 4)
+    assert loaded.stride == (2, 2)
+    assert loaded.padding == (1, 1)
+    assert loaded.weight.shape == model.weight.shape
+    assert loaded.bias.shape == model.bias.shape
+    assert np.array_equal(loaded.weight.numpy(), model.weight.numpy())
+    assert np.array_equal(loaded.bias.numpy(), model.bias.numpy())
+
+
+def test_conv2d_without_bias_round_trips(tmp_path):
+    model = Conv2d(2, 3, kernel_size=3, bias=False)
+    path = tmp_path / "conv2d_no_bias.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    assert loaded.bias is None
+    assert set(dict(loaded.named_parameters())) == {"weight"}
+
+
+def test_save_load_conv2d_predictions_match(tmp_path):
+    model = Conv2d(2, 4, kernel_size=3, stride=1, padding=1)
+    path = tmp_path / "conv2d.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    x = Tensor(np.random.default_rng(9).standard_normal((3, 2, 6, 6)))
+    with no_grad():
+        assert np.allclose(model(x).numpy(), loaded(x).numpy())
+
+
+def test_save_load_maxpool2d_restores_configuration(tmp_path):
+    model = MaxPool2d(3, stride=2, padding=1)
+    path = tmp_path / "maxpool2d.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    assert isinstance(loaded, MaxPool2d)
+    assert loaded.kernel_size == (3, 3)
+    assert loaded.stride == (2, 2)
+    assert loaded.padding == (1, 1)
+    assert dict(loaded.named_parameters()) == {}
+
+
+def test_save_load_maxpool2d_predictions_match(tmp_path):
+    model = MaxPool2d(2)
+    path = tmp_path / "maxpool2d.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    x = Tensor(np.random.default_rng(10).standard_normal((2, 3, 8, 8)))
+    with no_grad():
+        assert np.allclose(model(x).numpy(), loaded(x).numpy())
+
+
+class TinyCNN(Module):
+    """Conv2d -> ReLU -> MaxPool2d -> Linear, registered below for persistence."""
+
+    def __init__(self):
+        super().__init__()
+        self.conv = Conv2d(1, 4, kernel_size=3)
+        self.relu = ReLU()
+        self.pool = MaxPool2d(2)
+        self.fc = Linear(4 * 3 * 3, 2)
+
+    def forward(self, x):
+        x = self.pool(self.relu(self.conv(x)))
+        return self.fc(x.reshape(x.shape[0], x.shape[1] * x.shape[2] * x.shape[3]))
+
+
+register_module("TinyCNN", TinyCNN, get_config=lambda m: {})
+
+
+def test_save_load_nested_cnn_all_parameters_match(tmp_path):
+    model = TinyCNN()
+    path = tmp_path / "cnn.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    original = dict(model.named_parameters())
+    restored = dict(loaded.named_parameters())
+    assert set(original) == set(restored) == {"conv.weight", "conv.bias", "fc.weight", "fc.bias"}
+    for name in original:
+        assert np.array_equal(original[name].numpy(), restored[name].numpy())
+
+
+def test_save_load_nested_cnn_predictions_match(tmp_path):
+    model = TinyCNN()
+    path = tmp_path / "cnn.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    x = Tensor(np.random.default_rng(11).standard_normal((2, 1, 8, 8)))
+    with no_grad():
+        assert np.allclose(model(x).numpy(), loaded(x).numpy())
 
 
 # -- nested model round-trip -----------------------------------------------

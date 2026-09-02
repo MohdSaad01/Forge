@@ -10,8 +10,22 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 from .base import Backend
+
+
+def _pad_nchw(a: np.ndarray, ph: int, pw: int, value: float) -> np.ndarray:
+    """Zero- (or `value`-) pad the last two (H, W) axes of an NCHW array."""
+    if ph == 0 and pw == 0:
+        return a
+    return np.pad(a, ((0, 0), (0, 0), (ph, ph), (pw, pw)), mode="constant", constant_values=value)
+
+
+def _sliding_windows(padded: np.ndarray, kh: int, kw: int, sh: int, sw: int) -> np.ndarray:
+    """(N, C, Hp, Wp) -> (N, C, H_out, W_out, kh, kw) strided window view (no copy)."""
+    windows = sliding_window_view(padded, (kh, kw), axis=(2, 3))
+    return windows[:, :, ::sh, ::sw, :, :]
 
 
 def _reduce_grad_to_shape(grad: np.ndarray, shape: "tuple[int, ...]") -> np.ndarray:
@@ -128,3 +142,107 @@ class CPUBackend(Backend):
 
     def max_axis1(self, a: np.ndarray) -> np.ndarray:
         return np.max(a, axis=1, keepdims=True)
+
+    # -- Conv2d / MaxPool2d (Milestone 15) -----------------------------------
+    #
+    # Both implementations are im2col-style: build a strided (zero-copy)
+    # sliding-window view of the (padded) input via `sliding_window_view`,
+    # then reduce it with vectorized NumPy/BLAS ops (a big matmul for
+    # `conv2d`, a max reduction for `max_pool2d`) rather than a Python loop
+    # over every output element. Backward recomputes the same window view
+    # from the saved forward input (`x`/`a`) -- the same "recompute from a
+    # saved input" convention `relu_backward`/`exp_backward` already use --
+    # and scatters each window position's contribution back with a small
+    # (kh*kw-iteration) loop of strided `+=` accumulation, which correctly
+    # sums overlapping windows when `stride < kernel_size`.
+
+    def conv2d(self, x: np.ndarray, weight: np.ndarray, bias: "np.ndarray | None",
+               stride: "tuple[int, int]", padding: "tuple[int, int]") -> np.ndarray:
+        N, Cin, H, W = x.shape
+        Cout, _, KH, KW = weight.shape
+        SH, SW = stride
+        PH, PW = padding
+        H_out = (H + 2 * PH - KH) // SH + 1
+        W_out = (W + 2 * PW - KW) // SW + 1
+
+        padded = _pad_nchw(x, PH, PW, 0.0)
+        windows = _sliding_windows(padded, KH, KW, SH, SW)  # (N, Cin, H_out, W_out, KH, KW)
+        cols = windows.transpose(0, 2, 3, 1, 4, 5).reshape(N, H_out * W_out, Cin * KH * KW)
+        w_flat = weight.reshape(Cout, Cin * KH * KW)
+
+        out = cols @ w_flat.T  # (N, H_out*W_out, Cout), batched matmul
+        out = out.transpose(0, 2, 1).reshape(N, Cout, H_out, W_out)
+        if bias is not None:
+            out = out + bias.reshape(1, Cout, 1, 1)
+        return np.ascontiguousarray(out)
+
+    def conv2d_backward(
+        self, grad_output: np.ndarray, x: np.ndarray, weight: np.ndarray, bias: "np.ndarray | None",
+        stride: "tuple[int, int]", padding: "tuple[int, int]",
+    ) -> "tuple[np.ndarray, np.ndarray, np.ndarray | None]":
+        N, Cin, H, W = x.shape
+        Cout, _, KH, KW = weight.shape
+        SH, SW = stride
+        PH, PW = padding
+        H_out, W_out = grad_output.shape[2], grad_output.shape[3]
+
+        padded = _pad_nchw(x, PH, PW, 0.0)
+        windows = _sliding_windows(padded, KH, KW, SH, SW)  # (N, Cin, H_out, W_out, KH, KW)
+        cols = windows.transpose(0, 2, 3, 1, 4, 5).reshape(N, H_out * W_out, Cin * KH * KW)
+
+        grad_out_rows = grad_output.transpose(0, 2, 3, 1).reshape(N * H_out * W_out, Cout)
+        cols_rows = cols.reshape(N * H_out * W_out, Cin * KH * KW)
+
+        grad_weight = (grad_out_rows.T @ cols_rows).reshape(Cout, Cin, KH, KW)
+        grad_bias = grad_output.sum(axis=(0, 2, 3)) if bias is not None else None
+
+        w_flat = weight.reshape(Cout, Cin * KH * KW)
+        grad_cols = (grad_out_rows @ w_flat).reshape(N, H_out, W_out, Cin, KH, KW)
+
+        grad_padded = np.zeros((N, Cin, H + 2 * PH, W + 2 * PW), dtype=x.dtype)
+        for di in range(KH):
+            for dj in range(KW):
+                grad_padded[:, :, di : di + SH * H_out : SH, dj : dj + SW * W_out : SW] += (
+                    grad_cols[:, :, :, :, di, dj].transpose(0, 3, 1, 2)
+                )
+        grad_x = np.ascontiguousarray(grad_padded[:, :, PH : PH + H, PW : PW + W])
+        return grad_x, grad_weight, grad_bias
+
+    def max_pool2d(
+        self, a: np.ndarray, kernel_size: "tuple[int, int]", stride: "tuple[int, int]", padding: "tuple[int, int]"
+    ) -> np.ndarray:
+        KH, KW = kernel_size
+        SH, SW = stride
+        PH, PW = padding
+        padded = _pad_nchw(a, PH, PW, -np.inf)
+        windows = _sliding_windows(padded, KH, KW, SH, SW)  # (N, C, H_out, W_out, KH, KW)
+        return np.ascontiguousarray(windows.max(axis=(4, 5)))
+
+    def max_pool2d_backward(
+        self, grad_output: np.ndarray, a: np.ndarray, kernel_size: "tuple[int, int]",
+        stride: "tuple[int, int]", padding: "tuple[int, int]",
+    ) -> np.ndarray:
+        N, C, H, W = a.shape
+        KH, KW = kernel_size
+        SH, SW = stride
+        PH, PW = padding
+        H_out, W_out = grad_output.shape[2], grad_output.shape[3]
+
+        padded = _pad_nchw(a, PH, PW, -np.inf)
+        windows = _sliding_windows(padded, KH, KW, SH, SW)  # (N, C, H_out, W_out, KH, KW)
+        # First occurrence (in row-major kh-then-kw scan order) of each
+        # window's maximum wins ties -- `np.argmax`'s own documented
+        # tie-breaking rule, applied to the window flattened in that order.
+        flat = windows.reshape(N, C, H_out, W_out, KH * KW)
+        argmax_idx = np.argmax(flat, axis=-1)
+        onehot = np.zeros_like(flat)
+        np.put_along_axis(onehot, argmax_idx[..., None], 1.0, axis=-1)
+        onehot = onehot.reshape(N, C, H_out, W_out, KH, KW)
+
+        grad_padded = np.zeros((N, C, H + 2 * PH, W + 2 * PW), dtype=a.dtype)
+        for di in range(KH):
+            for dj in range(KW):
+                grad_padded[:, :, di : di + SH * H_out : SH, dj : dj + SW * W_out : SW] += (
+                    onehot[:, :, :, :, di, dj] * grad_output
+                )
+        return np.ascontiguousarray(grad_padded[:, :, PH : PH + H, PW : PW + W])

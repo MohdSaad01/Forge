@@ -114,3 +114,36 @@ class Backend(ABC):
         needs to flow through the max itself), so there is no
         `max_axis1_backward` counterpart.
         """
+
+    # -- Conv2d / MaxPool2d (Milestone 15) ----------------------------------
+    #
+    # `x`/`weight`/`bias` are raw backend storage (a `np.ndarray` for
+    # `CPUBackend`, a `CUDAStorage` for `CUDABackend`) in NCHW / (C_out,
+    # C_in, KH, KW) / (C_out,) layout, matching every other `Backend` method.
+    # `stride`/`padding` are always `(height, width)` int pairs by the time
+    # they reach the backend -- `Tensor.conv2d`/`Tensor.max_pool2d` normalize
+    # a bare int before calling here. `bias` may be `None` (no bias term).
+
+    @abstractmethod
+    def conv2d(self, x: Any, weight: Any, bias: "Any | None", stride: "tuple[int, int]", padding: "tuple[int, int]") -> Any:
+        """2D cross-correlation forward: NCHW `x`, (C_out, C_in, KH, KW) `weight`."""
+
+    @abstractmethod
+    def conv2d_backward(
+        self, grad_output: Any, x: Any, weight: Any, bias: "Any | None",
+        stride: "tuple[int, int]", padding: "tuple[int, int]",
+    ) -> "tuple[Any, Any, Any | None]":
+        """Returns `(grad_x, grad_weight, grad_bias)`; `grad_bias` is `None` iff `bias` is."""
+
+    @abstractmethod
+    def max_pool2d(
+        self, x: Any, kernel_size: "tuple[int, int]", stride: "tuple[int, int]", padding: "tuple[int, int]"
+    ) -> Any:
+        """2D max pooling forward over NCHW `x`."""
+
+    @abstractmethod
+    def max_pool2d_backward(
+        self, grad_output: Any, x: Any, kernel_size: "tuple[int, int]",
+        stride: "tuple[int, int]", padding: "tuple[int, int]",
+    ) -> Any:
+        """Gradient w.r.t. `x`, recomputing each window's argmax from the saved input `x`."""

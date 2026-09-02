@@ -337,6 +337,118 @@ class Tensor:
 
         return self._differentiable_wrap(result, (self,), backward_fn, "log")
 
+    # -- Conv2d / MaxPool2d (Milestone 15) --------------------------------------
+
+    def conv2d(
+        self,
+        weight: "Tensor",
+        bias: "Tensor | None",
+        stride: "tuple[int, int]",
+        padding: "tuple[int, int]",
+    ) -> "Tensor":
+        """2D cross-correlation: `self` is NCHW, `weight` is (C_out, C_in, KH, KW).
+
+        Dispatches to `Backend.conv2d`/`Backend.conv2d_backward` (CPU: a
+        vectorized im2col-plus-matmul; CUDA: real kernels -- see
+        `docs/architecture/cuda-backend.md`), following the same
+        Tensor -> grad_fn -> Backend pattern as `matmul`. `bias` may be
+        `None`; when given, it is folded into the same backend call (there is
+        no general (N,C,H,W)+(C,) broadcasting primitive to compose a
+        separate add from) and participates in the same `grad_fn` as
+        `weight`.
+        """
+        if self.ndim != 4:
+            raise ShapeMismatchError(
+                f"conv2d expects a 4D (N, C_in, H, W) input, got shape {self.shape}."
+            )
+        if weight.ndim != 4:
+            raise ShapeMismatchError(
+                f"conv2d expects a 4D (C_out, C_in, KH, KW) weight, got shape {weight.shape}."
+            )
+        if weight._device != self._device:
+            raise UnsupportedDeviceError(
+                f"conv2d requires weight on the same device as input; got input on "
+                f"'{self._device}' and weight on '{weight._device}'."
+            )
+        if bias is not None and bias._device != self._device:
+            raise UnsupportedDeviceError(
+                f"conv2d requires bias on the same device as input; got input on "
+                f"'{self._device}' and bias on '{bias._device}'."
+            )
+
+        N, Cin, H, W = self.shape
+        Cout, Cin_w, KH, KW = weight.shape
+        if Cin != Cin_w:
+            raise ShapeMismatchError(
+                f"conv2d input has {Cin} channels but weight expects {Cin_w} "
+                f"(weight shape {weight.shape})."
+            )
+        SH, SW = stride
+        PH, PW = padding
+        if KH > H + 2 * PH or KW > W + 2 * PW:
+            raise ShapeMismatchError(
+                f"conv2d kernel size ({KH}, {KW}) is larger than the padded input "
+                f"({H + 2 * PH}, {W + 2 * PW})."
+            )
+        if bias is not None and bias.shape != (Cout,):
+            raise ShapeMismatchError(
+                f"conv2d bias must have shape ({Cout},), got {bias.shape}."
+            )
+
+        backend = get_backend(self._device)
+        bias_data = bias._data if bias is not None else None
+        result = backend.conv2d(self._data, weight._data, bias_data, (SH, SW), (PH, PW))
+
+        x_data, w_data = self._data, weight._data
+
+        def backward_fn(grad_output):
+            grad_x, grad_w, grad_b = backend.conv2d_backward(
+                grad_output, x_data, w_data, bias_data, (SH, SW), (PH, PW)
+            )
+            return (grad_x, grad_w, grad_b) if bias is not None else (grad_x, grad_w)
+
+        inputs = (self, weight) if bias is None else (self, weight, bias)
+        return self._differentiable_wrap(result, inputs, backward_fn, "conv2d")
+
+    def max_pool2d(
+        self,
+        kernel_size: "tuple[int, int]",
+        stride: "tuple[int, int]",
+        padding: "tuple[int, int]",
+    ) -> "Tensor":
+        """2D max pooling over an NCHW tensor.
+
+        Ties within a window break deterministically to the first maximum
+        encountered in row-major (top-to-bottom, then left-to-right) scan
+        order -- see `Backend.max_pool2d`'s CPU/CUDA implementations. Backward
+        recomputes each window's argmax from the saved input `self`, the same
+        "recompute from a saved input" convention `relu`/`exp`/`log` already
+        use, rather than caching indices from the forward pass.
+        """
+        if self.ndim != 4:
+            raise ShapeMismatchError(
+                f"max_pool2d expects a 4D (N, C, H, W) input, got shape {self.shape}."
+            )
+        N, C, H, W = self.shape
+        KH, KW = kernel_size
+        SH, SW = stride
+        PH, PW = padding
+        if KH > H + 2 * PH or KW > W + 2 * PW:
+            raise ShapeMismatchError(
+                f"max_pool2d kernel size ({KH}, {KW}) is larger than the padded input "
+                f"({H + 2 * PH}, {W + 2 * PW})."
+            )
+
+        backend = get_backend(self._device)
+        result = backend.max_pool2d(self._data, (KH, KW), (SH, SW), (PH, PW))
+
+        x_data = self._data
+
+        def backward_fn(grad_output):
+            return (backend.max_pool2d_backward(grad_output, x_data, (KH, KW), (SH, SW), (PH, PW)),)
+
+        return self._differentiable_wrap(result, (self,), backward_fn, "max_pool2d")
+
     # -- Device transfer -----------------------------------------------------
 
     def to(self, device: "str | Device") -> "Tensor":

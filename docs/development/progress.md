@@ -504,3 +504,86 @@ CUDA toolchain to confirm all 205 CUDA tests skip cleanly (`358 passed, 205
 skipped`, `0 failed`) with the CPU-only suite entirely unaffected. See
 `docs/architecture/cuda-backend.md`'s **CUDA CrossEntropyLoss** section and
 `docs/architecture/optimization.md`'s **CrossEntropyLoss** section.
+
+### M15 — Conv2d and MaxPool2d
+Expands Forge's neural-network expressiveness beyond dense layers: `nn.Conv2d`
+(2D cross-correlation, NCHW, integer stride, integer symmetric zero padding,
+optional bias) and `nn.MaxPool2d` (2D max pooling, `stride` defaulting to
+`kernel_size`), both ordinary `Module`s following the exact M10 pattern --
+`Tensor.conv2d()`/`Tensor.max_pool2d()` (`forge/tensor/tensor.py`) attach a
+`grad_fn` and dispatch to four new `Backend` methods (`conv2d`,
+`conv2d_backward`, `max_pool2d`, `max_pool2d_backward`), implemented once per
+backend, with no second autograd engine and no CUDA-specific code inside
+`nn/conv.py`/`nn/pooling.py`.
+
+**CPU** (`forge/backend/cpu.py`) is im2col-style: `numpy.lib.stride_tricks.
+sliding_window_view` builds a strided (zero-copy) window view of the
+(zero-padded) input, `conv2d` reduces it with one big batched matmul
+(`cols @ weight.reshape(...).T`, real BLAS, not a Python loop over every
+output element) and `max_pool2d` reduces it with `.max(axis=(4,5))`.
+Backward recomputes the same window view from the saved forward input (the
+same "recompute from a saved input" convention `relu_backward`/
+`exp_backward` already use) and scatters each window position's contribution
+back with a small (`kh*kw`-iteration) loop of strided `+=`, which correctly
+accumulates overlapping windows when `stride < kernel_size`. `MaxPool2d`'s
+tie-break is `np.argmax` on each window flattened in row-major (`kh`-then-
+`kw`) order -- documented as "first maximum in top-to-bottom,
+left-to-right scan order," and deliberately *not* the same algorithm CUDA
+uses (see below), verified to agree by direct test.
+
+**CUDA** (`forge/backend/cuda/{kernels.cu,backend.py}`) is real, but
+intentionally *not* the CPU's im2col-plus-matmul approach: per the milestone
+brief's "start with a straightforward correct kernel, do NOT immediately
+implement cuDNN/cuBLAS/Winograd/FFT/autotuning" constraint, every kernel is
+one thread per output (forward) or per gradient-target (backward) element,
+looping over the kernel window in registers. `conv2d` backward is three
+plain-gather kernels (input/weight/bias), no atomics. `max_pool2d` backward
+recomputes each output element's argmax from the saved input (never caching
+forward indices) and `atomicAdd`s into a `cudaMemset`-zeroed input-gradient
+buffer -- the one place atomics were necessary, since overlapping pooling
+windows can make more than one output thread target the same input element.
+Both backends' tie-break conventions agree by construction (`np.argmax`'s
+first-occurrence rule vs. CUDA's strict `v > best` comparison, both scanning
+`kh`-then-`kw`), confirmed directly by test on real hardware.
+
+Six new `Backend` methods were added to the ABC (`conv2d`, `conv2d_backward`,
+`max_pool2d`, `max_pool2d_backward`, plus the existing pattern reused
+unchanged for everything else); `Conv2d`'s weight/bias are ordinary
+`Parameter`s (`(out_channels, in_channels, kh, kw)` / `(out_channels,)`,
+`Uniform(-1/sqrt(fan_in), 1/sqrt(fan_in))` init, `fan_in = in_channels * kh *
+kw` -- the direct Conv2d analog of `Linear`'s `1/sqrt(in_features)` bound),
+so both layers integrate with `parameters()`/`named_parameters()`/
+`Module.to()`/`SGD`/serialization with no special-casing anywhere in those
+systems. Both were registered with `forge.serialization.register_module()`
+alongside `Linear`/`ReLU`.
+
+New test files: `tests/test_conv.py` (CPU Conv2d -- config/shape validation,
+forward vs. an independent triple-loop reference, parameter reuse and input
+reuse gradient-accumulation cases, finite-difference checks across padding/
+stride/channels/batch), `tests/test_pooling.py` (CPU MaxPool2d -- same
+structure, plus dedicated tie-break and overlapping-window-accumulation
+cases), `tests/test_cuda_conv.py` (CUDA Conv2d/MaxPool2d forward/backward
+vs. CPU, a CUDA finite-difference check, a structural zero-`CPUBackend`-calls
+check, and a small end-to-end CUDA classification model), and
+`tests/test_conv_trainer_integration.py` (the milestone's required
+`Dataset -> DataLoader -> Trainer -> Conv2d -> ReLU -> MaxPool2d -> Linear ->
+CrossEntropyLoss -> SGD` acceptance test on a deterministic image-like
+two-class dataset, unmodified `Trainer`). Extended `tests/test_serialization.py`
+(Conv2d/MaxPool2d round-trip, with and without bias, plus a nested
+Conv2d->ReLU->MaxPool2d->Linear model) and `tests/test_cuda_consistency.py`
+(Conv2d/MaxPool2d forward CPU/CUDA agreement). 680 tests total (441
+CPU-only, up from 358; 239 CUDA, up from 205 -- both net of the 117 new
+tests this milestone added), verified directly on the development GPU
+(940MX, CC 5.0, driver 582.53, CUDA Toolkit 12.6), and the full suite was
+also run with `PATH` stripped of the CUDA toolchain to confirm all 239 CUDA
+tests skip cleanly (`441 passed, 239 skipped`, `0 failed`).
+
+Basic `conv2d` forward/backward benchmarks were added to
+`benchmarks/ops_bench.py`/`benchmarks/backward_bench.py` at three small
+scales (`CONV2D_CONFIGS` in `benchmarks/sizes.py`) -- baseline measurements
+only, per the milestone's "do not optimize before correctness is
+established" constraint; on the 940MX, CUDA's straightforward kernel already
+outran the CPU's im2col-plus-BLAS path at the "medium" scale for both
+forward and backward, which is not something the milestone required or
+optimized for. See `docs/architecture/cuda-backend.md`'s **CUDA Conv2d /
+MaxPool2d** section.

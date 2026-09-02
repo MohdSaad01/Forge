@@ -156,6 +156,41 @@ def test_chained_ops_consistency():
     np.testing.assert_allclose(cuda_result.to("cpu").numpy(), cpu_result.numpy(), **TOL)
 
 
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+@pytest.mark.parametrize("stride,padding", [(1, 0), (1, 1), (2, 1)])
+def test_conv2d_forward_consistency(dtype, stride, padding):
+    """Milestone 15: Conv2d forward. See tests/test_cuda_conv.py for backward consistency."""
+    rng = np.random.default_rng(5)
+    x_data = rng.standard_normal((2, 3, 8, 8))
+    w_data = rng.standard_normal((4, 3, 3, 3))
+    b_data = rng.standard_normal((4,))
+    x_cpu, x_cuda = _both(x_data, dtype)
+    w_cpu, w_cuda = _both(w_data, dtype)
+    b_cpu, b_cuda = _both(b_data, dtype)
+
+    cpu_result = x_cpu.conv2d(w_cpu, b_cpu, (stride, stride), (padding, padding))
+    cuda_result = x_cuda.conv2d(w_cuda, b_cuda, (stride, stride), (padding, padding))
+
+    assert cuda_result.shape == cpu_result.shape
+    assert cuda_result.dtype == cpu_result.dtype
+    np.testing.assert_allclose(cuda_result.to("cpu").numpy(), cpu_result.numpy(), **TOL)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+@pytest.mark.parametrize("kernel_size,stride,padding", [(2, 2, 0), (3, 2, 1), (3, 1, 1)])
+def test_max_pool2d_forward_consistency(dtype, kernel_size, stride, padding):
+    """Milestone 15: MaxPool2d forward. See tests/test_cuda_conv.py for backward consistency."""
+    rng = np.random.default_rng(6)
+    data = rng.standard_normal((2, 3, 8, 8))
+    cpu, cuda = _both(data, dtype)
+
+    cpu_result = cpu.max_pool2d((kernel_size, kernel_size), (stride, stride), (padding, padding))
+    cuda_result = cuda.max_pool2d((kernel_size, kernel_size), (stride, stride), (padding, padding))
+
+    assert cuda_result.shape == cpu_result.shape
+    np.testing.assert_allclose(cuda_result.to("cpu").numpy(), cpu_result.numpy(), **TOL)
+
+
 def test_chained_linear_relu_linear_consistency():
     """Matches the exact op sequence a `Linear -> ReLU -> Linear` model forward runs."""
     rng = np.random.default_rng(3)

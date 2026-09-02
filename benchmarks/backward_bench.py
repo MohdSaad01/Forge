@@ -25,7 +25,7 @@ import forge.nn as nn
 from forge.backend.cuda.backend import is_cuda_available
 
 from .results import BenchmarkResult
-from .sizes import DEFAULT_ITERATIONS, DEFAULT_WARMUP, ELEMENTWISE_SIZES, MATMUL_DIMS
+from .sizes import CONV2D_CONFIGS, DEFAULT_ITERATIONS, DEFAULT_WARMUP, ELEMENTWISE_SIZES, MATMUL_DIMS
 from .timing import time_calls
 
 
@@ -160,10 +160,45 @@ def _bench_multilayer_backward(device: str, results: "list[BenchmarkResult]") ->
     )
 
 
+def _bench_conv2d_backward(device: str, results: "list[BenchmarkResult]") -> None:
+    """Conv2d(stride=1, padding=0) backward, at the three `CONV2D_CONFIGS` scales.
+
+    A baseline measurement, not a performance target -- see
+    `ops_bench._run_conv2d_forward`'s docstring and Milestone 15's
+    "do not optimize before correctness is established" constraint.
+    """
+    count = DEFAULT_WARMUP + DEFAULT_ITERATIONS
+    for scale, cfg in CONV2D_CONFIGS.items():
+        rng = np.random.default_rng(5)
+        x_data = rng.standard_normal((cfg["N"], cfg["Cin"], cfg["H"], cfg["W"])).astype(np.float32)
+        w_data = rng.standard_normal((cfg["Cout"], cfg["Cin"], cfg["K"], cfg["K"])).astype(np.float32)
+        b_data = rng.standard_normal((cfg["Cout"],)).astype(np.float32)
+        H_out, W_out = cfg["H"] - cfg["K"] + 1, cfg["W"] - cfg["K"] + 1
+        grad = _ones_grad((cfg["N"], cfg["Cout"], H_out, W_out), device)
+
+        def make_call(x_data=x_data, w_data=w_data, b_data=b_data):
+            x = forge.Tensor(x_data.copy(), device=device, requires_grad=True)
+            w = forge.Tensor(w_data.copy(), device=device, requires_grad=True)
+            b = forge.Tensor(b_data.copy(), device=device, requires_grad=True)
+            y = x.conv2d(w, b, (1, 1), (0, 0))
+            return lambda y=y: y.backward(grad)
+
+        calls = _build_calls(make_call, count)
+        timing = time_calls(calls, warmup=DEFAULT_WARMUP, iterations=DEFAULT_ITERATIONS, device=device)
+        results.append(
+            BenchmarkResult.from_timing(
+                category="backward", operation="conv2d", device=device, scale=scale,
+                shape=f"N={cfg['N']},Cin={cfg['Cin']},Cout={cfg['Cout']},HxW={cfg['H']}x{cfg['W']},k={cfg['K']}",
+                dtype="float32", timing=timing,
+            )
+        )
+
+
 def run_backward_benchmarks() -> "list[BenchmarkResult]":
     results: "list[BenchmarkResult]" = []
     for device in (["cpu", "cuda"] if is_cuda_available() else ["cpu"]):
         _bench_elementwise_backward(device, results)
         _bench_matmul_backward(device, results)
         _bench_multilayer_backward(device, results)
+        _bench_conv2d_backward(device, results)
     return results

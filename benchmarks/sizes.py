@@ -50,6 +50,17 @@ TRAINING_CONFIG: "dict[str, int]" = {
     "warmup_iterations": 5,
 }
 
+# Conv2d forward/backward benchmark configurations (Milestone 15). Kept
+# deliberately small -- correctness, not performance, is this milestone's
+# objective (the 940MX's naive, unoptimized kernels are not expected to beat
+# NumPy/BLAS here) -- while still spanning three scales, staying well inside
+# the 940MX's 2 GB VRAM budget.
+CONV2D_CONFIGS: "dict[str, dict[str, int]]" = {
+    "tiny": {"N": 4, "Cin": 3, "Cout": 8, "H": 16, "W": 16, "K": 3},
+    "small": {"N": 8, "Cin": 8, "Cout": 16, "H": 32, "W": 32, "K": 3},
+    "medium": {"N": 8, "Cin": 16, "Cout": 32, "H": 64, "W": 64, "K": 3},
+}
+
 # Default warmup/iteration counts for forward/backward/transfer op
 # benchmarks. See docs/performance/benchmarking.md for why warmup exists
 # (separating launch/lazy-init/compilation/cache effects from steady-state

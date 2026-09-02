@@ -124,7 +124,9 @@ def spec_for_name(type_name: str) -> ModuleSpec:
 
 def _register_builtins() -> None:
     from ..nn.activation import ReLU
+    from ..nn.conv import Conv2d
     from ..nn.linear import Linear
+    from ..nn.pooling import MaxPool2d
 
     register_module(
         "Linear",
@@ -136,6 +138,27 @@ def _register_builtins() -> None:
         },
     )
     register_module("ReLU", ReLU, get_config=lambda m: {})
+    register_module(
+        "Conv2d",
+        Conv2d,
+        get_config=lambda m: {
+            "in_channels": m.in_channels,
+            "out_channels": m.out_channels,
+            "kernel_size": list(m.kernel_size),
+            "stride": list(m.stride),
+            "padding": list(m.padding),
+            "bias": m.bias is not None,
+        },
+    )
+    register_module(
+        "MaxPool2d",
+        MaxPool2d,
+        get_config=lambda m: {
+            "kernel_size": list(m.kernel_size),
+            "stride": list(m.stride),
+            "padding": list(m.padding),
+        },
+    )
 
 
 _register_builtins()

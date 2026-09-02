@@ -1,4 +1,4 @@
-# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14)
+# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15)
 
 ## Summary
 Forge has a real CUDA execution backend for a small operation set: tensor
@@ -6,22 +6,24 @@ creation/transfer, `add`/`mul` (exact-shape, plus one targeted row-broadcast
 shape added in Milestone 9), `sub` (those two shapes plus one targeted
 column-broadcast shape added in Milestone 14), `matmul` (the same 1D/2D
 cases the CPU backend supports), `sum` (full reduction, plus axis=1 on a 2D
-tensor as of Milestone 14), `reshape`, `relu` (Milestone 9), and `exp`/`log`
-(Milestone 14). Every one of these actually launches a CUDA kernel (or
-issues a real `cudaMemcpy`/`cudaMalloc` call) on the GPU -- nothing in this
-list is a disguised CPU fallback. As of Milestone 9, this operation set is
-also reachable through the high-level `nn.Module` API (`Module.to("cuda")`,
-then an ordinary `Linear`/`ReLU` forward pass) -- see **Module and Parameter
-device movement** below and `docs/architecture/modules.md`. As of
+tensor as of Milestone 14), `reshape`, `relu` (Milestone 9), `exp`/`log`
+(Milestone 14), and `conv2d`/`max_pool2d` (Milestone 15). Every one of these
+actually launches a CUDA kernel (or issues a real `cudaMemcpy`/`cudaMalloc`
+call) on the GPU -- nothing in this list is a disguised CPU fallback. As of
+Milestone 9, this operation set is also reachable through the high-level
+`nn.Module` API (`Module.to("cuda")`, then an ordinary `Linear`/`ReLU`
+forward pass) -- see **Module and Parameter device movement** below and
+`docs/architecture/modules.md`. As of
 **Milestone 10, this operation set is no longer forward-only**: every one of
 these operations has a real CUDA *backward* kernel too, so a CUDA
 computation graph can be built and differentiated end-to-end on the GPU,
 including through `nn.Module`/`Linear`/`ReLU`, with CUDA-resident gradients
 and a CUDA-executing `SGD.step()` -- see **CUDA autograd** below. As of
 **Milestone 14**, that graph extends through `nn.CrossEntropyLoss` too --
-see **CUDA CrossEntropyLoss** below. See
-`docs/architecture/backend-architecture.md` for the general backend
-boundary this fits into.
+see **CUDA CrossEntropyLoss** below. As of **Milestone 15**, it extends
+through `nn.Conv2d`/`nn.MaxPool2d` too -- see **CUDA Conv2d / MaxPool2d**
+below. See `docs/architecture/backend-architecture.md` for the general
+backend boundary this fits into.
 
 ## Package layout
 ```
@@ -39,6 +41,7 @@ forge/
     autograd/engine.py        run_backward -- backend-dispatched gradient accumulation (M10)
     nn/module.py              Module.to(device), Module.device (new in M9)
     nn/loss.py                MSELoss CUDA-compatible unmodified (M12); CrossEntropyLoss CUDA-compatible (M14)
+    nn/conv.py, nn/pooling.py Conv2d/MaxPool2d -- backend-agnostic, dispatch via Tensor.conv2d/max_pool2d (M15)
     optim/sgd.py               SGD.step() -- Backend.sgd_step() dispatch (M10)
     training/trainer.py        Trainer device validation + explicit batch transfer (M12)
     training/metrics.py        Metric._as_numpy() transfers CUDA inputs to CPU for reporting (M12)
@@ -142,6 +145,8 @@ transfers a tensor to make itself work.
 | `reshape` | `cf_memcpy_d2d` | any transferable dtype | Implemented as a device-to-device copy into a freshly allocated buffer with new shape metadata (no in-place aliasing, to avoid any storage-ownership ambiguity without an allocator) |
 | `relu` (Milestone 9) | `cf_relu_{f32,f64}` | float32, float64 | `out[i] = max(a[i], 0)`, one thread per element -- the same launch pattern as `add`/`sub`/`mul` |
 | `exp`/`log` (Milestone 14) | `cf_exp_{f32,f64}`, `cf_log_{f32,f64}` | float32, float64 | One thread per element, via `expf`/`logf` (float) or `exp`/`log` (double) -- added for `CrossEntropyLoss`'s log-sum-exp; see **CUDA CrossEntropyLoss** below |
+| `conv2d` (Milestone 15) | `cf_conv2d_forward_{f32,f64}` | float32, float64 | One thread per output element (`N*C_out*H_out*W_out`), looping over `C_in*KH*KW` in registers; see **CUDA Conv2d / MaxPool2d** below |
+| `max_pool2d` (Milestone 15) | `cf_maxpool2d_forward_{f32,f64}` | float32, float64 | One thread per output element, looping over `KH*KW`; see **CUDA Conv2d / MaxPool2d** below |
 
 `relu` moved out of this list in Milestone 9; `exp`/`log` moved out of the
 "required by the ABC but unsupported on CUDA" state they were in through
@@ -223,6 +228,8 @@ adding a parallel mechanism.
 | `reshape_backward` | (reuses forward `reshape`, `cf_memcpy_d2d`) | Reshaping the upstream gradient back to the original shape is exactly the forward `reshape` op run again |
 | `relu_backward` | `cf_relu_backward_{f32,f64}` | `out[i] = input[i] > 0 ? grad_output[i] : 0` -- one kernel, no separate mask kernel, input never copied to CPU |
 | `exp_backward`/`log_backward` (Milestone 14) | `cf_exp_backward_{f32,f64}`, `cf_log_backward_{f32,f64}` | `exp`: `out[i] = grad_output[i] * result[i]` (reuses exp's own saved forward output). `log`: `out[i] = grad_output[i] / input[i]` (reads the saved forward input). Each a small dedicated two-array kernel, matching `relu_backward`'s shape, rather than a generic elementwise-divide primitive nothing else needs |
+| `conv2d_backward` (Milestone 15) | `cf_conv2d_backward_{input,weight,bias}_{f32,f64}` | Three separate kernels (one thread per gradient-target element each: input pixels, weight elements, output channels), no atomics -- see **CUDA Conv2d / MaxPool2d** below |
+| `max_pool2d_backward` (Milestone 15) | `cf_maxpool2d_backward_{f32,f64}` | One thread per *output* element, recomputing that window's argmax from the saved input and `atomicAdd`-ing into the (zeroed) input gradient -- see **CUDA Conv2d / MaxPool2d** below |
 
 Every backward kernel launch is followed by the same explicit
 `cf_synchronize()` convention the forward kernels use (see above) -- a
@@ -480,6 +487,80 @@ exercises the full milestone-brief workflow -- `TensorDataset -> DataLoader
 CUDA SGD` -- on a small deterministic two-class dataset, confirming loss
 drops substantially, accuracy exceeds 90%, and every parameter/gradient
 stays CUDA-resident throughout.
+
+## CUDA Conv2d / MaxPool2d (Milestone 15)
+`nn.Conv2d`/`nn.MaxPool2d` (`forge/nn/conv.py`, `forge/nn/pooling.py`) are
+backend-agnostic Modules, exactly like `Linear`/`ReLU`: their `forward()`
+calls `Tensor.conv2d()`/`Tensor.max_pool2d()` (`forge/tensor/tensor.py`),
+which dispatch to `Backend.conv2d`/`Backend.conv2d_backward`/
+`Backend.max_pool2d`/`Backend.max_pool2d_backward` -- the same
+Tensor -> `grad_fn` -> `Backend` pattern every other differentiable op
+uses (`docs/architecture/autograd.md`). No CUDA-specific code exists in
+`nn/conv.py`/`nn/pooling.py`.
+
+Unlike `CPUBackend`'s im2col-plus-matmul implementation (a vectorized
+`sliding_window_view` reduced with NumPy/BLAS), `CUDABackend`'s kernels are
+deliberately the "straightforward correct kernel" the milestone brief asks
+for: one thread per output element (forward) or per gradient-target element
+(backward), looping over the small kernel window in registers -- no im2col
+buffer, no cuBLAS, no cuDNN, no tiling. This is a *different* algorithm from
+the CPU path, not a shared numerical core, matching how CUDA's `matmul`
+(tiled GEMM) and CPU's `matmul` (`np.matmul`/BLAS) are already unrelated
+implementations of the same forward contract.
+
+- **`conv2d` forward** (`k_conv2d_forward`): one thread per `(n, c_out, h_out,
+  w_out)`, accumulating over `c_in`/`kh`/`kw` with an explicit in-bounds
+  check per tap (the zero-padding boundary condition).
+- **`conv2d` backward** is three separate kernels, each a plain gather (no
+  atomics): `k_conv2d_backward_input` (one thread per input pixel, summing
+  over every output window that read it), `k_conv2d_backward_weight` (one
+  thread per weight element, summing over every batch/spatial position it
+  touched), and `k_conv2d_backward_bias` (one thread per output channel,
+  summing `grad_output` over batch and spatial dims). `bias` is optional at
+  every layer (a null device pointer, `has_bias=0`, when `Conv2d(bias=False)`)
+  -- `conv2d_backward` skips the bias kernel entirely rather than allocating
+  and returning a zero gradient.
+- **`max_pool2d` forward** (`k_maxpool2d_forward`): one thread per output
+  element, scanning its `KH x KW` window with a strict `v > best` comparison
+  -- so the *first* maximum encountered in row-major (`kh` outer, `kw` inner)
+  scan order wins ties, never a later equal value.
+- **`max_pool2d` backward** (`k_maxpool2d_backward`) recomputes each output
+  element's argmax from the saved forward input `x` (the same
+  "recompute from a saved input" convention `k_relu_backward`/
+  `k_exp_backward` already use) rather than caching indices from the forward
+  pass, then `atomicAdd`s the upstream gradient into that one input
+  position. The atomic is necessary here (unlike `conv2d_backward`'s input
+  kernel): overlapping windows (`stride < kernel_size`) can select the same
+  input element as more than one output window's argmax, so more than one
+  thread can write to the same `grad_x` element. `grad_x` is
+  `cudaMemset`-zeroed by the launcher before any thread writes to it, the
+  same convention `cf_sum_*`'s launcher already uses for its output
+  accumulator.
+
+**Tie-breaking agreement.** `CPUBackend.max_pool2d_backward` (`forge/backend/cpu.py`)
+applies `np.argmax` to each window flattened in the same row-major
+(`kh`-then-`kw`) order the CUDA kernel scans in, and `np.argmax` is
+documented to return the *first* occurrence of the maximum -- so both
+backends select the identical element on a tie. `tests/test_pooling.py`
+and `tests/test_cuda_conv.py` both assert the same concrete tie-break
+example (`test_maxpool2d_tie_breaks_row_major_not_column_major` /
+`test_cuda_maxpool2d_tie_break_matches_cpu_convention`).
+
+**No CPU fallback.** `tests/test_cuda_conv.py::test_cuda_conv2d_never_calls_cpu_backend`
+and `::test_cuda_maxpool2d_never_calls_cpu_backend` monkeypatch every
+`CPUBackend` method (the same spy pattern `test_cuda_autograd.py` already
+uses for `Linear`/multilayer models) and assert the recorded call list is
+empty across a full forward + backward pass.
+
+**Explicit non-goals kept out of scope.** No dilation, no groups, no
+transposed convolution, no average/adaptive/global pooling, no cuDNN/cuBLAS,
+no autotuning, no return-indices API -- see the milestone brief's "Explicit
+Non-Goals" list. `docs/architecture/backend-architecture.md`'s
+"straightforward kernel first, optimize later" precedent (Milestone 8-11's
+matmul) applies here too: these kernels are correctness-first, and
+`benchmarks/ops_bench.py`/`benchmarks/backward_bench.py`'s `conv2d`
+entries exist to *measure* that, not to claim CUDA already beats the CPU
+im2col-plus-BLAS path at every scale on the 940MX.
 
 ## CUDA model persistence (Milestone 13)
 `save_model()`/`load_model()` (`forge/serialization/model.py`) now support

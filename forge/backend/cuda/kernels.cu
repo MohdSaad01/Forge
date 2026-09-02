@@ -13,6 +13,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <type_traits>
+#include <cfloat>
 
 // -- device memory management ---------------------------------------------
 
@@ -621,3 +622,352 @@ __global__ void k_broadcast_axis1(const T* rowvals, T* out, long long rows, long
 
 BROADCAST_AXIS1_LAUNCHER(float, f32)
 BROADCAST_AXIS1_LAUNCHER(double, f64)
+
+// -- Conv2d / MaxPool2d (Milestone 15) ----------------------------------------
+//
+// Straightforward, correct kernels -- one thread per output (forward) or per
+// gradient-target (backward) element, looping over the small kernel/reduction
+// dimension in registers. No im2col-as-a-separate-buffer, no cuBLAS, no
+// cuDNN, no tiling: the milestone brief explicitly sanctions "start with a
+// straightforward correct kernel" and defers optimization (the CPU backend's
+// im2col-plus-matmul approach is *not* mirrored here since these are meant to
+// be simple, independently-verifiable kernels, not a second GEMM path).
+//
+// Layouts match the rest of Forge: `x` is NCHW, `weight` is (C_out, C_in,
+// KH, KW), `bias` is (C_out,). All backward kernels recompute whatever they
+// need (the forward window, or -- for MaxPool2d -- its argmax) from the
+// saved forward input rather than caching auxiliary state, the same
+// "recompute from a saved input" convention `k_relu_backward`/
+// `k_exp_backward` above already use.
+
+template <typename T> __device__ inline T cf_neg_max();
+template <> __device__ inline float cf_neg_max<float>() { return -FLT_MAX; }
+template <> __device__ inline double cf_neg_max<double>() { return -DBL_MAX; }
+
+template <typename T>
+__device__ inline void atomic_add_generic(T* addr, T val) {
+    if constexpr (std::is_same<T, double>::value) {
+        atomic_add_f64(addr, val);
+    } else {
+        atomicAdd(addr, val);
+    }
+}
+
+// -- Conv2d forward ------------------------------------------------------------
+
+template <typename T>
+__global__ void k_conv2d_forward(
+    const T* x, const T* w, const T* bias, T* out,
+    int N, int Cin, int H, int W,
+    int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout, int has_bias)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = static_cast<long long>(N) * Cout * Hout * Wout;
+    if (idx >= total) return;
+
+    int wo = static_cast<int>(idx % Wout);
+    long long t1 = idx / Wout;
+    int ho = static_cast<int>(t1 % Hout);
+    long long t2 = t1 / Hout;
+    int co = static_cast<int>(t2 % Cout);
+    int n = static_cast<int>(t2 / Cout);
+
+    T acc = has_bias ? bias[co] : static_cast<T>(0);
+    for (int ci = 0; ci < Cin; ++ci) {
+        for (int kh = 0; kh < KH; ++kh) {
+            int hi = ho * SH - PH + kh;
+            if (hi < 0 || hi >= H) continue;
+            for (int kw_ = 0; kw_ < KW; ++kw_) {
+                int wi = wo * SW - PW + kw_;
+                if (wi < 0 || wi >= W) continue;
+                long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+                long long w_idx = ((static_cast<long long>(co) * Cin + ci) * KH + kh) * KW + kw_;
+                acc += x[x_idx] * w[w_idx];
+            }
+        }
+    }
+    out[idx] = acc;
+}
+
+#define CONV2D_FORWARD_LAUNCHER(TYPE, SUFFIX)                                             \
+    extern "C" __declspec(dllexport) int cf_conv2d_forward_##SUFFIX(                      \
+        const TYPE* x, const TYPE* w, const TYPE* bias, TYPE* out,                        \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
+        int SH, int SW, int PH, int PW, int Hout, int Wout, int has_bias) {               \
+        long long total = static_cast<long long>(N) * Cout * Hout * Wout;                 \
+        int blocks, threads;                                                              \
+        launch_config(total, blocks, threads);                                            \
+        k_conv2d_forward<TYPE><<<blocks, threads>>>(                                      \
+            x, w, bias, out, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout, has_bias); \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+CONV2D_FORWARD_LAUNCHER(float, f32)
+CONV2D_FORWARD_LAUNCHER(double, f64)
+
+// -- Conv2d backward: input (gather over the output windows an input pixel feeds) --
+
+template <typename T>
+__global__ void k_conv2d_backward_input(
+    const T* grad_out, const T* w, T* grad_x,
+    int N, int Cin, int H, int W,
+    int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = static_cast<long long>(N) * Cin * H * W;
+    if (idx >= total) return;
+
+    int wi = static_cast<int>(idx % W);
+    long long t1 = idx / W;
+    int hi = static_cast<int>(t1 % H);
+    long long t2 = t1 / H;
+    int ci = static_cast<int>(t2 % Cin);
+    int n = static_cast<int>(t2 / Cin);
+
+    T acc = static_cast<T>(0);
+    for (int co = 0; co < Cout; ++co) {
+        for (int kh = 0; kh < KH; ++kh) {
+            int t = hi + PH - kh;
+            if (t % SH != 0) continue;
+            int ho = t / SH;
+            if (ho < 0 || ho >= Hout) continue;
+            for (int kw_ = 0; kw_ < KW; ++kw_) {
+                int tw = wi + PW - kw_;
+                if (tw % SW != 0) continue;
+                int wo = tw / SW;
+                if (wo < 0 || wo >= Wout) continue;
+                long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+                long long w_idx = ((static_cast<long long>(co) * Cin + ci) * KH + kh) * KW + kw_;
+                acc += grad_out[g_idx] * w[w_idx];
+            }
+        }
+    }
+    grad_x[idx] = acc;
+}
+
+#define CONV2D_BACKWARD_INPUT_LAUNCHER(TYPE, SUFFIX)                                      \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_input_##SUFFIX(               \
+        const TYPE* grad_out, const TYPE* w, TYPE* grad_x,                                \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
+        int SH, int SW, int PH, int PW, int Hout, int Wout) {                             \
+        long long total = static_cast<long long>(N) * Cin * H * W;                        \
+        int blocks, threads;                                                              \
+        launch_config(total, blocks, threads);                                            \
+        k_conv2d_backward_input<TYPE><<<blocks, threads>>>(                               \
+            grad_out, w, grad_x, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout);  \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+CONV2D_BACKWARD_INPUT_LAUNCHER(float, f32)
+CONV2D_BACKWARD_INPUT_LAUNCHER(double, f64)
+
+// -- Conv2d backward: weight (gather over the batch/spatial positions a weight touches) --
+
+template <typename T>
+__global__ void k_conv2d_backward_weight(
+    const T* grad_out, const T* x, T* grad_w,
+    int N, int Cin, int H, int W,
+    int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = static_cast<long long>(Cout) * Cin * KH * KW;
+    if (idx >= total) return;
+
+    int kw_ = static_cast<int>(idx % KW);
+    long long t1 = idx / KW;
+    int kh = static_cast<int>(t1 % KH);
+    long long t2 = t1 / KH;
+    int ci = static_cast<int>(t2 % Cin);
+    int co = static_cast<int>(t2 / Cin);
+
+    T acc = static_cast<T>(0);
+    for (int n = 0; n < N; ++n) {
+        for (int ho = 0; ho < Hout; ++ho) {
+            int hi = ho * SH - PH + kh;
+            if (hi < 0 || hi >= H) continue;
+            for (int wo = 0; wo < Wout; ++wo) {
+                int wi = wo * SW - PW + kw_;
+                if (wi < 0 || wi >= W) continue;
+                long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+                long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+                acc += grad_out[g_idx] * x[x_idx];
+            }
+        }
+    }
+    grad_w[idx] = acc;
+}
+
+#define CONV2D_BACKWARD_WEIGHT_LAUNCHER(TYPE, SUFFIX)                                     \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_weight_##SUFFIX(              \
+        const TYPE* grad_out, const TYPE* x, TYPE* grad_w,                                \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
+        int SH, int SW, int PH, int PW, int Hout, int Wout) {                             \
+        long long total = static_cast<long long>(Cout) * Cin * KH * KW;                   \
+        int blocks, threads;                                                              \
+        launch_config(total, blocks, threads);                                            \
+        k_conv2d_backward_weight<TYPE><<<blocks, threads>>>(                              \
+            grad_out, x, grad_w, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout);  \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+CONV2D_BACKWARD_WEIGHT_LAUNCHER(float, f32)
+CONV2D_BACKWARD_WEIGHT_LAUNCHER(double, f64)
+
+// -- Conv2d backward: bias (sum grad_output over batch and spatial dims) --
+
+template <typename T>
+__global__ void k_conv2d_backward_bias(const T* grad_out, T* grad_b, int N, int Cout, int Hout, int Wout) {
+    long long co = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (co >= Cout) return;
+    T acc = static_cast<T>(0);
+    for (int n = 0; n < N; ++n) {
+        for (int ho = 0; ho < Hout; ++ho) {
+            for (int wo = 0; wo < Wout; ++wo) {
+                long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+                acc += grad_out[g_idx];
+            }
+        }
+    }
+    grad_b[co] = acc;
+}
+
+#define CONV2D_BACKWARD_BIAS_LAUNCHER(TYPE, SUFFIX)                                       \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_bias_##SUFFIX(                \
+        const TYPE* grad_out, TYPE* grad_b, int N, int Cout, int Hout, int Wout) {        \
+        int blocks, threads;                                                              \
+        launch_config(Cout, blocks, threads);                                             \
+        k_conv2d_backward_bias<TYPE><<<blocks, threads>>>(grad_out, grad_b, N, Cout, Hout, Wout); \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+CONV2D_BACKWARD_BIAS_LAUNCHER(float, f32)
+CONV2D_BACKWARD_BIAS_LAUNCHER(double, f64)
+
+// -- MaxPool2d forward ----------------------------------------------------------
+//
+// Ties within a window break to the first maximum encountered in row-major
+// (kh, then kw) scan order -- the strict `v > best` comparison below never
+// replaces an already-found maximum with an equal later value. `CPUBackend.
+// max_pool2d_backward` (forge/backend/cpu.py) applies `np.argmax` to a window
+// flattened in that same order, so both backends agree on which element in a
+// tied window receives the gradient.
+
+template <typename T>
+__global__ void k_maxpool2d_forward(
+    const T* x, T* out,
+    int N, int C, int H, int W,
+    int KH, int KW, int SH, int SW, int PH, int PW,
+    int Hout, int Wout)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = static_cast<long long>(N) * C * Hout * Wout;
+    if (idx >= total) return;
+
+    int wo = static_cast<int>(idx % Wout);
+    long long t1 = idx / Wout;
+    int ho = static_cast<int>(t1 % Hout);
+    long long t2 = t1 / Hout;
+    int c = static_cast<int>(t2 % C);
+    int n = static_cast<int>(t2 / C);
+
+    T best = cf_neg_max<T>();
+    for (int kh = 0; kh < KH; ++kh) {
+        int hi = ho * SH - PH + kh;
+        if (hi < 0 || hi >= H) continue;
+        for (int kw_ = 0; kw_ < KW; ++kw_) {
+            int wi = wo * SW - PW + kw_;
+            if (wi < 0 || wi >= W) continue;
+            long long x_idx = ((static_cast<long long>(n) * C + c) * H + hi) * W + wi;
+            T v = x[x_idx];
+            if (v > best) best = v;
+        }
+    }
+    out[idx] = best;
+}
+
+#define MAXPOOL2D_FORWARD_LAUNCHER(TYPE, SUFFIX)                                          \
+    extern "C" __declspec(dllexport) int cf_maxpool2d_forward_##SUFFIX(                   \
+        const TYPE* x, TYPE* out,                                                         \
+        int N, int C, int H, int W, int KH, int KW, int SH, int SW, int PH, int PW,       \
+        int Hout, int Wout) {                                                             \
+        long long total = static_cast<long long>(N) * C * Hout * Wout;                    \
+        int blocks, threads;                                                              \
+        launch_config(total, blocks, threads);                                            \
+        k_maxpool2d_forward<TYPE><<<blocks, threads>>>(                                   \
+            x, out, N, C, H, W, KH, KW, SH, SW, PH, PW, Hout, Wout);                       \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+MAXPOOL2D_FORWARD_LAUNCHER(float, f32)
+MAXPOOL2D_FORWARD_LAUNCHER(double, f64)
+
+// -- MaxPool2d backward ----------------------------------------------------------
+//
+// One thread per *output* element (same indexing as forward), recomputing
+// that window's argmax from the saved input `x` and scattering the upstream
+// gradient there with `atomicAdd` -- overlapping windows (stride < kernel)
+// can otherwise target the same input element from more than one thread, so
+// a plain (non-atomic) write would race. `grad_x` is zeroed by the launcher
+// (`cudaMemset`, mirroring `cf_sum_*`'s own launcher above) before any thread
+// writes to it.
+
+template <typename T>
+__global__ void k_maxpool2d_backward(
+    const T* x, const T* grad_out, T* grad_x,
+    int N, int C, int H, int W,
+    int KH, int KW, int SH, int SW, int PH, int PW,
+    int Hout, int Wout)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = static_cast<long long>(N) * C * Hout * Wout;
+    if (idx >= total) return;
+
+    int wo = static_cast<int>(idx % Wout);
+    long long t1 = idx / Wout;
+    int ho = static_cast<int>(t1 % Hout);
+    long long t2 = t1 / Hout;
+    int c = static_cast<int>(t2 % C);
+    int n = static_cast<int>(t2 / C);
+
+    T best = cf_neg_max<T>();
+    long long best_idx = -1;
+    for (int kh = 0; kh < KH; ++kh) {
+        int hi = ho * SH - PH + kh;
+        if (hi < 0 || hi >= H) continue;
+        for (int kw_ = 0; kw_ < KW; ++kw_) {
+            int wi = wo * SW - PW + kw_;
+            if (wi < 0 || wi >= W) continue;
+            long long x_idx = ((static_cast<long long>(n) * C + c) * H + hi) * W + wi;
+            T v = x[x_idx];
+            if (v > best) { best = v; best_idx = x_idx; }
+        }
+    }
+    if (best_idx >= 0) {
+        atomic_add_generic<T>(&grad_x[best_idx], grad_out[idx]);
+    }
+}
+
+#define MAXPOOL2D_BACKWARD_LAUNCHER(TYPE, SUFFIX)                                         \
+    extern "C" __declspec(dllexport) int cf_maxpool2d_backward_##SUFFIX(                  \
+        const TYPE* x, const TYPE* grad_out, TYPE* grad_x,                                \
+        int N, int C, int H, int W, int KH, int KW, int SH, int SW, int PH, int PW,       \
+        int Hout, int Wout) {                                                             \
+        cudaError_t memset_err = cudaMemset(                                              \
+            grad_x, 0, sizeof(TYPE) * static_cast<size_t>(N) * C * H * W);                \
+        if (memset_err != cudaSuccess) return static_cast<int>(memset_err);               \
+        long long total = static_cast<long long>(N) * C * Hout * Wout;                    \
+        int blocks, threads;                                                              \
+        launch_config(total, blocks, threads);                                            \
+        k_maxpool2d_backward<TYPE><<<blocks, threads>>>(                                  \
+            x, grad_out, grad_x, N, C, H, W, KH, KW, SH, SW, PH, PW, Hout, Wout);          \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+MAXPOOL2D_BACKWARD_LAUNCHER(float, f32)
+MAXPOOL2D_BACKWARD_LAUNCHER(double, f64)

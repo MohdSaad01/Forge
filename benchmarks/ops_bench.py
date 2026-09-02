@@ -22,7 +22,7 @@ import forge
 from forge.backend.cuda.backend import is_cuda_available
 
 from .results import BenchmarkResult
-from .sizes import DEFAULT_ITERATIONS, DEFAULT_WARMUP, ELEMENTWISE_SIZES, MATMUL_DIMS
+from .sizes import CONV2D_CONFIGS, DEFAULT_ITERATIONS, DEFAULT_WARMUP, ELEMENTWISE_SIZES, MATMUL_DIMS
 from .timing import time_cpu, time_cuda
 
 
@@ -82,9 +82,42 @@ def _run_forward_ops(device: str, results: "list[BenchmarkResult]") -> None:
         )
 
 
+def _run_conv2d_forward(device: str, results: "list[BenchmarkResult]") -> None:
+    """Conv2d(stride=1, padding=0) forward, at the three `CONV2D_CONFIGS` scales.
+
+    Milestone 15: correctness, not performance, is the objective here -- see
+    that module's docstring. This is a baseline measurement, not a claim
+    that the 940MX's straightforward (unoptimized) Conv2d kernel beats
+    NumPy/BLAS at any of these scales.
+    """
+    timer = time_cpu if device == "cpu" else time_cuda
+    rng = np.random.default_rng(5)
+    for scale, cfg in CONV2D_CONFIGS.items():
+        x = forge.Tensor(
+            rng.standard_normal((cfg["N"], cfg["Cin"], cfg["H"], cfg["W"])).astype(np.float32), device=device
+        )
+        w = forge.Tensor(
+            rng.standard_normal((cfg["Cout"], cfg["Cin"], cfg["K"], cfg["K"])).astype(np.float32), device=device
+        )
+        b = forge.Tensor(rng.standard_normal((cfg["Cout"],)).astype(np.float32), device=device)
+        timing = timer(
+            lambda x=x, w=w, b=b: x.conv2d(w, b, (1, 1), (0, 0)),
+            warmup=DEFAULT_WARMUP, iterations=DEFAULT_ITERATIONS,
+        )
+        results.append(
+            BenchmarkResult.from_timing(
+                category="forward", operation="conv2d", device=device, scale=scale,
+                shape=f"N={cfg['N']},Cin={cfg['Cin']},Cout={cfg['Cout']},HxW={cfg['H']}x{cfg['W']},k={cfg['K']}",
+                dtype="float32", timing=timing,
+            )
+        )
+
+
 def run_forward_benchmarks() -> "list[BenchmarkResult]":
     results: "list[BenchmarkResult]" = []
     _run_forward_ops("cpu", results)
+    _run_conv2d_forward("cpu", results)
     if is_cuda_available():
         _run_forward_ops("cuda", results)
+        _run_conv2d_forward("cuda", results)
     return results

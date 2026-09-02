@@ -154,6 +154,39 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         ]
         sub_colbcast_fn.restype = ctypes.c_int
 
+        # -- Milestone 15: Conv2d / MaxPool2d --
+        conv_fwd_fn = getattr(lib, f"cf_conv2d_forward_{suffix}")
+        conv_fwd_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 14
+        conv_fwd_fn.restype = ctypes.c_int
+
+        conv_bwd_input_fn = getattr(lib, f"cf_conv2d_backward_input_{suffix}")
+        conv_bwd_input_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 13
+        conv_bwd_input_fn.restype = ctypes.c_int
+
+        conv_bwd_weight_fn = getattr(lib, f"cf_conv2d_backward_weight_{suffix}")
+        conv_bwd_weight_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 13
+        conv_bwd_weight_fn.restype = ctypes.c_int
+
+        conv_bwd_bias_fn = getattr(lib, f"cf_conv2d_backward_bias_{suffix}")
+        conv_bwd_bias_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 4
+        conv_bwd_bias_fn.restype = ctypes.c_int
+
+        pool_fwd_fn = getattr(lib, f"cf_maxpool2d_forward_{suffix}")
+        pool_fwd_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 12
+        pool_fwd_fn.restype = ctypes.c_int
+
+        pool_bwd_fn = getattr(lib, f"cf_maxpool2d_backward_{suffix}")
+        pool_bwd_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 12
+        pool_bwd_fn.restype = ctypes.c_int
+
 
 def _load_library() -> "ctypes.CDLL":
     global _lib_cache
@@ -723,6 +756,131 @@ class CUDABackend(Backend):
         self._check(code, "max_axis1")
         self._synchronize("max_axis1")
         return CUDAStorage(out_ptr, (rows, 1), dtype, self._lib)
+
+    # -- Conv2d / MaxPool2d (Milestone 15) ---------------------------------------
+    #
+    # Real, straightforward CUDA kernels (`kernels.cu`'s "Conv2d / MaxPool2d"
+    # section) -- one thread per output/gradient-target element, looping over
+    # the kernel window in registers. No CPU fallback: every array here stays
+    # `CUDAStorage` throughout, matching every other method on this class.
+
+    def conv2d(
+        self, x: CUDAStorage, weight: CUDAStorage, bias: "CUDAStorage | None",
+        stride: "tuple[int, int]", padding: "tuple[int, int]",
+    ) -> CUDAStorage:
+        storages = (x, weight) if bias is None else (x, weight, bias)
+        dtype = self._require_compute_dtype(*storages, op="conv2d")
+        N, Cin, H, W = x.shape
+        Cout, _, KH, KW = weight.shape
+        SH, SW = stride
+        PH, PW = padding
+        Hout = (H + 2 * PH - KH) // SH + 1
+        Wout = (W + 2 * PW - KW) // SW + 1
+
+        out_ptr = self._alloc(N * Cout * Hout * Wout * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_conv2d_forward_{_SUFFIX[dtype]}")
+        code = fn(
+            x.ptr, weight.ptr, bias.ptr if bias is not None else None, out_ptr,
+            ctypes.c_int(N), ctypes.c_int(Cin), ctypes.c_int(H), ctypes.c_int(W),
+            ctypes.c_int(Cout), ctypes.c_int(KH), ctypes.c_int(KW),
+            ctypes.c_int(SH), ctypes.c_int(SW), ctypes.c_int(PH), ctypes.c_int(PW),
+            ctypes.c_int(Hout), ctypes.c_int(Wout), ctypes.c_int(1 if bias is not None else 0),
+        )
+        self._check(code, "conv2d")
+        self._synchronize("conv2d")
+        return CUDAStorage(out_ptr, (N, Cout, Hout, Wout), dtype, self._lib)
+
+    def conv2d_backward(
+        self, grad_output: CUDAStorage, x: CUDAStorage, weight: CUDAStorage, bias: "CUDAStorage | None",
+        stride: "tuple[int, int]", padding: "tuple[int, int]",
+    ) -> "tuple[CUDAStorage, CUDAStorage, CUDAStorage | None]":
+        storages = (grad_output, x, weight) if bias is None else (grad_output, x, weight, bias)
+        dtype = self._require_compute_dtype(*storages, op="conv2d_backward")
+        N, Cin, H, W = x.shape
+        Cout, _, KH, KW = weight.shape
+        SH, SW = stride
+        PH, PW = padding
+        Hout, Wout = grad_output.shape[2], grad_output.shape[3]
+        shape_args = (
+            ctypes.c_int(N), ctypes.c_int(Cin), ctypes.c_int(H), ctypes.c_int(W),
+            ctypes.c_int(Cout), ctypes.c_int(KH), ctypes.c_int(KW),
+            ctypes.c_int(SH), ctypes.c_int(SW), ctypes.c_int(PH), ctypes.c_int(PW),
+            ctypes.c_int(Hout), ctypes.c_int(Wout),
+        )
+
+        grad_x_ptr = self._alloc(N * Cin * H * W * dtype.itemsize)
+        fn_gx = getattr(self._lib, f"cf_conv2d_backward_input_{_SUFFIX[dtype]}")
+        code = fn_gx(grad_output.ptr, weight.ptr, grad_x_ptr, *shape_args)
+        self._check(code, "conv2d backward (input)")
+        self._synchronize("conv2d backward (input)")
+        grad_x = CUDAStorage(grad_x_ptr, x.shape, dtype, self._lib)
+
+        grad_w_ptr = self._alloc(Cout * Cin * KH * KW * dtype.itemsize)
+        fn_gw = getattr(self._lib, f"cf_conv2d_backward_weight_{_SUFFIX[dtype]}")
+        code = fn_gw(grad_output.ptr, x.ptr, grad_w_ptr, *shape_args)
+        self._check(code, "conv2d backward (weight)")
+        self._synchronize("conv2d backward (weight)")
+        grad_w = CUDAStorage(grad_w_ptr, weight.shape, dtype, self._lib)
+
+        grad_b = None
+        if bias is not None:
+            grad_b_ptr = self._alloc(Cout * dtype.itemsize)
+            fn_gb = getattr(self._lib, f"cf_conv2d_backward_bias_{_SUFFIX[dtype]}")
+            code = fn_gb(
+                grad_output.ptr, grad_b_ptr,
+                ctypes.c_int(N), ctypes.c_int(Cout), ctypes.c_int(Hout), ctypes.c_int(Wout),
+            )
+            self._check(code, "conv2d backward (bias)")
+            self._synchronize("conv2d backward (bias)")
+            grad_b = CUDAStorage(grad_b_ptr, (Cout,), dtype, self._lib)
+
+        return grad_x, grad_w, grad_b
+
+    def max_pool2d(
+        self, x: CUDAStorage, kernel_size: "tuple[int, int]", stride: "tuple[int, int]", padding: "tuple[int, int]"
+    ) -> CUDAStorage:
+        dtype = self._require_compute_dtype(x, op="max_pool2d")
+        N, C, H, W = x.shape
+        KH, KW = kernel_size
+        SH, SW = stride
+        PH, PW = padding
+        Hout = (H + 2 * PH - KH) // SH + 1
+        Wout = (W + 2 * PW - KW) // SW + 1
+
+        out_ptr = self._alloc(N * C * Hout * Wout * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_maxpool2d_forward_{_SUFFIX[dtype]}")
+        code = fn(
+            x.ptr, out_ptr,
+            ctypes.c_int(N), ctypes.c_int(C), ctypes.c_int(H), ctypes.c_int(W),
+            ctypes.c_int(KH), ctypes.c_int(KW), ctypes.c_int(SH), ctypes.c_int(SW),
+            ctypes.c_int(PH), ctypes.c_int(PW), ctypes.c_int(Hout), ctypes.c_int(Wout),
+        )
+        self._check(code, "max_pool2d")
+        self._synchronize("max_pool2d")
+        return CUDAStorage(out_ptr, (N, C, Hout, Wout), dtype, self._lib)
+
+    def max_pool2d_backward(
+        self, grad_output: CUDAStorage, x: CUDAStorage, kernel_size: "tuple[int, int]",
+        stride: "tuple[int, int]", padding: "tuple[int, int]",
+    ) -> CUDAStorage:
+        dtype = self._require_compute_dtype(grad_output, x, op="max_pool2d_backward")
+        N, C, H, W = x.shape
+        KH, KW = kernel_size
+        SH, SW = stride
+        PH, PW = padding
+        Hout, Wout = grad_output.shape[2], grad_output.shape[3]
+
+        grad_x_ptr = self._alloc(N * C * H * W * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_maxpool2d_backward_{_SUFFIX[dtype]}")
+        code = fn(
+            x.ptr, grad_output.ptr, grad_x_ptr,
+            ctypes.c_int(N), ctypes.c_int(C), ctypes.c_int(H), ctypes.c_int(W),
+            ctypes.c_int(KH), ctypes.c_int(KW), ctypes.c_int(SH), ctypes.c_int(SW),
+            ctypes.c_int(PH), ctypes.c_int(PW), ctypes.c_int(Hout), ctypes.c_int(Wout),
+        )
+        self._check(code, "max_pool2d backward")
+        self._synchronize("max_pool2d backward")
+        return CUDAStorage(grad_x_ptr, x.shape, dtype, self._lib)
 
     # -- optimizer (Milestone 10) -----------------------------------------------
 
