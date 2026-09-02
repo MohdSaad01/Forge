@@ -971,3 +971,59 @@ __global__ void k_maxpool2d_backward(
 
 MAXPOOL2D_BACKWARD_LAUNCHER(float, f32)
 MAXPOOL2D_BACKWARD_LAUNCHER(double, f64)
+
+// -- Dropout mask (Milestone 16) ----------------------------------------------
+//
+// Every element's Bernoulli(1-p) draw is generated entirely on-device, one
+// thread per element, from a stateless hash of (seed, index) -- no curand
+// dependency, no per-element host round-trip, no NumPy involvement (the
+// milestone brief explicitly rules out generating the mask via NumPy and
+// forbids any CPU fallback for CUDA Dropout). `seed` is the one piece of
+// host-side randomness: a single integer drawn once per forward call from
+// `forge.random`'s own generator (`CUDABackend.dropout_mask`,
+// `forge/backend/cuda/backend.py`) -- a cheap scalar draw, not the
+// per-element array generation the brief forbids.
+//
+// `cf_splitmix64` is the standard SplitMix64 finalizer (Vigna, 2015): a
+// correctness-first, statistically well-distributed stateless hash, not a
+// cryptographic or sophisticated GPU RNG library -- exactly what the
+// milestone brief asks for ("a simple correctness-first CUDA implementation
+// is sufficient... do not attempt to implement a sophisticated GPU RNG
+// library"). Combining `seed` with each element's flat index gives every
+// element an independent-looking, reproducible-given-`seed` draw, computed
+// directly from `mask`'s own thread index -- no shared state, no RNG object
+// to allocate or free.
+
+__device__ inline unsigned long long cf_splitmix64(unsigned long long x) {
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    x ^= (x >> 31);
+    return x;
+}
+
+template <typename T>
+__global__ void k_dropout_mask(T* mask, long long n, double p, unsigned long long seed) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i >= n) return;
+
+    unsigned long long h = cf_splitmix64(seed ^ cf_splitmix64(static_cast<unsigned long long>(i)));
+    // Top 53 bits -> a uniform double in [0, 1), the same bit-width IEEE 754
+    // doubles can represent exactly -- avoids the modulo bias a naive
+    // `h % range` would introduce.
+    double u = static_cast<double>(h >> 11) * (1.0 / 9007199254740992.0);  // 2^53
+    bool keep = u >= p;
+    mask[i] = keep ? static_cast<T>(1.0 / (1.0 - p)) : static_cast<T>(0);
+}
+
+#define DROPOUT_MASK_LAUNCHER(TYPE, SUFFIX)                                              \
+    extern "C" __declspec(dllexport) int cf_dropout_mask_##SUFFIX(                       \
+        TYPE* mask, long long n, double p, unsigned long long seed) {                    \
+        int blocks, threads;                                                             \
+        launch_config(n, blocks, threads);                                               \
+        k_dropout_mask<TYPE><<<blocks, threads>>>(mask, n, p, seed);                     \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+DROPOUT_MASK_LAUNCHER(float, f32)
+DROPOUT_MASK_LAUNCHER(double, f64)

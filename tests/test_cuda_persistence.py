@@ -18,7 +18,7 @@ import forge
 from forge import Tensor, no_grad
 from forge.backend.cpu import CPUBackend
 from forge.backend.cuda import CUDAStorage, is_cuda_available
-from forge.nn import Linear, Module, ReLU
+from forge.nn import Conv2d, Dropout, Flatten, Linear, MaxPool2d, Module, ReLU, Sequential
 from forge.serialization import load_model, register_module, save_model
 
 pytestmark = pytest.mark.skipif(not is_cuda_available(), reason="CUDA is not available on this machine")
@@ -147,6 +147,37 @@ def test_loaded_cuda_parameters_are_fresh_leaves_with_no_grad_state(tmp_path):
     assert loaded.weight.grad is None
     assert loaded.weight.requires_grad is True
     assert loaded.weight.device.type == "cuda"
+
+
+# -- Sequential / Flatten / Dropout CUDA round trip (Milestone 16) -----------
+
+
+def test_cuda_sequential_cnn_round_trip_predictions_match(tmp_path):
+    forge.random.seed(9)
+    model = Sequential(
+        Conv2d(1, 4, kernel_size=3), ReLU(), MaxPool2d(2), Flatten(), Linear(36, 8), ReLU(),
+        Dropout(0.3), Linear(8, 2),
+    ).to("cuda")
+    model.eval()  # deterministic predictions across the round-trip (Dropout is identity)
+
+    x = Tensor(np.random.default_rng(10).standard_normal((3, 1, 8, 8)).astype(np.float32)).to("cuda")
+    with no_grad():
+        original_out = model(x).to("cpu").numpy()
+
+    path = tmp_path / "sequential_cnn.forge"
+    save_model(model, str(path))
+    del model
+    loaded = load_model(str(path))
+
+    assert isinstance(loaded, Sequential)
+    assert [name for name, _ in loaded.named_children()] == ["0", "1", "2", "3", "4", "5", "6", "7"]
+    for _, param in loaded.named_parameters():
+        assert param.device.type == "cuda"
+        assert isinstance(param._data, CUDAStorage)
+
+    with no_grad():
+        loaded_out = loaded(x).to("cpu").numpy()
+    np.testing.assert_allclose(original_out, loaded_out, **TOL)
 
 
 # -- Explicit device-override conversions -----------------------------------

@@ -449,6 +449,32 @@ class Tensor:
 
         return self._differentiable_wrap(result, (self,), backward_fn, "max_pool2d")
 
+    # -- Dropout (Milestone 16) ----------------------------------------------
+
+    def dropout_mask(self, p: float, rng: np.random.Generator) -> "Tensor":
+        """A fresh, non-differentiable mask matching this tensor's shape/dtype/device.
+
+        `mask[i]` is `1/(1-p)` with probability `1-p`, `0` otherwise
+        (inverted dropout -- the scaling is baked into the mask itself).
+        `self`'s values are never read; only its shape/dtype/device are used.
+        Dispatches to `Backend.dropout_mask`, which generates every element's
+        randomness on this tensor's own device (CPU draws directly from
+        `rng`; CUDA draws one integer seed from `rng` and generates the mask
+        with a real on-device kernel -- see
+        `docs/architecture/cuda-backend.md`'s **CUDA Dropout** section).
+
+        `forge.nn.Dropout` composes this via ordinary multiplication
+        (`x * x.dropout_mask(...)`) rather than a dedicated backward rule:
+        the mask is a plain `requires_grad=False` leaf, so `mul`'s existing
+        autograd already gives the correct forward (`x * mask`) and backward
+        (`grad_output * mask`) behavior, and the same mask object -- not a
+        freshly redrawn one -- is what backward multiplies against, since it
+        is captured by `mul`'s own backward closure.
+        """
+        backend = get_backend(self._device)
+        mask_array = backend.dropout_mask(self._data, p, rng)
+        return Tensor._wrap(mask_array, self._device)
+
     # -- Device transfer -----------------------------------------------------
 
     def to(self, device: "str | Device") -> "Tensor":

@@ -8,7 +8,10 @@ Tensor operations. See `docs/architecture/modules.md` and
 """
 
 from .activation import ReLU
+from .container import Sequential
 from .conv import Conv2d
+from .dropout import Dropout
+from .flatten import Flatten
 from .linear import Linear
 from .loss import CrossEntropyLoss, Loss, MSELoss
 from .module import Module
@@ -17,5 +20,6 @@ from .pooling import MaxPool2d
 
 __all__ = [
     "Module", "Parameter", "Linear", "ReLU", "Conv2d", "MaxPool2d",
+    "Sequential", "Flatten", "Dropout",
     "Loss", "MSELoss", "CrossEntropyLoss",
 ]

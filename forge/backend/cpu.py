@@ -246,3 +246,10 @@ class CPUBackend(Backend):
                     onehot[:, :, :, :, di, dj] * grad_output
                 )
         return np.ascontiguousarray(grad_padded[:, :, PH : PH + H, PW : PW + W])
+
+    # -- Dropout (Milestone 16) ----------------------------------------------
+
+    def dropout_mask(self, a: np.ndarray, p: float, rng: np.random.Generator) -> np.ndarray:
+        keep = rng.random(a.shape) >= p
+        scale = 1.0 / (1.0 - p)
+        return np.where(keep, scale, 0.0).astype(a.dtype, copy=False)

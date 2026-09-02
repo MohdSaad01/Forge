@@ -587,3 +587,71 @@ outran the CPU's im2col-plus-BLAS path at the "medium" scale for both
 forward and backward, which is not something the milestone required or
 optimized for. See `docs/architecture/cuda-backend.md`'s **CUDA Conv2d /
 MaxPool2d** section.
+
+### M16 — Sequential, Flatten, and Dropout
+Improves model composition and adds Forge's first `.training`-dependent
+stochastic layer. `nn.Sequential(*modules)` (`forge/nn/container.py`) is an
+ordered `Module` container -- children register under `"0"`, `"1"`, ... via
+ordinary `Module.__setattr__`, so every existing traversal API
+(`named_children`/`parameters`/`named_modules`, `train()`/`eval()`,
+`Module.to()`) already walks it correctly with no overrides beyond
+`forward()`. `nn.Flatten(start_dim=1, end_dim=-1)`
+(`forge/nn/flatten.py`) collapses a dim range (default: `(N,C,H,W) ->
+(N,C*H*W)`) via `Tensor.reshape` alone -- no parameters, no new backward
+rule. `nn.Dropout(p=0.5, generator=None)` (`forge/nn/dropout.py`) composes
+`x * x.dropout_mask(p, rng)`; the mask is a `requires_grad=False` leaf with
+`1/(1-p)`-scaled inverted-dropout values already baked in, so ordinary `mul`
+autograd gives the correct forward/backward with no Dropout-specific
+gradient code, and eval-mode `forward()` returns `x` itself unchanged
+(identity, no new graph node).
+
+A new `Backend.dropout_mask(a, p, rng)` method (`forge/backend/base.py`)
+generates the mask: `CPUBackend` draws directly from the passed
+`numpy.random.Generator` (`rng.random(a.shape)`); `CUDABackend` draws
+**one** integer seed from `rng` (a cheap host-side scalar, not per-element
+randomness) and generates every element's Bernoulli draw on-device via a
+new kernel, `cf_dropout_mask_{f32,f64}` (`kernels.cu`), using a stateless
+SplitMix64 hash of `(seed, element_index)` -- no curand dependency, no
+device-side RNG state, per the milestone's "simple correctness-first, not a
+sophisticated GPU RNG library" instruction. `Dropout.forward()` fetches
+`forge.random.default_generator()` fresh on every call (unlike
+`Linear`/`Conv2d`'s one-time construction-time snapshot), so a single
+`forge.random.seed(...)` governs every draw across a training run.
+
+Persistence needed one small registry-level accommodation: the generic
+save/load tree walk (`forge/serialization/model.py`) requires a freshly
+`from_config()`-constructed module to already have a child under every name
+about to be attached, which holds for free when config alone determines
+structure -- but `Sequential`'s child *count* is data, not config. Its
+registered `from_config` (`forge/serialization/registry.py`) builds that
+many placeholder `Module()` children from one extra config field
+(`n_children`); the unmodified attach loop then overwrites each placeholder
+with its real child. No change to the generic algorithm or file format.
+`Flatten`/`Dropout` persist their config (`start_dim`/`end_dim`, `p`)
+through the existing registry mechanism unchanged; `.training` round-trips
+generically for every module already.
+
+New test files: `tests/test_sequential.py` (construction/validation,
+forward order, every discovery API, nested train/eval, `Module.to()`),
+`tests/test_flatten.py` (default and general `start_dim`/`end_dim`,
+validation, autograd), `tests/test_dropout.py` (p-validation, statistical
+training behavior, exact eval identity, backward-reuses-forward-mask,
+determinism under `forge.random.seed()` and an explicit `generator=`),
+`tests/test_cuda_dropout.py` (real CUDA execution, statistics, gradient
+correctness, eval identity, a structural zero-`CPUBackend`-calls check, and
+an explicit "masks are not bitwise-equal but agree statistically" CPU/CUDA
+comparison), `tests/test_cuda_flatten.py`, and
+`tests/test_sequential_flatten_dropout_integration.py` (the milestone's
+required `Sequential(Conv2d, ReLU, MaxPool2d, Flatten, Linear, ReLU,
+Dropout, Linear)` acceptance test through `Trainer`, CPU and CUDA).
+Extended `tests/test_serialization.py`/`tests/test_cuda_persistence.py`
+with Sequential/Flatten/Dropout round-trip coverage (including nested
+Sequential and per-module mixed training-mode round-tripping). 774 tests
+total (516 CPU-only, up from 441; 258 CUDA, up from 239 -- 94 new tests
+this milestone added), verified directly on the development GPU (940MX, CC
+5.0, driver 582.53, CUDA Toolkit 12.6), and the full suite was also run
+with `PATH` stripped of the CUDA toolchain to confirm all 258 CUDA tests
+skip cleanly (`516 passed, 258 skipped`, `0 failed`). See
+`docs/architecture/modules.md`'s **Sequential, Flatten, Dropout** section
+and `docs/architecture/cuda-backend.md`'s **CUDA Dropout** section.
+MaxPool2d** section.

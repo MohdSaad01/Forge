@@ -147,3 +147,24 @@ class Backend(ABC):
         stride: "tuple[int, int]", padding: "tuple[int, int]",
     ) -> Any:
         """Gradient w.r.t. `x`, recomputing each window's argmax from the saved input `x`."""
+
+    # -- Dropout (Milestone 16) ----------------------------------------------
+    #
+    # `a` is only ever read for its shape/dtype -- its values never affect
+    # the mask. `rng` is a `numpy.random.Generator` (`forge.random`'s
+    # process-global generator by default, or an explicit one); a CPU
+    # implementation draws directly from it (`docs/architecture/modules.md`),
+    # while a CUDA implementation draws exactly one integer seed from it
+    # (a cheap host-side scalar draw, not per-element randomness) and
+    # generates every element's Bernoulli draw on-device from that seed --
+    # see `docs/architecture/cuda-backend.md`'s **CUDA Dropout** section.
+
+    @abstractmethod
+    def dropout_mask(self, a: Any, p: float, rng: Any) -> Any:
+        """A mask matching `a`'s shape/dtype: `1/(1-p)` with probability `1-p`, else `0`.
+
+        Scaling is baked into the mask itself (inverted dropout), so
+        `Tensor.dropout_mask()`'s caller implements both forward
+        (`x * mask`) and backward (`grad_output * mask`, via ordinary `mul`
+        autograd) with one multiply and no Dropout-specific backward rule.
+        """

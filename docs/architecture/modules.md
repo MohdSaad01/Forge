@@ -1,4 +1,4 @@
-# Modules and Parameters (Milestone 3 + 9; CUDA autograd boundary updated in Milestone 10)
+# Modules and Parameters (Milestone 3 + 9; CUDA autograd boundary updated in Milestone 10; Sequential/Flatten/Dropout added in Milestone 16)
 
 ## Package layout
 ```
@@ -192,12 +192,40 @@ Tensor.backward()
 Parameter.grad (Parameter is a leaf Tensor)
 ```
 
+## Sequential, Flatten, Dropout (Milestone 16)
+
+### `Sequential`
+`forge/nn/container.py`. An ordered `Module` container: `Sequential(m0, m1, ...)` registers each argument via ordinary `Module.__setattr__` under the deterministic names `"0"`, `"1"`, `"2"`, ... in construction order, then `forward(x)` applies them in that order (`for _, child in self.named_children(): x = child(x)`). Because `Module._modules` is already an insertion-ordered `dict`, every existing traversal API (`named_children`/`children`/`named_modules`/`modules`/`parameters`/`named_parameters`, `train()`/`eval()`, `Module.to()`, `Module.device`) already walks a `Sequential` tree correctly with **no overrides** beyond `forward()` itself -- this is the whole point of building it directly on `Module` rather than a separate container abstraction.
+
+Every constructor argument must be a `Module`; a non-`Module` argument raises `ModuleError` immediately (before anything is registered). `Sequential()` with zero modules is explicitly supported as the identity function (`forward(x)` returns `x` unchanged), matching the common convention (PyTorch) that an empty container composes to a no-op.
+
+### `Flatten`
+`forge/nn/flatten.py`. `Flatten(start_dim=1, end_dim=-1)` collapses dims `[start_dim, end_dim]` (inclusive, negative-indexed like NumPy) into one, resolved against the input's actual `ndim` on every `forward()` call. The default collapses an `(N, C, H, W)` `Conv2d`/`MaxPool2d` output down to `(N, C*H*W)` ahead of a `Linear` layer. Built entirely on the existing `Tensor.reshape` (already differentiable, already real on CPU and CUDA -- `docs/architecture/cuda-backend.md`), so `Flatten` has no parameters and no backward rule of its own, exactly like `ReLU` through `Tensor.relu()`. Out-of-range or `start_dim > end_dim` configurations raise `ShapeMismatchError` at `forward()` time (the specific input shape is needed to resolve negative dims, so this cannot be validated at construction).
+
+### `Dropout`
+`forge/nn/dropout.py`. `Dropout(p=0.5, generator=None)` is Forge's first `.training`-dependent stochastic layer: `0 <= p < 1` is validated at construction (`ModuleError` otherwise). During training, `forward(x)` computes `x * mask` where `mask = x.dropout_mask(p, rng)` (`Tensor.dropout_mask`, `forge/tensor/tensor.py`) -- a fresh `requires_grad=False` leaf whose values are already `1/(1-p)` (kept) or `0` (dropped), i.e. **inverted dropout**: the rescaling happens at training time, so `eval()`'s forward pass is a plain, unscaled identity. During evaluation, `forward()` returns `x` itself unchanged -- no new graph node is inserted, so gradients flow through exactly as if `Dropout` were absent.
+
+**No Dropout-specific backward rule exists.** `x * mask` is ordinary `Tensor.__mul__`, whose existing `mul_backward` autograd rule already gives `grad_input = grad_output * mask` -- exactly the required backward formula -- and the *same* `mask` object computed during forward is what that backward closure captures and reuses (see `Tensor._binary_op`'s closure over `b_data`); backward never redraws a mask. This is why Dropout integrates with autograd, CPU, and CUDA with essentially zero Dropout-specific code at the Tensor/autograd layer -- all the real work is in `Backend.dropout_mask` (mask generation), described next.
+
+`Dropout` reads its own `self.training` -- no new state mechanism; **Module state** above is unchanged.
+
+#### Randomness (`Backend.dropout_mask`)
+A new `Backend` method, `dropout_mask(a, p, rng) -> mask`, added alongside `conv2d`/`max_pool2d` in the same ABC (`forge/backend/base.py`). `a` is read only for its shape/dtype; `rng` is a live `numpy.random.Generator` -- `forge.random.default_generator()` by default (fetched **fresh on every `forward()` call**, unlike `Linear`/`Conv2d`'s one-time construction-time snapshot, so a `forge.random.seed(...)` call governs every subsequent Dropout draw across an entire training run), or an explicit one passed via `Dropout(..., generator=...)`. No second global RNG is introduced.
+
+- **CPU** (`CPUBackend.dropout_mask`): draws directly from `rng.random(a.shape)`, thresholds against `p`, scales by `1/(1-p)` -- an ordinary NumPy computation, exactly like every other `CPUBackend` method.
+- **CUDA** (`CUDABackend.dropout_mask`): draws **exactly one integer seed** from `rng` (a cheap host-side scalar draw -- not per-element randomness), then launches `cf_dropout_mask_{f32,f64}`, a real CUDA kernel that generates every element's Bernoulli draw independently on-device from a stateless hash of `(seed, element_index)` (`kernels.cu`'s **Dropout mask** section, SplitMix64-based -- see `docs/architecture/cuda-backend.md`'s **CUDA Dropout** section for the full mechanism and no-CPU-fallback rationale).
+
+### Known limitations (Sequential/Flatten/Dropout)
+- `Sequential` has no `__getitem__`/`__len__`/`__iter__` convenience accessors -- only the `Module` traversal API (`named_children()`, `children()`, etc.) is available, per the milestone's "do not silently expand scope" constraint.
+- `Sequential`'s persistence needs one small registry-level accommodation beyond the generic tree walk: `forge/serialization/model.py`'s `_build_load_node` requires a freshly `from_config()`-constructed module to already have a child under every name the file is about to attach (a fixed-shape invariant that holds for free when config alone determines structure, e.g. `Linear`'s `in_features`/`out_features`). `Sequential`'s child *count* is data, not config, so its registered `from_config` builds that many placeholder `Module()` children up front (`n_children` is the one extra config field `get_config` reports); the existing attach loop then overwrites each placeholder with its real child, unmodified. See `forge/serialization/registry.py`'s `"Sequential"` registration comment. No change to the generic save/load algorithm or file format was needed.
+- `Flatten`'s `start_dim`/`end_dim` are resolved against the input's `ndim` on every `forward()` call rather than fixed at construction -- correct for the fixed-rank `(N, C, H, W)` inputs every Forge layer that feeds one actually produces, but means a shape error only ever surfaces at `forward()` time, not construction time.
+- No layer whose forward behavior differs by `.training` existed before Milestone 16; `Dropout` is now the first. BatchNorm/LayerNorm remain out of scope (see the milestone's explicit non-goals).
+- `forge.random` remains a single global generator, not a per-module or thread-local RNG; `Dropout(generator=...)` is the escape hatch for an independent stream.
+
 ## Known limitations
-- No layer whose forward behavior differs by `.training` (dropout, batch norm) yet; the mode plumbing exists for later milestones to use.
-- No module serialization (`state_dict`-equivalent) yet.
-- `forge.random` is a single global generator, not a per-module or thread-local RNG.
+- No module serialization gap remains for the module types this milestone covers (see **Sequential/Flatten/Dropout** limitations above for the one Sequential-specific accommodation).
 - No buffer concept (see **No buffers to move** above) -- `Module.to()` moves `Parameter`s only.
 - `Module.to()` moves `Parameter`s, never a module's plain Python attributes -- an `in_features`-style config int, or any non-Tensor/non-Module attribute, is left exactly as constructed.
 - As of Milestone 10, a CUDA-resident model's forward pass no longer needs `forge.no_grad()`: since `Module.to()` preserves `requires_grad=True` and CUDA autograd is now supported for `Linear`/`ReLU`'s operations, a bare forward call succeeds and builds a real graph, and `backward()` on the result runs on CUDA -- see `docs/architecture/cuda-backend.md`'s **CUDA autograd** section. `no_grad()` remains available (and still suspends graph construction on CUDA exactly as on CPU) for inference-only forward passes.
 
-As of Milestone 4, an optimizer (`forge.optim.SGD`) exists and updates `Parameter` data from `.grad` -- see `docs/architecture/optimization.md`. As of Milestone 9, `Module.to(device)` moves a module tree's `Parameter`s between CPU and CUDA -- see **Device movement** above and `docs/architecture/cuda-backend.md`.
+As of Milestone 4, an optimizer (`forge.optim.SGD`) exists and updates `Parameter` data from `.grad` -- see `docs/architecture/optimization.md`. As of Milestone 9, `Module.to(device)` moves a module tree's `Parameter`s between CPU and CUDA -- see **Device movement** above and `docs/architecture/cuda-backend.md`. As of Milestone 16, `Sequential`/`Flatten`/`Dropout` compose all of this with no new subsystem -- see **Sequential, Flatten, Dropout** above.

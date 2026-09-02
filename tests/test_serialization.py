@@ -18,7 +18,7 @@ import pytest
 import forge
 from forge import Tensor, no_grad
 from forge.exceptions import PersistenceError
-from forge.nn import Conv2d, Linear, MaxPool2d, Module, ReLU
+from forge.nn import Conv2d, Dropout, Flatten, Linear, MaxPool2d, Module, ReLU, Sequential
 from forge.serialization import load_model, register_module, save_model
 from forge.serialization.archive import METADATA_ENTRY, PARAMETERS_DIR
 
@@ -224,6 +224,124 @@ def test_save_load_nested_cnn_predictions_match(tmp_path):
     x = Tensor(np.random.default_rng(11).standard_normal((2, 1, 8, 8)))
     with no_grad():
         assert np.allclose(model(x).numpy(), loaded(x).numpy())
+
+
+# -- Sequential / Flatten / Dropout round-trip (Milestone 16) --------------
+
+
+def test_save_load_flatten_restores_configuration(tmp_path):
+    model = Flatten(start_dim=2, end_dim=3)
+    path = tmp_path / "flatten.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    assert isinstance(loaded, Flatten)
+    assert loaded.start_dim == 2
+    assert loaded.end_dim == 3
+    assert dict(loaded.named_parameters()) == {}
+
+
+def test_save_load_dropout_restores_p_and_training_state(tmp_path):
+    model = Dropout(0.35)
+    model.eval()
+    path = tmp_path / "dropout.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    assert isinstance(loaded, Dropout)
+    assert loaded.p == pytest.approx(0.35)
+    assert loaded.training is False
+    assert dict(loaded.named_parameters()) == {}
+
+
+def test_save_load_dropout_training_mode_round_trips_true(tmp_path):
+    model = Dropout(0.5)
+    assert model.training is True
+    path = tmp_path / "dropout.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+    assert loaded.training is True
+
+
+def test_save_load_sequential_restores_child_hierarchy_and_order(tmp_path):
+    model = Sequential(
+        Conv2d(1, 4, kernel_size=3), ReLU(), MaxPool2d(2), Flatten(), Linear(36, 8), Dropout(0.3),
+    )
+    path = tmp_path / "sequential.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    assert isinstance(loaded, Sequential)
+    original_order = [name for name, _ in model.named_children()]
+    loaded_order = [name for name, _ in loaded.named_children()]
+    assert loaded_order == original_order == ["0", "1", "2", "3", "4", "5"]
+    assert [type(c).__name__ for _, c in loaded.named_children()] == [
+        "Conv2d", "ReLU", "MaxPool2d", "Flatten", "Linear", "Dropout",
+    ]
+
+
+def test_save_load_sequential_parameters_and_predictions_match(tmp_path):
+    forge.random.seed(5)
+    model = Sequential(
+        Conv2d(1, 4, kernel_size=3), ReLU(), MaxPool2d(2), Flatten(), Linear(36, 8), ReLU(),
+        Dropout(0.3), Linear(8, 2),
+    )
+    model.eval()  # deterministic predictions across the round-trip (Dropout is identity)
+    path = tmp_path / "sequential_cnn.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    original = dict(model.named_parameters())
+    restored = dict(loaded.named_parameters())
+    assert set(original) == set(restored)
+    for name in original:
+        assert np.array_equal(original[name].numpy(), restored[name].numpy())
+
+    x = Tensor(np.random.default_rng(6).standard_normal((3, 1, 8, 8)).astype(np.float32))
+    with no_grad():
+        assert np.allclose(model(x).numpy(), loaded(x).numpy())
+
+
+def test_save_load_empty_sequential_round_trips(tmp_path):
+    model = Sequential()
+    path = tmp_path / "empty_sequential.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    assert isinstance(loaded, Sequential)
+    assert list(loaded.named_children()) == []
+    x = Tensor([1.0, 2.0, 3.0])
+    with no_grad():
+        assert np.array_equal(loaded(x).numpy(), x.numpy())
+
+
+def test_save_load_nested_sequential_preserves_hierarchy(tmp_path):
+    model = Sequential(Linear(3, 4), Dropout(0.5), Sequential(Linear(4, 2), Dropout(0.1)))
+    path = tmp_path / "nested_sequential.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    assert [name for name, _ in loaded.named_children()] == ["0", "1", "2"]
+    inner = loaded._modules["2"]
+    assert isinstance(inner, Sequential)
+    assert [name for name, _ in inner.named_children()] == ["0", "1"]
+    assert len(list(loaded.parameters())) == len(list(model.parameters()))
+
+
+def test_nested_sequential_mixed_training_mode_round_trips_per_module(tmp_path):
+    model = Sequential(Linear(2, 2), Dropout(0.5), Sequential(Dropout(0.2)))
+    model.eval()
+    model._modules["1"].train()  # diverge one child back to train mode
+
+    path = tmp_path / "sequential_mixed_mode.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    assert loaded.training is False
+    assert loaded._modules["0"].training is False
+    assert loaded._modules["1"].training is True
+    assert loaded._modules["2"].training is False
+    assert loaded._modules["2"]._modules["0"].training is False
 
 
 # -- nested model round-trip -----------------------------------------------

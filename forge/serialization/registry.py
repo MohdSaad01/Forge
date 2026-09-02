@@ -124,8 +124,12 @@ def spec_for_name(type_name: str) -> ModuleSpec:
 
 def _register_builtins() -> None:
     from ..nn.activation import ReLU
+    from ..nn.container import Sequential
     from ..nn.conv import Conv2d
+    from ..nn.dropout import Dropout
+    from ..nn.flatten import Flatten
     from ..nn.linear import Linear
+    from ..nn.module import Module
     from ..nn.pooling import MaxPool2d
 
     register_module(
@@ -158,6 +162,45 @@ def _register_builtins() -> None:
             "stride": list(m.stride),
             "padding": list(m.padding),
         },
+    )
+    register_module(
+        "Sequential",
+        Sequential,
+        # `_build_load_node` (`forge/serialization/model.py`) requires a
+        # freshly `from_config`-constructed module to already have a child
+        # under every name the file is about to attach (it validates
+        # `expected_child_names == actual_child_names` *before* the
+        # attach loop) -- a fixed-shape invariant that holds for free for
+        # every other registered type (their child/parameter set is
+        # entirely determined by config, e.g. `Linear`'s `in_features`/
+        # `out_features`). `Sequential`'s child *count* is itself data, not
+        # config, so `get_config`/`from_config` report/consume exactly that
+        # one extra fact -- `n_children` -- to build the right number of
+        # placeholder `Module()` children up front; the attach loop then
+        # overwrites every placeholder with its real reconstructed child
+        # (Conv2d, ReLU, ...) via the ordinary `setattr()` mechanism, the
+        # same as any other module's children. This is the smallest
+        # extension the existing `from_config` mechanism already
+        # anticipates (see `register_module`'s docstring) -- no change to
+        # the generic save/load tree walk itself, and still no
+        # Sequential-specific persistence *format*.
+        get_config=lambda m: {"n_children": len(m._modules)},
+        from_config=lambda config: Sequential(*(Module() for _ in range(int(config.get("n_children", 0))))),
+    )
+    register_module(
+        "Flatten",
+        Flatten,
+        get_config=lambda m: {"start_dim": m.start_dim, "end_dim": m.end_dim},
+    )
+    register_module(
+        "Dropout",
+        Dropout,
+        # Only `p` is persisted -- never RNG state or the current mask (see
+        # `docs/architecture/modules.md`'s **Dropout** section). `.training`
+        # round-trips generically already: `_build_save_node`/
+        # `_build_load_node` (`forge/serialization/model.py`) save/restore
+        # every module's `.training` flag regardless of type.
+        get_config=lambda m: {"p": m.p},
     )
 
 

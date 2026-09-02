@@ -1,4 +1,4 @@
-# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15)
+# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16)
 
 ## Summary
 Forge has a real CUDA execution backend for a small operation set: tensor
@@ -147,6 +147,7 @@ transfers a tensor to make itself work.
 | `exp`/`log` (Milestone 14) | `cf_exp_{f32,f64}`, `cf_log_{f32,f64}` | float32, float64 | One thread per element, via `expf`/`logf` (float) or `exp`/`log` (double) -- added for `CrossEntropyLoss`'s log-sum-exp; see **CUDA CrossEntropyLoss** below |
 | `conv2d` (Milestone 15) | `cf_conv2d_forward_{f32,f64}` | float32, float64 | One thread per output element (`N*C_out*H_out*W_out`), looping over `C_in*KH*KW` in registers; see **CUDA Conv2d / MaxPool2d** below |
 | `max_pool2d` (Milestone 15) | `cf_maxpool2d_forward_{f32,f64}` | float32, float64 | One thread per output element, looping over `KH*KW`; see **CUDA Conv2d / MaxPool2d** below |
+| `dropout_mask` (Milestone 16) | `cf_dropout_mask_{f32,f64}` | float32, float64 | One thread per element; a stateless SplitMix64 hash of `(seed, element_index)` decides keep/drop -- no curand, no RNG state on-device; see **CUDA Dropout** below |
 
 `relu` moved out of this list in Milestone 9; `exp`/`log` moved out of the
 "required by the ABC but unsupported on CUDA" state they were in through
@@ -562,6 +563,75 @@ matmul) applies here too: these kernels are correctness-first, and
 entries exist to *measure* that, not to claim CUDA already beats the CPU
 im2col-plus-BLAS path at every scale on the 940MX.
 
+## CUDA Dropout (Milestone 16)
+`nn.Dropout` (`forge/nn/dropout.py`) is backend-agnostic, exactly like
+`Linear`/`ReLU`/`Flatten`: `forward()` composes `x * x.dropout_mask(p, rng)`
+(`Tensor.dropout_mask`, `forge/tensor/tensor.py`), which dispatches to a new
+`Backend.dropout_mask(a, p, rng)` method. No CUDA-specific code exists in
+`nn/dropout.py`, and no Dropout-specific backward kernel exists either --
+`x * mask` is ordinary `mul`, whose existing `mul_backward` (this document's
+**CUDA autograd** section) already gives the correct gradient. The only new
+CUDA work this milestone needed was mask *generation*.
+
+### Why not curand
+The milestone brief explicitly asks for "a simple correctness-first CUDA
+implementation," not "implement a sophisticated GPU RNG library" -- so
+Dropout does not link against `curand`. Instead, `CUDABackend.dropout_mask`
+draws **exactly one** integer seed from the caller's `rng`
+(`numpy.random.Generator`, `forge.random`'s default or an explicit one) --
+a cheap, one-time host-side scalar draw, not per-element randomness -- and
+passes it to a real CUDA kernel, `cf_dropout_mask_{f32,f64}`
+(`kernels.cu`'s **Dropout mask** section). That kernel generates every
+element's Bernoulli(1-p) draw independently, entirely on-device, with one
+thread per element:
+
+```text
+h = splitmix64(seed XOR splitmix64(element_index))
+u = (h >> 11) * 2^-53          # uniform double in [0, 1)
+mask[i] = (u >= p) ? 1/(1-p) : 0
+```
+
+`cf_splitmix64` is the standard SplitMix64 finalizer (Vigna, 2015): a
+stateless, statistically well-distributed hash -- not a cryptographic or
+general-purpose GPU RNG, just enough to make each thread's draw look
+independent of its neighbors given a fixed `seed`. No RNG *state* is
+allocated, stored, or freed anywhere on the device: every thread computes
+its own draw purely as a function of `(seed, i)`, so there is nothing to
+initialize (no `curandState` array, no per-thread setup kernel) and the
+whole mechanism stays narrowly scoped to Dropout, per the milestone brief.
+
+### No CPU fallback
+Per-element randomness never touches NumPy or the host for a CUDA tensor:
+`CPUBackend.dropout_mask` (`rng.random(a.shape)`, an ordinary NumPy draw) is
+a completely separate implementation, used only when `a`'s device is CPU.
+`tests/test_cuda_dropout.py::test_cuda_dropout_never_calls_cpu_backend`
+monkeypatches every `CPUBackend` method (the same spy pattern
+`test_cuda_conv.py` uses) and asserts the recorded call list is empty
+across a full forward + backward pass.
+
+### CPU/CUDA consistency: statistical, not bitwise
+Unlike every other CUDA operation in this document (which is checked against
+CPU within floating-point tolerance for the *same* inputs), Dropout's CPU
+and CUDA masks are **not** expected to agree element-for-element, even
+given the same `forge.random.seed(...)` -- NumPy's `Generator.random()` and
+`cf_dropout_mask`'s SplitMix64-based kernel are different algorithms
+consuming the seed differently. `tests/test_cuda_dropout.py`'s
+`test_cpu_and_cuda_dropout_agree_statistically_not_bitwise` makes this
+explicit: it asserts the two masks are *not* bit-for-bit equal, then checks
+both realize the same `fraction_zeroed ≈ p` distribution. Every other CUDA
+Dropout test compares shape/dtype, statistical behavior (`fraction_zeroed`,
+`mean`), gradient correctness (`grad == mask` pattern), and eval-mode exact
+identity -- never exact per-element forward values against CPU.
+
+### Randomness lifecycle
+`Dropout.forward()` fetches `forge.random.default_generator()` **fresh on
+every call** (unless an explicit `generator=` was passed at construction),
+so a single `forge.random.seed(...)` governs every Dropout draw across an
+entire training run, on either device -- see
+`docs/architecture/modules.md`'s **Dropout** section for the full
+randomness-lifecycle writeup (this differs from `Linear`/`Conv2d`, which
+snapshot a generator once at construction for their one-time weight init).
+
 ## CUDA model persistence (Milestone 13)
 `save_model()`/`load_model()` (`forge/serialization/model.py`) now support
 models whose `Parameter`s live on CUDA -- see
@@ -754,6 +824,23 @@ driver 582.53, CUDA Toolkit 12.6):
   across 10 epochs). The full suite was also run with `PATH` stripped of the
   CUDA toolchain to confirm all 205 CUDA tests skip cleanly (`358 passed,
   205 skipped`, `0 failed`) and the CPU-only suite is entirely unaffected.
+- **Milestone 16 (`Dropout` CUDA execution, plus `Sequential`/`Flatten`
+  composed on top of it)**: real GPU verification on the 940MX confirms
+  real `CUDAStorage` output/gradients; `fraction_zeroed`/`mean` statistical
+  agreement with the requested `p` (`test_cuda_dropout_zeroes_approximately_
+  p_fraction`, `..._preserves_mean_within_tolerance`); exact
+  `1/(1-p)`-scaled nonzero elements; `grad`-matches-`mask` backward
+  correctness; exact eval-mode identity; a structural
+  zero-`CPUBackend`-calls check across a full Dropout forward + backward
+  (`test_cuda_dropout_never_calls_cpu_backend`); an explicit CPU-vs-CUDA
+  test asserting masks are *not* bitwise-equal while still agreeing
+  statistically; a `Sequential(Conv2d, ReLU, MaxPool2d, Flatten, Linear,
+  ReLU, Dropout, Linear)` end-to-end `Trainer(device="cuda")` classification
+  run (loss dropping to <60% of its start, ≥85% final accuracy); and a
+  CUDA `Sequential`+`Dropout` save/load round trip. The full suite was
+  again run with `PATH` stripped of the CUDA toolchain to confirm all 258
+  CUDA tests (up from 205, net of this milestone's new CUDA tests) skip
+  cleanly (`516 passed, 258 skipped`, `0 failed`).
 
 ## Limitations
 - **Operation set is intentionally small**: `add`/`mul` (exact-shape, plus
@@ -811,6 +898,14 @@ driver 582.53, CUDA Toolkit 12.6):
   convention -- no class weighting, label smoothing, or ignored-index
   support, unchanged from before this milestone (see
   `docs/architecture/optimization.md`).
+- **CUDA Dropout uses a stateless hash, not curand (Milestone 16)**: no
+  `curandState` allocation, no cuRAND dependency -- see **CUDA Dropout**
+  above for the SplitMix64-based mechanism and why the milestone brief
+  favors it over a general GPU RNG library. CPU and CUDA masks are not
+  expected to agree element-for-element even under the same
+  `forge.random.seed(...)` (different algorithms consuming the seed
+  differently) -- only statistical/semantic behavior is compared across
+  backends, never exact per-element values.
 - **No CLI/benchmarking integration**: this milestone adds the backend and
   its tests only; CLI and benchmark surfaces (`docs/product/requirements.md`)
   are unaffected.

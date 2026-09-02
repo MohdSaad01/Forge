@@ -187,6 +187,13 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         ] + [ctypes.c_int] * 12
         pool_bwd_fn.restype = ctypes.c_int
 
+        # -- Milestone 16: Dropout --
+        dropout_mask_fn = getattr(lib, f"cf_dropout_mask_{suffix}")
+        dropout_mask_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_longlong, ctypes.c_double, ctypes.c_uint64,
+        ]
+        dropout_mask_fn.restype = ctypes.c_int
+
 
 def _load_library() -> "ctypes.CDLL":
     global _lib_cache
@@ -881,6 +888,29 @@ class CUDABackend(Backend):
         self._check(code, "max_pool2d backward")
         self._synchronize("max_pool2d backward")
         return CUDAStorage(grad_x_ptr, x.shape, dtype, self._lib)
+
+    # -- Dropout (Milestone 16) ---------------------------------------------------
+    #
+    # Real on-device mask generation (`kernels.cu`'s "Dropout mask" section):
+    # every element's Bernoulli draw happens inside `k_dropout_mask`, computed
+    # from a stateless hash of (seed, element index). `rng` (the live
+    # `numpy.random.Generator` -- `forge.random`'s default, or an explicit one
+    # passed to `nn.Dropout`) is used for exactly one host-side scalar draw
+    # (the seed) per call, never to generate the mask array itself -- no
+    # NumPy involvement in the per-element randomness, no host round-trip, no
+    # CPUBackend call. See `docs/architecture/cuda-backend.md`'s **CUDA
+    # Dropout** section.
+
+    def dropout_mask(self, a: CUDAStorage, p: float, rng: np.random.Generator) -> CUDAStorage:
+        dtype = self._require_compute_dtype(a, op="dropout_mask")
+        seed = int(rng.integers(0, 2**63 - 1))
+        n = a.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_dropout_mask_{_SUFFIX[dtype]}")
+        code = fn(out_ptr, ctypes.c_longlong(n), ctypes.c_double(p), ctypes.c_uint64(seed))
+        self._check(code, "dropout_mask")
+        self._synchronize("dropout_mask")
+        return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
     # -- optimizer (Milestone 10) -----------------------------------------------
 
