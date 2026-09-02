@@ -181,6 +181,14 @@ class Trainer:
         self.device = resolved_device
         self.verbose = bool(verbose)
         self.metrics = self._validate_metrics(metrics)
+        # Training-progress counters (Milestone 18): persisted/restored by
+        # `save_checkpoint()`/`resume()` so `fit()` continues epoch numbering
+        # and `global_step` counting across a checkpoint resume, rather than
+        # restarting from 1/0. Plain mutable attributes -- not part of any
+        # constructor validation -- mirroring how `Trainer` already exposes
+        # `self.model`/`self.optimizer` for direct inspection/reassignment.
+        self.epoch = 0
+        self.global_step = 0
 
     @staticmethod
     def _validate_metrics(metrics: "Iterable[Metric] | None") -> "dict[str, Metric]":
@@ -298,6 +306,7 @@ class Trainer:
             loss = self.loss_fn(prediction, y)
             loss.backward()
             self.optimizer.step()
+            self.global_step += 1
 
             total_loss += float(loss.to("cpu").numpy()) * batch_size
             total_samples += batch_size
@@ -396,7 +405,8 @@ class Trainer:
         self._check_model_device()
 
         history = TrainingHistory()
-        for epoch in range(1, epochs + 1):
+        for local_epoch in range(1, epochs + 1):
+            self.epoch += 1
             start = time.perf_counter()
             train_loss, train_metrics, samples = self._run_training_epoch(train_loader)
 
@@ -409,7 +419,7 @@ class Trainer:
 
             duration = time.perf_counter() - start
             record = EpochResult(
-                epoch=epoch,
+                epoch=self.epoch,
                 train_loss=train_loss,
                 train_metrics=train_metrics,
                 val_loss=val_loss,
@@ -420,15 +430,62 @@ class Trainer:
             )
             history.append(record)
             if self.verbose:
-                self._report(record, epochs)
+                self._report(record, local_epoch, epochs)
 
         return history
 
+    # -- checkpointing (Milestone 18) ----------------------------------------
+
+    def save_checkpoint(self, path: str, *, extra: "dict[str, Any] | None" = None) -> None:
+        """Save this Trainer's `model`/`optimizer` state and training progress to `path`.
+
+        A thin wrapper over `forge.serialization.save_checkpoint()` -- fills
+        in `epoch`/`global_step` from `self.epoch`/`self.global_step`
+        automatically. See `forge.serialization.checkpoint` for the format.
+        """
+        from ..serialization.checkpoint import save_checkpoint as _save_checkpoint
+
+        _save_checkpoint(path, self.model, self.optimizer, epoch=self.epoch, global_step=self.global_step, extra=extra)
+
+    def resume(self, checkpoint: "Any") -> None:
+        """Adopt a `load_checkpoint()`-produced `Checkpoint`'s state in place.
+
+        Replaces `self.model`, `self.optimizer`, `self.epoch`, and
+        `self.global_step` with the checkpoint's; `self.loss_fn`/
+        `self.device`/`self.metrics`/`self.verbose` are untouched. `fit()`
+        called afterward resumes the normal
+        `DataLoader -> forward -> loss -> backward -> optimizer.step()`
+        sequence exactly as ordinary training, continuing epoch numbering
+        and `global_step` counting from the checkpoint's values.
+
+        `checkpoint.model` must already sit on `self.device` -- matching
+        Trainer's existing "validate, never move" device policy
+        (`_check_model_device`), pass the matching `device=` to
+        `load_checkpoint()` first if needed.
+        """
+        from ..serialization.checkpoint import Checkpoint as _Checkpoint
+
+        if not isinstance(checkpoint, _Checkpoint):
+            raise TrainerError(f"Trainer.resume() requires a forge.serialization.Checkpoint, got {type(checkpoint).__name__}.")
+
+        model_device = checkpoint.model.device
+        if model_device is not None and model_device != self.device:
+            raise TrainerError(
+                f"Cannot resume: checkpoint model is on device '{model_device}' but this "
+                f"Trainer is configured for device '{self.device}'. Call "
+                f"load_checkpoint(path, device='{self.device}') first."
+            )
+
+        self.model = checkpoint.model
+        self.optimizer = checkpoint.optimizer
+        self.epoch = checkpoint.epoch
+        self.global_step = checkpoint.global_step
+
     # -- progress reporting -------------------------------------------------
 
-    def _report(self, record: EpochResult, epochs: int) -> None:
+    def _report(self, record: EpochResult, local_epoch: int, epochs: int) -> None:
         """Print one epoch's summary. Format is informational only -- not a stable contract."""
-        print(f"Epoch {record.epoch}/{epochs}")
+        print(f"Epoch {local_epoch}/{epochs} (global epoch {record.epoch})")
         print(f"loss: {record.train_loss:.4f}")
         for name, value in record.train_metrics.items():
             print(f"{name}: {value:.4f}")

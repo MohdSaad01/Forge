@@ -39,7 +39,7 @@ from .exceptions import (
     UnsupportedDeviceError,
     UnsupportedDTypeError,
 )
-from .serialization import load_model, save_model
+from .serialization import Checkpoint, load_checkpoint, load_model, save_checkpoint, save_model
 from .tensor import DEFAULT_DTYPE, DType, Tensor
 
 __version__ = "0.1.0"
@@ -71,4 +71,7 @@ __all__ = [
     "backend",
     "save_model",
     "load_model",
+    "save_checkpoint",
+    "load_checkpoint",
+    "Checkpoint",
 ]

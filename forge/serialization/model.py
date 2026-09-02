@@ -36,7 +36,7 @@ from ..backend.device import SUPPORTED_DEVICE_TYPES
 from ..exceptions import PersistenceError
 from ..nn.module import Module
 from ..nn.parameter import Parameter
-from .archive import read_archive, write_archive
+from .archive import PARAMETERS_DIR, read_archive, write_archive
 from .registry import spec_for_class, spec_for_name
 
 FORMAT_VERSION = 1
@@ -75,7 +75,8 @@ def save_model(model: Module, path: str) -> None:
         "device": device_str,
         "root": root_node,
     }
-    write_archive(path, metadata, arrays)
+    prefixed_arrays = {f"{PARAMETERS_DIR}/{name}": array for name, array in arrays.items()}
+    write_archive(path, metadata, prefixed_arrays)
 
 
 def load_model(path: str, device: "str | None" = None) -> Module:
@@ -106,7 +107,13 @@ def load_model(path: str, device: "str | None" = None) -> Module:
     enabled builds an entirely new graph, exactly as for a freshly
     constructed model.
     """
-    metadata, arrays = read_archive(path)
+    metadata, prefixed_arrays = read_archive(path, kind="model")
+    param_prefix = f"{PARAMETERS_DIR}/"
+    arrays = {
+        name[len(param_prefix):]: array
+        for name, array in prefixed_arrays.items()
+        if name.startswith(param_prefix)
+    }
 
     if not isinstance(metadata, dict):
         raise PersistenceError(f"Cannot load model from '{path}': metadata is not a JSON object.")

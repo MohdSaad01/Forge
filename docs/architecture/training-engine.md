@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18)
 
 ## Package layout
 ```
@@ -393,14 +393,57 @@ metrics: zero `CPUBackend` compute-method calls occur.
   `nan`/divide-by-zero loss.
 - Every epoch that runs is appended to `TrainingHistory` -- there is no
   partial-epoch or early-stopping skip in this milestone.
+- As of Milestone 18, `record.epoch` is `self.epoch` (a persistent counter
+  that survives across multiple `fit()` calls and across a checkpoint
+  resume), not a call-local `1..epochs` index -- see **Checkpointing and
+  resume** below.
+
+## Checkpointing and resume (Milestone 18)
+`Trainer` owns two plain, mutable training-progress counters, initialized
+to `0` at construction:
+```text
+self.epoch          # completed epochs, across every fit() call so far
+self.global_step     # completed optimizer.step() calls, across every fit() call so far
+```
+`fit()` increments `self.epoch` once per epoch (rather than counting a
+call-local `1..epochs` range) and records that running value as each
+`EpochResult.epoch`; `_run_training_epoch` increments `self.global_step`
+once per training batch, immediately after `optimizer.step()`. This makes a
+second `fit()` call on the same `Trainer` -- whether a plain continuation or
+after `resume()` -- number its epochs and count its steps starting from
+wherever the previous call left off, with no separate "resume" code path
+inside `fit()` itself: it is the exact same
+`DataLoader -> forward -> loss -> backward -> optimizer.step()` sequence
+either way.
+
+```python
+trainer.save_checkpoint(path)                 # -> forge.serialization.save_checkpoint(path, trainer.model, trainer.optimizer, epoch=trainer.epoch, global_step=trainer.global_step)
+checkpoint = forge.load_checkpoint(path, device=...)
+trainer2 = Trainer(model=..., loss_fn=..., optimizer=..., device=...)  # any model/optimizer, replaced next
+trainer2.resume(checkpoint)                    # trainer2.model/optimizer/epoch/global_step <- checkpoint's
+trainer2.fit(loader, epochs=2)                 # epochs continue from trainer2.epoch, not from 1
+```
+`resume()` validates that `checkpoint.model`'s device matches `self.device`
+(the same "validate, never move" policy `_check_model_device` already
+enforces for ordinary `fit()`/`evaluate()`) and otherwise only reassigns
+`self.model`/`self.optimizer`/`self.epoch`/`self.global_step` -- `loss_fn`,
+`device`, `metrics`, and `verbose` stay whatever the `Trainer` was
+constructed with. See `docs/architecture/persistence.md`'s
+**Checkpointing** section for the full save/load format, the RNG/
+determinism policy, and what `TrainingHistory` does *not* carry across a
+resume (a fresh `TrainingHistory` starts at the resumed epoch numbers; nothing
+concatenates it with a prior call's history automatically).
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and
 the milestone's own non-goals): distributed training, mixed precision,
-checkpointing, early stopping, learning-rate schedulers, hyperparameter
-tuning, multiprocessing DataLoader workers, a general logging/observability
-platform, experiment tracking, a CLI, model serialization, and a callbacks
-system. `no_grad()` is a single global flag, not a general
+early stopping, learning-rate schedulers, hyperparameter tuning,
+multiprocessing DataLoader workers, a general logging/observability
+platform, experiment tracking, a CLI, and a callbacks system. As of
+Milestone 18, checkpointing/training-resume is also no longer on this list
+(see **Checkpointing and resume** above) -- but `TrainingHistory` itself is
+still not persisted or resumed automatically. `no_grad()` is a single
+global flag, not a general
 context-management system -- no `retain_graph` equivalent, no
 per-tensor/per-thread grad state, no nesting-depth tracking beyond plain
 save/restore.

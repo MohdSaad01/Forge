@@ -1,18 +1,23 @@
-# Model Persistence (Milestone 7; CUDA persistence in Milestone 13)
+# Model Persistence (Milestone 7; CUDA persistence in Milestone 13; training checkpoints in Milestone 18)
 
 ## Package layout
 ```
 forge/
     serialization/
-        registry.py    ModuleSpec, register_module(), spec_for_class/spec_for_name,
-                        built-in registration of Linear/ReLU
-        archive.py      write_archive/read_archive -- the ZIP(json + .npy) file format
-        model.py         save_model(), load_model() -- tree walk, validation, reconstruction
+        registry.py             ModuleSpec, register_module(), spec_for_class/spec_for_name,
+                                 built-in registration of Linear/ReLU/Conv2d/MaxPool2d/Sequential/Flatten/Dropout
+        optimizer_registry.py   OptimizerSpec, register_optimizer(), spec_for_class/spec_for_name,
+                                 built-in registration of SGD/Adam (Milestone 18)
+        archive.py               write_archive/read_archive -- the generic ZIP(json + .npy) file format
+        model.py                  save_model(), load_model() -- tree walk, validation, reconstruction
+        checkpoint.py             save_checkpoint(), load_checkpoint() -- training-state persistence (Milestone 18)
 ```
 `forge.serialization` is exposed as a submodule of `forge`, alongside
 `forge.nn`/`forge.optim`/`forge.data`/`forge.training`. `save_model`,
-`load_model`, and the new `PersistenceError` are also exposed at the top
-level (`forge.save_model`, `forge.load_model`, `forge.PersistenceError`).
+`load_model`, `save_checkpoint`, `load_checkpoint`, `Checkpoint`, and
+`PersistenceError` are also exposed at the top level (`forge.save_model`,
+`forge.load_model`, `forge.save_checkpoint`, `forge.load_checkpoint`,
+`forge.Checkpoint`, `forge.PersistenceError`).
 
 ## Public API
 ```python
@@ -208,12 +213,172 @@ without training semantics.
 `save_model()`/`load_model()` persist model (architecture + parameter)
 state only. No `Optimizer` state -- learning rate, momentum buffers, step
 count, or anything else an optimizer might accumulate -- is saved or
-restored. Consequently a `load_model()`-ed model can be used for inference
-immediately, but resuming *training* from a saved checkpoint with
-identical optimizer dynamics is not supported by this milestone. This is
-an explicit scope boundary (see `docs/development/roadmap.md`), not an
-oversight: training-resume checkpointing is a distinct capability with its
-own format/versioning concerns and is left for a later milestone.
+restored, and this is deliberate, not merely an unimplemented gap: a
+`load_model()`-ed model is meant for inference, and `save_model()` must stay
+optimizer-state-free even now that checkpointing exists (see
+**Checkpointing** below and its **Isolation from `save_model()`**
+subsection) -- the two APIs serve different purposes and their formats are
+not merged. Training-resume with identical optimizer dynamics is
+`save_checkpoint()`/`load_checkpoint()`'s job, a distinct capability with
+its own format/versioning (Milestone 18).
+
+## Checkpointing (Milestone 18)
+`forge.serialization.checkpoint` (`save_checkpoint()`/`load_checkpoint()`,
+also exposed as `forge.save_checkpoint`/`forge.load_checkpoint`) adds a
+second, separate persistence API for *training* state, layered on the same
+`forge/serialization/archive.py` ZIP(json + `.npy`) primitives `save_model`/
+`load_model` use, but in its own independently versioned format:
+```text
+save_model()      -> model state only          (this file's sections above)
+save_checkpoint() -> training state             (this section)
+                       = model state (identical tree walk to save_model())
+                       + optimizer type + hyperparameters + per-parameter state
+                       + training progress (epoch, global_step)
+                       + Forge's default RNG state
+                       + caller-supplied JSON-safe `extra`
+```
+
+### Public API
+```python
+forge.save_checkpoint(path, model, optimizer, epoch=0, global_step=0, extra=None)
+checkpoint = forge.load_checkpoint(path)                # restore recorded device
+checkpoint = forge.load_checkpoint(path, device="cpu")  # explicit override
+checkpoint = forge.load_checkpoint(path, device="cuda") # explicit override
+# checkpoint.model, checkpoint.optimizer, checkpoint.epoch,
+# checkpoint.global_step, checkpoint.extra
+```
+`Trainer.save_checkpoint(path, extra=None)` / `Trainer.resume(checkpoint)`
+are thin wrappers around these two functions using the Trainer's own
+`model`/`optimizer`/`epoch`/`global_step` -- see
+`docs/architecture/training-engine.md`'s **Checkpointing and resume**
+section for the Trainer-level contract; nothing below duplicates that.
+
+### Parameter-identity association
+`Adam`'s runtime state (`forge/optim/adam.py`) keys `optimizer.state` by
+`Parameter` **object identity** -- which archive serialization cannot
+preserve. `save_checkpoint()` therefore records, alongside each
+optimizer-owned parameter's state, its dotted name from
+`model.named_parameters()` (the same naming `save_model()` already uses),
+plus the ordered list of dotted names the optimizer was constructed from
+(so an optimizer covering only *some* of `model`'s parameters -- e.g. a
+frozen layer excluded on purpose -- round-trips correctly, not just the
+common "optimizer over every parameter" case). `load_checkpoint()`
+reconstructs the model first (an ordinary `_build_load_node` tree walk,
+identical to `load_model()`'s), giving a fresh name -> `Parameter` mapping;
+builds the optimizer from that same ordered name list; and re-associates
+each parameter's state by name, installing it into the *new* optimizer's
+`state` dict by the *new* `Parameter` objects' identity. Adam's own
+identity-keyed lookup mechanism is never changed -- only bridged across the
+archive boundary. An optimizer holding a `Parameter` not reachable from the
+given `model`'s tree raises `PersistenceError` at save time, since state can
+only be associated by a name relative to that model.
+
+### Optimizer registry
+Exactly the same principle as the module registry (**Architecture
+reconstruction** above): `load_checkpoint()` never instantiates an
+optimizer class from a string read out of the archive.
+`forge.serialization.optimizer_registry` maps a stable `type_name` (e.g.
+`"Adam"`) to an `OptimizerSpec` bundling `get_config`/`from_config` (JSON-safe
+hyperparameters, and reconstruction from them) plus `get_param_state`/
+`set_param_state` (per-parameter state extraction/installation, using
+`get_backend(...).to_numpy()`/`from_array()` for any array-valued field --
+never a NumPy array relabeled as CUDA storage). `SGD` and `Adam` are
+registered by default (`weight_decay 0.0` counts as an explicit
+hyperparameter here too -- never silently substituted); any other optimizer
+type needs `register_optimizer()` before it can be checkpointed, the same
+opt-in requirement `register_module()` places on custom `Module` subclasses.
+An unregistered/unknown `"optimizer"."type"` string raises
+`PersistenceError` before anything is constructed -- never `eval`, dynamic
+import, or `pickle`.
+
+### Device semantics
+Identical policy to `load_model()`'s (**Device semantics** above):
+`device=None` restores the recorded device if available, `device="cpu"`/
+`"cuda"` explicitly convert (still requiring CUDA to actually be present for
+a `"cuda"` target), and an unrecognized value raises `PersistenceError`
+immediately. Both the reconstructed model's `Parameter`s and the
+reconstructed optimizer's per-parameter arrays (Adam's `m`/`v`) always end
+up on the *same* resolved target device -- restoring onto `"cuda"` allocates
+genuine `CUDAStorage` for both, via the same `Backend.from_array()`
+primitive `load_model()` already uses for parameters.
+
+### RNG / determinism policy -- **Policy A**
+A checkpoint captures `forge.random.get_state()` (the process-global default
+generator's exact bit-generator state, JSON-safe) and `load_checkpoint()`
+restores it via `forge.random.set_state()`. This is the one generator
+`Dropout` draws from by default -- directly on CPU, and as the host-side
+per-call seed for `CUDABackend.dropout_mask` on CUDA
+(`docs/architecture/cuda-backend.md`'s **CUDA Dropout** section) -- so
+restoring it reproduces the exact sequence of future Dropout draws (CPU mask
+values, or CUDA per-call seeds) that would have followed at save time.
+Training resumed from a checkpoint is therefore bitwise-deterministic for a
+model whose only randomness is default-generator `Dropout`, given the same
+sequence of subsequent operations.
+
+**Not covered:** a `Dropout(..., generator=...)` built with an explicit
+`numpy.random.Generator`, or any other caller-owned generator (e.g. a
+`DataLoader`'s own `shuffle` generator) -- neither lives inside any
+`Module`/`Optimizer` state a checkpoint inspects; reproducing those remains
+the caller's own responsibility. Forge does not build a general-purpose
+RNG-tracking framework for this (`forge/random.py` stays a single default
+generator plus `get_state()`/`set_state()`).
+
+### Training progress
+`epoch`/`global_step` are plain non-negative integers the caller supplies
+(`Trainer.save_checkpoint()` fills them in from `Trainer.epoch`/
+`Trainer.global_step`, its own persistent progress counters -- see
+`docs/architecture/training-engine.md`). No distributed/multi-worker state,
+no automatic periodic scheduling, no early-stopping bookkeeping -- Forge
+does not invent a training-state model beyond these two counters.
+`TrainingHistory`/`EpochResult` are explicitly **not** part of the
+checkpoint contract: they are a record of past `fit()` calls, not state
+required to correctly continue training, so nothing about them is
+serialized; a resumed `fit()` call returns a fresh `TrainingHistory`
+starting at the checkpoint's epoch. `extra` is an optional, caller-supplied
+JSON-safe dict for any small additional state (e.g. best validation loss so
+far) -- validated as JSON-safe at save time, never arbitrary Python objects.
+
+### Isolation from `save_model()`
+`save_model()` is completely unaffected by this milestone: it still writes
+no `"optimizer"`, `"training_progress"`, `"rng"`, or
+`"forge_checkpoint_format_version"` key, and a checkpoint file is not a
+valid `save_model()`/`load_model()` file (their format-version keys --
+`"forge_format_version"` vs. `"forge_checkpoint_format_version"` -- are
+different fields entirely, checked independently). This split is
+regression-tested directly (`tests/test_checkpoint.py`).
+
+### File layout
+Checkpoints reuse `forge/serialization/archive.py`'s generic
+`write_archive`/`read_archive` (the same ZIP(json + `.npy`) primitives
+`save_model`/`load_model` use, generalized in Milestone 18 to accept
+arbitrary caller-chosen array paths rather than a single hard-coded
+`parameters/` directory):
+```text
+metadata.json                                        -- everything above, as JSON
+model/parameters/<dotted.parameter.name>.npy          -- model parameter values
+optimizer/state/<dotted.parameter.name>/<field>.npy   -- per-parameter optimizer state (e.g. m, v)
+```
+`save_model()`/`load_model()` still produce/consume the original
+`parameters/<dotted.name>.npy` layout unchanged (`model.py` adds/strips that
+prefix itself around the shared, now-generic archive functions) -- existing
+model files remain fully readable.
+
+### Versioning
+`"forge_checkpoint_format_version"` (`forge.serialization.checkpoint.CHECKPOINT_FORMAT_VERSION`,
+currently `1`) is checked independently of `save_model()`'s
+`"forge_format_version"` -- a missing, wrong, or malformed value raises
+`PersistenceError` naming both the found and supported values, with no
+forward/backward-compatibility shim, exactly matching `load_model()`'s own
+versioning policy.
+
+### Security
+Same trust model as model persistence (**Security / trust model** below):
+no `pickle`, no `eval`/`exec`, no dynamic import; every array loads with
+`numpy.load(..., allow_pickle=False)`; a checkpoint's `"model"."type"` and
+`"optimizer"."type"` strings are only ever dictionary lookups against their
+respective in-process registries. A malicious/unknown value for either
+raises `PersistenceError` before anything is constructed
+(`tests/test_checkpoint.py`'s security tests cover both).
 
 ## Custom-module limitations
 See **Custom/composite modules** above: only module types registered via
@@ -320,21 +485,45 @@ exceptions (`zipfile.BadZipFile`, `json.JSONDecodeError`, raw `OSError`s)
 are always caught and re-raised as `PersistenceError` with added context,
 never surfaced directly to callers.
 
+`save_checkpoint()`/`load_checkpoint()` (Milestone 18) raise the same
+`PersistenceError` for the checkpoint-specific equivalents: a non-`Module`
+model or non-`Optimizer` optimizer, an unregistered/unsupported/malicious
+optimizer type, an optimizer holding a `Parameter` not reachable from the
+given model, an unsupported checkpoint format version, missing/malformed
+`"optimizer"`/`"training_progress"`/`"rng"`/`"extra"` metadata, a missing
+optimizer-state array, and non-JSON-safe `extra` data -- always via the same
+explicit-registry / no-arbitrary-construction mechanism as `load_model()`,
+never a raw exception surfaced to callers.
+
 ## Known limitations
 - Only `Linear` and `ReLU` are built-in registered module types; every
   other class (including any composite model) requires an explicit
   `register_module()` call before it can be saved/loaded -- see **Custom
   module limitations**.
-- No optimizer-state checkpointing or training-resume support (see
-  **Optimizer-state limitations**).
+- `save_model()`/`load_model()` remain optimizer-state-free by design (see
+  **Optimizer-state limitations**) -- training-resume checkpointing is
+  `save_checkpoint()`/`load_checkpoint()`'s separate job (Milestone 18, see
+  **Checkpointing** above), not something `save_model()` grew.
 - CPU and CUDA only, one device per model tree: `"device"` is `"cpu"` or
   `"cuda"` (Milestone 13); a file recording anything else fails to load
   rather than silently running on CPU or pretending to run on that device.
   No multi-GPU-aware serialization -- CUDA persistence is bound by the same
   single-GPU (index 0) restriction as the rest of the CUDA backend (see
-  `docs/architecture/cuda-backend.md`).
-- No forward/backward format-version compatibility or migration.
-- No compression tuning, encryption, or model signing (all explicitly out
-  of scope for this milestone).
+  `docs/architecture/cuda-backend.md`). Checkpoints inherit the same
+  restriction.
+- No forward/backward format-version compatibility or migration, for either
+  model files or checkpoints.
+- No compression tuning, encryption, or model/checkpoint signing (all
+  explicitly out of scope for this milestone).
 - No CLI (`forge` command-line save/load entry points) yet -- `save_model`/
-  `load_model` are Python API only.
+  `load_model`/`save_checkpoint`/`load_checkpoint` are Python API only.
+- Checkpointing (Milestone 18) is itself further scoped down: only `SGD` and
+  `Adam` are built-in registered optimizer types (any other type needs
+  `register_optimizer()`, as `register_module()` requires for a custom
+  `Module`); `TrainingHistory` is never serialized (see **Checkpointing**'s
+  **Training progress** subsection); RNG determinism covers only Forge's
+  process-global default generator, not a caller-supplied `Dropout(...,
+  generator=...)` or a `DataLoader`'s own shuffling generator (see
+  **Checkpointing**'s **RNG / determinism policy** subsection); and there is
+  no distributed/multi-worker/sharded/async checkpointing, no automatic
+  periodic checkpoint scheduling, and no early-stopping integration.
