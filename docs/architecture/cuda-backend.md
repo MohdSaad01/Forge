@@ -632,6 +632,59 @@ entire training run, on either device -- see
 randomness-lifecycle writeup (this differs from `Linear`/`Conv2d`, which
 snapshot a generator once at construction for their one-time weight init).
 
+## CUDA Adam (Milestone 17)
+`Adam.step()` (`forge/optim/adam.py`) dispatches to `Backend.adam_step(data,
+grad, m, v, lr, beta1, beta2, eps, weight_decay, step)`, mirroring `SGD`'s
+`Backend.sgd_step` boundary exactly. `CUDABackend.adam_step` launches **one**
+kernel (`cf_adam_step_{f32,f64}`, `kernels.cu`) that computes the entire
+update -- both moment estimates, bias correction, and the parameter step --
+directly against the existing `data`/`m`/`v` `CUDAStorage` buffers, in
+place; no new `CUDAStorage` is allocated by the step itself and no tensor
+value crosses the device boundary mid-update. The two bias-correction
+scalars (`1 - beta1**step`, `1 - beta2**step`) are the only values computed
+on the host, in Python -- identical for every element in a given call, so
+this is a cheap scalar `pow()` on hyperparameter state, the same convention
+`k_broadcast_scalar` and `CrossEntropyLoss`'s per-call scalars already use,
+not a per-element host computation.
+
+### Optimizer state is real CUDA storage
+A CUDA `Parameter`'s Adam state (`m`, `v`) is allocated via
+`Backend.from_array(np.zeros(...), dtype)` on first `step()` -- for
+`CUDABackend` this is a real `cudaMalloc` plus one host-to-device transfer of
+zeros (the same mechanism any new CUDA tensor's construction already uses,
+e.g. `Parameter(data, device="cuda")` itself), never a NumPy array
+relabeled as CUDA state. `tests/test_cuda_optimizer.py::
+test_adam_cuda_state_is_cuda_resident` asserts `state.m`/`state.v` are
+`CUDAStorage` instances, not `np.ndarray`.
+
+### No CPU fallback
+Every numerical step for a CUDA parameter -- moment updates, bias
+correction, and the parameter update -- executes as the one
+`cf_adam_step_{f32,f64}` kernel launch against `CUDAStorage` operands; no
+CUDA gradient is ever copied to the host for computation, and no NumPy
+arithmetic runs against it.
+`tests/test_cuda_optimizer.py::test_adam_cuda_grad_and_param_never_leave_device_mid_step`
+asserts this structurally (a monkeypatched `CPUBackend.adam_step`, the same
+spy pattern `test_cuda_autograd.py`/`test_cuda_dropout.py` already use,
+records zero calls across a full CUDA `Adam.step()`).
+
+### CPU/CUDA numerical agreement
+`tests/test_cuda_optimizer.py` compares CPU and CUDA Adam against matched
+initial parameters and matched gradient sequences: a single step, eight
+steps with `weight_decay` enabled, and a real `Linear` model trained five
+steps through both devices in lockstep -- all agree within `rtol=atol=1e-4`.
+
+### Device transfer after optimizer state exists
+Adam's Policy-A device-mismatch guard (see `Adam`'s docstring in
+`forge/optim/adam.py` and `docs/architecture/optimization.md`'s **Adam**
+section) is exercised on real hardware in
+`tests/test_cuda_optimizer.py::test_adam_state_device_mismatch_after_module_to_raises`
+(a CPU-created Adam state followed by `model.to("cuda")` raises
+`OptimizerError` on the next `step()`, rather than silently pairing a CUDA
+parameter with CPU-resident `m`/`v`) and
+`::test_adam_state_cleared_after_move_reinitializes_on_new_device` (clearing
+the stale entry lets `step()` lazily allocate fresh, CUDA-resident state).
+
 ## CUDA model persistence (Milestone 13)
 `save_model()`/`load_model()` (`forge/serialization/model.py`) now support
 models whose `Parameter`s live on CUDA -- see
@@ -841,6 +894,21 @@ driver 582.53, CUDA Toolkit 12.6):
   again run with `PATH` stripped of the CUDA toolchain to confirm all 258
   CUDA tests (up from 205, net of this milestone's new CUDA tests) skip
   cleanly (`516 passed, 258 skipped`, `0 failed`).
+- **Milestone 17 (`Adam` CUDA execution)**: real GPU verification on the
+  940MX confirms `Adam`'s optimizer state (`m`, `v`) is genuine
+  `CUDAStorage`, never `np.ndarray`; parameter updates mutate the existing
+  CUDA buffer in place; CPU and CUDA Adam agree within `1e-4` across a
+  single step, multiple steps with `weight_decay`, and a real `Linear`
+  model trained in lockstep on both devices; a structural
+  zero-`CPUBackend.adam_step`-calls check across a full CUDA `step()`; the
+  Policy-A device-mismatch guard raising `OptimizerError` after
+  `model.to("cuda")` invalidates CPU-created state, and recovering cleanly
+  once that stale state is cleared; a full CUDA `Trainer(device="cuda")` +
+  `Adam` training run with loss decreasing; and every `Parameter`/gradient/
+  optimizer-state buffer confirmed `CUDAStorage`-backed throughout. The full
+  suite (269 CUDA tests total, up from 258; 825 tests overall) was again run
+  with `PATH` stripped of the CUDA toolchain to confirm all 269 CUDA tests
+  skip cleanly (`556 passed, 269 skipped`, `0 failed`).
 
 ## Limitations
 - **Operation set is intentionally small**: `add`/`mul` (exact-shape, plus
@@ -873,6 +941,11 @@ driver 582.53, CUDA Toolkit 12.6):
   CPU files have always used), and only the device-coherent trees
   `Module.device` already requires (a manually mixed-device tree raises
   `ModuleError` before anything is written, same as `Module.device` itself).
+  This still holds as of Milestone 17: `Adam`'s per-parameter state (`m`,
+  `v`, step count) lives entirely in `Adam.state`, outside the `Module` tree
+  `save_model()` walks, so it is never written to a model archive -- see
+  **CUDA Adam** above and `docs/architecture/optimization.md`'s **Adam**
+  section.
 - **Single GPU, index 0 only**: `device="cuda:N"` for `N != 0` raises
   `CUDAError`. No multi-GPU support.
 - **No custom GPU memory allocator**: every operation's output is a fresh

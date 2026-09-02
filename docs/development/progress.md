@@ -654,4 +654,75 @@ with `PATH` stripped of the CUDA toolchain to confirm all 258 CUDA tests
 skip cleanly (`516 passed, 258 skipped`, `0 failed`). See
 `docs/architecture/modules.md`'s **Sequential, Flatten, Dropout** section
 and `docs/architecture/cuda-backend.md`'s **CUDA Dropout** section.
+
+### M17 — Adam optimizer and optimizer state
+Adds Forge's first adaptive optimizer and its first stateful-optimizer
+architecture. `Adam(parameters, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
+weight_decay=0.0)` (`forge/optim/adam.py`) implements the standard Adam
+update (first/second moment estimates, bias correction) with every
+hyperparameter validated at construction (`OptimizerError`, never silently
+clamped). `weight_decay`, when nonzero, is classic L2 regularization folded
+into the gradient before the moment updates -- explicitly the original
+Adam paper's semantics, not AdamW's decoupled decay; AdamW itself remains
+out of scope.
+
+All numerical work happens in one new backend primitive,
+`Backend.adam_step(data, grad, m, v, lr, beta1, beta2, eps, weight_decay,
+step)` (`forge/backend/base.py`), the same `Tensor -> Backend` boundary
+`SGD`/every other Forge operation already uses: `CPUBackend.adam_step` is
+plain in-place NumPy arithmetic; `CUDABackend.adam_step` launches one new
+kernel (`cf_adam_step_{f32,f64}`, `kernels.cu`) that performs the entire
+update -- moments, bias correction, parameter step -- against the existing
+`data`/`m`/`v` `CUDAStorage` buffers in place, with only the two
+bias-correction scalars computed host-side (identical per element, the same
+convention `k_broadcast_scalar` already established). `SGD` itself is
+untouched.
+
+`Adam.state` maps `Parameter -> _AdamState` (`m`, `v`, step count) using
+ordinary Python object-identity `dict` keying (`Parameter` defines no
+custom `__eq__`/`__hash__`), per the spec's "identity, not name"
+requirement -- state follows a `Parameter` regardless of which `Module`
+hierarchy or attribute name currently references it. State is allocated
+lazily on a parameter's first `step()` with a non-`None` `.grad` (zeros
+matching that parameter's shape/dtype/device exactly, via
+`Backend.from_array` -- a real `cudaMalloc` + host-to-device zero transfer
+on CUDA, the same construction path any new CUDA tensor already uses);
+gradients are validated (shape/dtype/device against the parameter) before
+use, and stale state (shape/dtype mismatch) is rejected defensively.
+`Module.to(device)` moves a `Parameter`'s storage without any optimizer
+awareness (by design), so Adam does not auto-migrate `m`/`v` across devices
+(**Policy A**): `step()` raises `OptimizerError` if it finds state whose
+recorded device no longer matches the parameter's current device, rather
+than silently pairing mismatched-device buffers; clearing the stale entry
+(`optimizer.state.clear()` or `del optimizer.state[param]`) lets the next
+`step()` lazily reinitialize fresh state on the new device. `Adam.state`
+lives entirely outside the `Module` tree `save_model()` walks, so optimizer
+state was never at risk of being written to a model archive and needed no
+persistence-layer change; optimizer-state checkpointing itself remains out
+of scope.
+
+New test files: `tests/test_cuda_optimizer.py` (CUDA state residency,
+parameter/state-never-NumPy structural checks, a monkeypatched-`CPUBackend`
+zero-fallback-calls proof, CPU/CUDA numerical agreement across a single
+step, multiple steps with `weight_decay`, and a real `Linear` model trained
+in lockstep, the Policy-A device-mismatch guard and its state-clearing
+recovery, and end-to-end CUDA training through both a hand-written loop and
+`Trainer(device="cuda")`). Extended `tests/test_optimizer.py` with 40 new
+CPU Adam tests: hyperparameter validation, first-step and multi-step
+agreement against a small NumPy reference implementation (including
+`weight_decay`), bias correction, state accumulation/lazy-allocation,
+zero-gradient and missing-gradient handling, parameter-identity-keyed state
+(surviving a rename/different holder), no-autograd-graph-created,
+`Parameter` object identity preserved across steps, `SGD` unaffected,
+end-to-end CPU regression training (loss decreases) and determinism under a
+fixed seed, `Trainer` integration with no Trainer changes required, and a
+`save_model()` archive-content check confirming no optimizer state is
+written. 825 tests total (556 CPU-only, up from 516; 269 CUDA, up from
+258 -- 51 new tests this milestone added), verified directly on the
+development GPU (940MX, CC 5.0, driver 582.53, CUDA Toolkit 12.6;
+CPU/CUDA Adam agreement within `rtol=atol=1e-4`), and the full suite was
+also run with `PATH` stripped of the CUDA toolchain to confirm all 269 CUDA
+tests skip cleanly (`556 passed, 269 skipped`, `0 failed`). See
+`docs/architecture/optimization.md`'s **Adam** section and
+`docs/architecture/cuda-backend.md`'s **CUDA Adam** section.
 MaxPool2d** section.

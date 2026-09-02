@@ -138,6 +138,24 @@ class CPUBackend(Backend):
         data -= lr * grad
         return data
 
+    # -- Adam optimizer (Milestone 17) ---------------------------------------
+
+    def adam_step(
+        self, data: np.ndarray, grad: np.ndarray, m: np.ndarray, v: np.ndarray,
+        lr: float, beta1: float, beta2: float, eps: float, weight_decay: float, step: int,
+    ) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
+        g = grad if weight_decay == 0.0 else grad + weight_decay * data
+        m *= beta1
+        m += (1.0 - beta1) * g
+        v *= beta2
+        v += (1.0 - beta2) * (g * g)
+        bias_correction1 = 1.0 - beta1 ** step
+        bias_correction2 = 1.0 - beta2 ** step
+        m_hat = m / bias_correction1
+        v_hat = v / bias_correction2
+        data -= lr * m_hat / (np.sqrt(v_hat) + eps)
+        return data, m, v
+
     # -- CrossEntropyLoss support (Milestone 14) ----------------------------
 
     def max_axis1(self, a: np.ndarray) -> np.ndarray:

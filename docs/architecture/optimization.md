@@ -1,4 +1,4 @@
-# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10; CUDA `MSELoss` as of Milestone 12; CUDA `CrossEntropyLoss` as of Milestone 14)
+# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10; CUDA `MSELoss` as of Milestone 12; CUDA `CrossEntropyLoss` as of Milestone 14; `Adam` as of Milestone 17)
 
 ## Package layout
 ```
@@ -8,9 +8,10 @@ forge/
     optim/
         optimizer.py    Optimizer (base)
         sgd.py           SGD
+        adam.py          Adam (Milestone 17)
     tensor/tensor.py     new `.exp()` / `.log()` primitives (see below)
 ```
-`forge.optim` is exposed as a submodule of `forge` (`forge.optim.SGD`), alongside `forge.nn`. Loss classes are exposed from `forge.nn` (`forge.nn.MSELoss`, `forge.nn.CrossEntropyLoss`), matching where `Linear`/`ReLU` already live.
+`forge.optim` is exposed as a submodule of `forge` (`forge.optim.SGD`, `forge.optim.Adam`), alongside `forge.nn`. Loss classes are exposed from `forge.nn` (`forge.nn.MSELoss`, `forge.nn.CrossEntropyLoss`), matching where `Linear`/`ReLU` already live.
 
 ## Loss abstraction
 `Loss` (`forge/nn/loss.py`) is a small callable base class: `loss_fn(prediction, target)` delegates to `forward()`, mirroring `Module.__call__` -> `forward()`. It is deliberately **not** a `Module` subclass -- a loss owns no parameters and is not part of a model's module tree, matching the domain model's distinction between `Module` (composable, trainable, owns state) and `Loss` (stateless, computed each step). The base `forward()` raises `LossError`, the same "must implement forward()" pattern `Module` already uses for `ModuleError`.
@@ -74,6 +75,88 @@ parameter = parameter - learning_rate * gradient
 - Preserves the `Parameter` object's identity, so `model.fc1.weight` and the optimizer's stored reference stay the same object across every step.
 - Matches the spec's framing directly: an optimizer update is a state change, not a differentiable model operation. `SGD` itself contains no CUDA-specific code -- `Backend.sgd_step` is the one dispatch point, matching every other operation's `Tensor -> Backend` boundary; there is no separate `CUDA_SGD` class.
 
+### Adam
+```text
+m_t   = beta1 * m_(t-1) + (1 - beta1) * g_t
+v_t   = beta2 * v_(t-1) + (1 - beta2) * g_t^2
+m_hat = m_t / (1 - beta1^t)
+v_hat = v_t / (1 - beta2^t)
+theta = theta - lr * m_hat / (sqrt(v_hat) + eps)
+```
+`Adam(parameters, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0)`
+(`forge/optim/adam.py`) validates every hyperparameter at construction,
+raising `OptimizerError` for a non-positive `lr`, a `beta1`/`beta2` outside
+`[0, 1)`, a non-positive `eps`, or a negative `weight_decay` -- matching
+`SGD`'s "validate at construction, never silently clamp" convention.
+
+**`weight_decay` semantics.** When nonzero, it is classic L2 regularization
+folded directly into the gradient *before* the moment updates:
+`g_t <- g_t + weight_decay * theta`. This is the original Adam paper's
+semantics, not AdamW's decoupled decay (which instead subtracts `lr *
+weight_decay * theta` from the parameter directly, outside the moment
+estimates and independent of `lr`'s interaction with `eps`). Forge
+implements only the former under the name `Adam` -- AdamW is explicitly out
+of scope for this milestone (see the milestone's Non-Goals).
+
+**Backend boundary.** All numerical work -- both moment updates, bias
+correction, and the parameter step -- happens in one call to
+`Backend.adam_step(data, grad, m, v, lr, beta1, beta2, eps, weight_decay,
+step)` (`forge/backend/base.py`), the same `Tensor -> Backend` boundary
+every other Forge operation uses. `Adam` itself contains no backend-specific
+code: `CPUBackend.adam_step` is plain in-place NumPy arithmetic;
+`CUDABackend.adam_step` launches one kernel (`cf_adam_step_{f32,f64}`,
+`kernels.cu`) that performs the entire update against the existing
+`CUDAStorage` buffers in place. See `docs/architecture/cuda-backend.md`'s
+**CUDA Adam** section for the CUDA-specific writeup.
+
+**Optimizer state.** `Adam.state` maps `Parameter -> _AdamState` (`m`, `v`,
+and a per-parameter step count). `Parameter` defines no custom
+`__eq__`/`__hash__`, so this is ordinary Python object-identity `dict`
+keying -- state follows the same `Parameter` object regardless of which
+`Module` hierarchy currently references it or what attribute name it is
+assigned to, per the spec's "identity, not name" requirement. State is
+allocated lazily: a parameter with `.grad is None` is skipped entirely (no
+state is created for it, matching `SGD`), and the first `step()` call that
+does see a gradient allocates `m`/`v` as zeros matching that parameter's
+shape, dtype, and device exactly (`Backend.from_array(np.zeros(...),
+dtype)` -- a real `cudaMalloc` + host-to-device transfer of zeros on CUDA,
+the same construction path any new CUDA tensor already uses, never a NumPy
+array standing in for CUDA state).
+
+Before using existing state, `step()` validates the incoming gradient's
+shape/dtype/device against the parameter (`OptimizerError` on any
+mismatch) and the existing state's shape/dtype against the parameter's
+current shape/dtype -- defensive checks that can't currently be triggered by
+ordinary Forge usage (a `Parameter`'s shape/dtype never change after
+construction) but keep the invariant explicit rather than assumed.
+
+**Device transfer after optimizer state exists.** `Module.to(device)` moves
+a `Parameter`'s storage in place but has no knowledge of any optimizer --
+by design, `Optimizer` stays decoupled from `Module` internals (see above).
+Adam therefore does not migrate `m`/`v` automatically (**Policy A** from the
+milestone spec): if `step()` finds existing state whose recorded device no
+longer matches the parameter's current device, it raises `OptimizerError`
+rather than silently pairing, say, a CUDA parameter with CPU-resident
+moment buffers. `Adam.state` is itself the explicit migration mechanism --
+no separate API was needed: clearing the stale entry (`del
+optimizer.state[param]`, or `optimizer.state.clear()`) lets the next
+`step()` lazily reinitialize fresh, zeroed state on the parameter's current
+device. This deliberately restarts that parameter's moment estimates and
+step count rather than guessing how to transfer them across devices. See
+`docs/architecture/cuda-backend.md`'s **CUDA Adam** section for the
+hardware-verified version of this behavior.
+
+**Optimizer state is never model-persisted.** `save_model()`/`load_model()`
+(`forge/serialization/model.py`) walk only the `Module` tree's registered
+`Parameter`s; `Adam.state` lives entirely outside that tree (on the
+`Optimizer` instance, keyed by `Parameter` identity), so it was never at
+risk of being written to a model archive and required no persistence-layer
+change. Optimizer-state/training-resume checkpointing itself remains out of
+scope (unchanged from Milestone 7/13) -- `Adam.state`'s design (state keyed
+cleanly by parameter identity, holding plain backend-storage-shaped values)
+is intended to make that a future addition rather than a redesign, per the
+milestone spec, but M17 does not implement it.
+
 ## Gradient lifecycle
 The expected training sequence, unchanged from the spec:
 ```python
@@ -86,8 +169,10 @@ optimizer.step()        # in-place parameter update from .grad; no new graph
 `zero_grad()` must run before `backward()` in a given step (not merely before `step()`), because gradients *accumulate* (`docs/architecture/autograd.md`) -- skipping it would silently sum the new step's gradient onto the previous step's.
 
 ## Known limitations
-- SGD only: no momentum, Adam, RMSProp, weight decay, or learning-rate schedules.
+- `SGD` and `Adam` only (as of Milestone 17): no RMSProp, Adagrad, AdamW, learning-rate schedules, gradient clipping, parameter groups, mixed precision, or fused/multi-GPU optimizers -- all explicit Milestone 17 non-goals.
 - No training engine/`Trainer`, `DataLoader`, or dataset abstraction yet -- the training loop above is written by hand in this milestone.
-- `CrossEntropyLoss` works on CUDA as of Milestone 14 -- see `docs/architecture/cuda-backend.md`'s **CUDA CrossEntropyLoss** section for the primitives that made this possible (`exp`/`log` kernels, an axis=1 `sum`, and a column-broadcast `sub`) and the device-validation/no-fallback guarantees that carry over from `MSELoss`. `MSELoss` (built only from `-`, `*`, `.sum()`) has worked on CUDA since Milestone 12 like any other differentiable Tensor expression; both are now exercised end-to-end through `forge.training.Trainer(device="cuda")` -- see `docs/architecture/training-engine.md`. As of Milestone 10, `SGD` is device-aware via `Backend.sgd_step()` -- see **Parameter mutation does not extend the autograd graph** above; no CUDA-specific optimizer class exists.
+- `CrossEntropyLoss` works on CUDA as of Milestone 14 -- see `docs/architecture/cuda-backend.md`'s **CUDA CrossEntropyLoss** section for the primitives that made this possible (`exp`/`log` kernels, an axis=1 `sum`, and a column-broadcast `sub`) and the device-validation/no-fallback guarantees that carry over from `MSELoss`. `MSELoss` (built only from `-`, `*`, `.sum()`) has worked on CUDA since Milestone 12 like any other differentiable Tensor expression; both are now exercised end-to-end through `forge.training.Trainer(device="cuda")` -- see `docs/architecture/training-engine.md`. As of Milestone 10, `SGD` is device-aware via `Backend.sgd_step()` -- see **Parameter mutation does not extend the autograd graph** above; as of Milestone 17, `Adam` is device-aware via `Backend.adam_step()` the same way -- see **Adam** above and `docs/architecture/cuda-backend.md`'s **CUDA Adam** section.
 - `CrossEntropyLoss` supports exactly the `(batch_size, num_classes)` / `(batch_size,)` shape convention; no class weighting, label smoothing, or ignored-index support.
 - `Tensor.log()` has no domain validation; calling it directly (outside `CrossEntropyLoss`'s controlled use) on non-positive values produces NumPy's usual `-inf`/`nan` rather than a Forge-level error.
+- `Adam`'s optimizer state (`m`, `v`, step count) is never persisted or checkpointed -- `save_model()` writes model (`Module`/`Parameter`) state only, unchanged from Milestone 7. Resuming training with matching Adam state after a save/load round trip is not supported; a freshly constructed `Adam` after `load_model()` starts with empty state (bias correction restarts from step 1), same as any newly constructed optimizer.
+- `Adam` does not migrate optimizer state across a `Module.to(device)` call (Policy A -- see **Adam** above); `step()` raises `OptimizerError` if it detects a parameter that moved device after state was created for it, rather than guessing how to transfer `m`/`v`.

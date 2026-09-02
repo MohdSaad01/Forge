@@ -6,7 +6,8 @@ computed entirely by the existing Tensor/autograd system, never by the
 optimizer itself. See `docs/architecture/optimization.md`.
 """
 
+from .adam import Adam
 from .optimizer import Optimizer
 from .sgd import SGD
 
-__all__ = ["Optimizer", "SGD"]
+__all__ = ["Optimizer", "SGD", "Adam"]

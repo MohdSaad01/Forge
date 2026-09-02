@@ -100,6 +100,26 @@ class Backend(ABC):
     def sgd_step(self, data: Any, grad: Any, lr: float) -> Any:
         """In-place `data -= lr * grad`; returns `data` (same object where possible)."""
 
+    # -- Adam optimizer (Milestone 17) --------------------------------------
+    #
+    # `m`/`v` are the running first/second moment estimates -- raw backend
+    # storage matching `data`'s shape/dtype/device exactly, the same
+    # convention `data`/`grad` themselves use (an `np.ndarray` for
+    # `CPUBackend`, a `CUDAStorage` for `CUDABackend`; never a NumPy array
+    # standing in for CUDA state). `step` is the 1-indexed step count for
+    # *this* parameter, used for bias correction (`1 - beta{1,2}**step`).
+    # All numerical Adam work -- moment updates, bias correction, the
+    # parameter update itself -- happens inside this one call; the optimizer
+    # (`forge/optim/adam.py`) only handles parameter iteration, state
+    # bookkeeping, and hyperparameters.
+
+    @abstractmethod
+    def adam_step(
+        self, data: Any, grad: Any, m: Any, v: Any,
+        lr: float, beta1: float, beta2: float, eps: float, weight_decay: float, step: int,
+    ) -> "tuple[Any, Any, Any]":
+        """In-place Adam update; returns `(data, m, v)` (same objects where possible)."""
+
     # -- CrossEntropyLoss support (Milestone 14) ----------------------------
 
     @abstractmethod

@@ -123,6 +123,14 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         sgd_step_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_double, ctypes.c_longlong]
         sgd_step_fn.restype = ctypes.c_int
 
+        adam_step_fn = getattr(lib, f"cf_adam_step_{suffix}")
+        adam_step_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
+            ctypes.c_double, ctypes.c_double, ctypes.c_longlong,
+        ]
+        adam_step_fn.restype = ctypes.c_int
+
         broadcast_scalar_fn = getattr(lib, f"cf_broadcast_scalar_{suffix}")
         broadcast_scalar_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
         broadcast_scalar_fn.restype = ctypes.c_int
@@ -921,6 +929,37 @@ class CUDABackend(Backend):
         self._check(code, "sgd_step")
         self._synchronize("sgd_step")
         return data
+
+    # -- Adam optimizer (Milestone 17) ---------------------------------------
+    #
+    # One kernel launch does the entire update (moment estimates, bias
+    # correction, and the parameter step) directly on the existing `data`/
+    # `m`/`v` buffers -- no new `cudaMalloc`, no host round-trip for any
+    # tensor value. Only the two bias-correction scalars are computed here,
+    # in Python (`1 - beta**step`, via the standard library `**` -- a cheap
+    # host-side float op on hyperparameter state, not tensor data) since
+    # they are identical for every element and match `k_broadcast_scalar`'s
+    # existing convention of precomputing a per-call scalar rather than
+    # recomputing it once per thread.
+
+    def adam_step(
+        self, data: CUDAStorage, grad: CUDAStorage, m: CUDAStorage, v: CUDAStorage,
+        lr: float, beta1: float, beta2: float, eps: float, weight_decay: float, step: int,
+    ) -> "tuple[CUDAStorage, CUDAStorage, CUDAStorage]":
+        dtype = self._require_compute_dtype(data, grad, m, v, op="adam_step")
+        bias_correction1 = 1.0 - beta1 ** step
+        bias_correction2 = 1.0 - beta2 ** step
+        fn = getattr(self._lib, f"cf_adam_step_{_SUFFIX[dtype]}")
+        code = fn(
+            data.ptr, grad.ptr, m.ptr, v.ptr,
+            ctypes.c_double(lr), ctypes.c_double(beta1), ctypes.c_double(beta2),
+            ctypes.c_double(eps), ctypes.c_double(weight_decay),
+            ctypes.c_double(bias_correction1), ctypes.c_double(bias_correction2),
+            ctypes.c_longlong(data.size),
+        )
+        self._check(code, "adam_step")
+        self._synchronize("adam_step")
+        return data, m, v
 
     # -- public synchronization (Milestone 11) ----------------------------
     #

@@ -392,6 +392,63 @@ __global__ void k_sgd_step(T* param, const T* grad, double lr, long long n) {
 SGD_STEP_LAUNCHER(float, f32)
 SGD_STEP_LAUNCHER(double, f64)
 
+// -- Adam parameter update (Milestone 17) --------------------------------------
+//
+// In-place Adam update, executed entirely on-device like `k_sgd_step` above:
+// `param`/`grad`/`m`/`v` are all real CUDA buffers, and no value ever
+// crosses back to the host mid-computation. Bias correction
+// (`1 - beta1**step` / `1 - beta2**step`) is one scalar `pow()` -- identical
+// for every element in a given call -- so it is computed once on the host in
+// Python (`CUDABackend.adam_step`) and passed in as `bias_correction1`/
+// `bias_correction2` rather than recomputed per-thread. `cf_sqrtv` dispatches
+// to the type-specific `sqrtf`/`sqrt`, the same overload-resolution pattern
+// `cf_expv`/`cf_logv` (below) use.
+
+__device__ inline float cf_sqrtv(float x) { return sqrtf(x); }
+__device__ inline double cf_sqrtv(double x) { return sqrt(x); }
+
+template <typename T>
+__global__ void k_adam_step(
+    T* param, const T* grad, T* m, T* v,
+    double lr, double beta1, double beta2, double eps, double weight_decay,
+    double bias_correction1, double bias_correction2, long long n
+) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i >= n) return;
+
+    T g = grad[i];
+    if (weight_decay != 0.0) {
+        g = g + static_cast<T>(weight_decay) * param[i];
+    }
+
+    T b1 = static_cast<T>(beta1);
+    T b2 = static_cast<T>(beta2);
+    T m_new = b1 * m[i] + (static_cast<T>(1) - b1) * g;
+    T v_new = b2 * v[i] + (static_cast<T>(1) - b2) * g * g;
+    m[i] = m_new;
+    v[i] = v_new;
+
+    T m_hat = m_new / static_cast<T>(bias_correction1);
+    T v_hat = v_new / static_cast<T>(bias_correction2);
+    param[i] -= static_cast<T>(lr) * m_hat / (cf_sqrtv(v_hat) + static_cast<T>(eps));
+}
+
+#define ADAM_STEP_LAUNCHER(TYPE, SUFFIX)                                                 \
+    extern "C" __declspec(dllexport) int cf_adam_step_##SUFFIX(                          \
+        TYPE* param, const TYPE* grad, TYPE* m, TYPE* v,                                 \
+        double lr, double beta1, double beta2, double eps, double weight_decay,          \
+        double bias_correction1, double bias_correction2, long long n) {                 \
+        int blocks, threads;                                                             \
+        launch_config(n, blocks, threads);                                               \
+        k_adam_step<TYPE><<<blocks, threads>>>(                                          \
+            param, grad, m, v, lr, beta1, beta2, eps, weight_decay,                      \
+            bias_correction1, bias_correction2, n);                                      \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+ADAM_STEP_LAUNCHER(float, f32)
+ADAM_STEP_LAUNCHER(double, f64)
+
 // -- sum backward: broadcast a single value to every output element -----------
 //
 // `x.sum()`'s backward rule needs the one upstream scalar written into every
