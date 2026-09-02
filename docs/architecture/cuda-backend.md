@@ -129,7 +129,7 @@ transfers a tensor to make itself work.
 |---|---|---|---|
 | create/transfer | `cf_malloc`/`cf_free`/`cf_memcpy_{h2d,d2h,d2d}` | float32, float64, int32, int64, bool | Raw byte copy; dtype-generic |
 | `add`/`sub`/`mul` | `cf_{add,sub,mul}_{f32,f64}`, `cf_{add,sub,mul}_bcast_{f32,f64}` | float32, float64 | Exact-shape, plus (Milestone 9) one row-broadcast shape: a `(rows, cols)` matrix combined with a `(cols,)` vector -- see **Row-broadcast** below |
-| `matmul` | `cf_matmul_{f32,f64}` | float32, float64 | Naive one-thread-per-output-element kernel; 1D vectors are reinterpreted as degenerate `M=1`/`N=1` 2D matmuls on the host side, matching the CPU backend's four 1D/2D cases |
+| `matmul` | `cf_matmul_{f32,f64}` | float32, float64 | Shared-memory-tiled kernel (16x16 tiles, Milestone 11 -- see below); 1D vectors are reinterpreted as degenerate `M=1`/`N=1` 2D matmuls on the host side, matching the CPU backend's four 1D/2D cases |
 | `sum` | `cf_sum_{f32,f64}` | float32, float64 | Full reduction only (`axis=None`); block-level shared-memory tree reduction + atomic accumulation across blocks (a CAS-based emulation for `atomicAdd(double*)`, since CC 5.0 has no native one) |
 | `reshape` | `cf_memcpy_d2d` | any transferable dtype | Implemented as a device-to-device copy into a freshly allocated buffer with new shape metadata (no in-place aliasing, to avoid any storage-ownership ambiguity without an allocator) |
 | `relu` (Milestone 9) | `cf_relu_{f32,f64}` | float32, float64 | `out[i] = max(a[i], 0)`, one thread per element -- the same launch pattern as `add`/`sub`/`mul` |
@@ -411,15 +411,22 @@ driver 582.53, CUDA Toolkit 12.6):
 - **No custom GPU memory allocator**: every operation's output is a fresh
   `cudaMalloc`, freed via `cudaFree` on garbage collection. Reasonable for
   the small models this milestone targets; not tuned for throughput.
-- **Naive matmul**: one thread per output element, no tiling/shared-memory
-  GEMM optimization. Correctness-first, per the milestone brief;
-  performance optimization is out of scope until Milestone 11.
+- **Matmul is a single fixed 16x16-tile shared-memory GEMM** (re-tiled in
+  Milestone 11 from Milestone 8's naive one-thread-per-output-element
+  kernel, after benchmarking measured the naive kernel as a real bottleneck
+  at the 512x512 scale -- see `docs/performance/benchmarking.md`'s
+  "Optimization decision" section). Not a generalized, autotuned GEMM: one
+  fixed tile size, no double-buffering/prefetch, no vectorized loads. CUDA
+  matmul remains slower than the CPU/NumPy backend at that scale on the
+  940MX even after this optimization -- the benchmarking document reports
+  the measured before/after numbers rather than claiming otherwise.
 - **No int/bool compute kernels**: transfer works for `int32`/`int64`/
   `bool`, but arithmetic ops on CUDA require `float32`/`float64`.
 - **No CLI/benchmarking integration**: this milestone adds the backend and
   its tests only; CLI and benchmark surfaces (`docs/product/requirements.md`)
   are unaffected.
-- **No performance claims**: `docs/architecture/cuda-backend.md` reports
-  correctness and hardware verification only. The 940MX is old and small
-  workloads may well be slower on CUDA than CPU due to transfer and launch
-  overhead; benchmarking is Milestone 11's concern.
+- **Performance is documented separately**: this file reports correctness
+  and hardware verification; measured performance (including the confirmed
+  fact that small workloads, and even the "medium" 512x512 matmul, run
+  slower on this CUDA backend than on CPU) is in
+  `docs/performance/benchmarking.md` (Milestone 11), not repeated here.

@@ -249,3 +249,43 @@ cleanly (`338 passed, 121 skipped`, `0 failed`). `Trainer`/`DataLoader`/
 persistence remain CPU-only and unmodified, per the milestone's explicit
 scope. See `docs/architecture/autograd.md`, `docs/architecture/cuda-backend.md`,
 `docs/architecture/decisions/ADR-005-backend-aware-autograd.md`.
+
+## Phase 5 — Performance
+
+### M11 — Performance benchmarking and targeted optimization
+Adds a reproducible benchmark subsystem on top of the M1-M10 stack and
+applies one measurement-justified optimization: a new top-level
+`benchmarks/` package (`timing.py` -- CPU/CUDA-aware timing with explicit
+`cudaDeviceSynchronize()`-based bracketing for CUDA, since async kernel
+launches make naive `perf_counter()` wrapping measure launch overhead, not
+execution time; `sizes.py` -- tiny/small/medium size configs; `ops_bench.py`/
+`backward_bench.py`/`transfer_bench.py`/`training_bench.py` -- the four
+benchmark categories; `results.py` -- structured `BenchmarkResult`,
+JSON + human-readable table output; `run.py`/`__main__.py` -- the
+`python -m benchmarks` CLI), deliberately kept outside the `forge` package
+(`import forge` never touches it) and outside the correctness suite
+(`tests/test_benchmarks.py` only checks the harness's own mechanics with
+trivial callables, never a real benchmark or a timing threshold). A new
+public `CUDABackend.synchronize()` (`forge/backend/cuda/backend.py`) exposes
+the existing internal synchronization point for benchmark code, without any
+new native/CUDA-event code. Benchmarking every shared CPU/CUDA operation at
+three scales (32/128/512 for matmul, matching element counts elsewhere)
+found that Milestone 8's naive one-thread-per-output-element CUDA `matmul`
+kernel was a real, measured bottleneck at the 512x512 scale specifically
+(~4.4x slower than CPU/NumPy forward, ~3.4x slower backward) -- a pattern
+distinct from the expected launch/transfer-overhead slowdown at tiny/small
+scale, since it *grows* at the scale where compute should dominate launch
+overhead. `k_matmul` (`forge/backend/cuda/kernels.cu`) was rewritten as a
+standard 16x16-tile shared-memory GEMM (cuBLAS was considered and
+deliberately not introduced, per ADR-004's existing "no new numerical-library
+dependency" rationale and the milestone brief's own preference for a tiled
+kernel once naive matmul is a clearly measured bottleneck); the exported
+`cf_matmul_{f32,f64}` signature is unchanged, so no Python-side code
+changed. Measured before/after: ~1.7-1.8x speedup for both forward and
+backward matmul at the 512x512 scale (16.00ms -> ~9.0-9.2ms forward;
+34.74ms -> ~19.6-21.6ms backward); CUDA matmul remains slower than CPU at
+this scale even after the optimization, reported as a measured fact rather
+than hidden. All 121 CUDA tests and the full 474-test suite pass unchanged
+against the rewritten kernel. See `docs/performance/benchmarking.md` for
+full methodology, environment, baseline numbers, and the optimization
+decision's complete reasoning.

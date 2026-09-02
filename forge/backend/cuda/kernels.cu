@@ -1,10 +1,11 @@
-// Forge CUDA kernel library (Milestone 8).
+// Forge CUDA kernel library (Milestone 8; matmul re-tiled in Milestone 11).
 //
 // A small, deliberately narrow set of real CUDA kernels: device memory
-// management, elementwise add/sub/mul, naive 2D matmul, and a full-array
-// sum reduction. Compiled by `build.py` into a single shared library
-// (`extern "C"` exports only, so Python can call it via `ctypes` without any
-// C++ ABI dependency) and loaded by `forge/backend/cuda/backend.py`.
+// management, elementwise add/sub/mul, a shared-memory-tiled 2D matmul (see
+// the "matmul" section below for why it is tiled rather than naive), and a
+// full-array sum reduction. Compiled by `build.py` into a single shared
+// library (`extern "C"` exports only, so Python can call it via `ctypes`
+// without any C++ ABI dependency) and loaded by `forge/backend/cuda/backend.py`.
 //
 // Compute Capability 5.0 (the verified 940MX) has no native `atomicAdd` for
 // `double`, so `atomic_add_f64` below is the standard CAS-based emulation.
@@ -326,22 +327,66 @@ __global__ void k_broadcast_scalar(const T* scalar, T* out, long long n) {
 BROADCAST_SCALAR_LAUNCHER(float, f32)
 BROADCAST_SCALAR_LAUNCHER(double, f64)
 
-// -- matmul (naive, one thread per output element) ---------------------------
+// -- matmul (shared-memory tiled, Milestone 11) -------------------------------
 //
-// Correctness-first as directed by the milestone brief: no tiling/shared
-// memory GEMM optimization. The Python side always calls this with 2D
-// operands, reinterpreting the M1 1D-vector matmul cases (dot product,
-// matrix*vector, vector*matrix) as degenerate M=1 or N=1 2D matmuls.
+// Milestone 8-10 shipped a naive one-thread-per-output-element matmul
+// (every thread re-reads a full K-length row of A and column of B straight
+// from global memory, with no reuse across threads). Milestone 11's
+// benchmarks (`docs/performance/benchmarking.md`) measured this as a real,
+// significant bottleneck at the "medium" (512x512) scale: naive CUDA matmul
+// ran ~4x *slower* than the CPU (NumPy/BLAS) backend, forward and backward
+// alike -- not merely CUDA launch/transfer overhead (which would show up
+// at the tiny/small scales, not scale with problem size). The milestone
+// brief explicitly sanctions a tiled implementation once naive matmul is
+// "clearly measured as a bottleneck" -- see that document's "Optimization
+// decisions" section for the full before/after numbers.
+//
+// This is a standard 16x16-tile shared-memory GEMM: each thread block
+// cooperatively loads one TILE x TILE tile of A and one of B into shared
+// memory per outer-loop step, so each element of A/B is read from global
+// memory once per tile (shared across the 16 threads that reuse it) instead
+// of once per output element. Out-of-range tile loads (M/K/N not a multiple
+// of TILE) are zero-padded, matching the naive kernel's exact boundary
+// semantics. No warp-level intrinsics or architecture-specific tricks are
+// used, so this remains correct and portable to Compute Capability 5.0 (the
+// verified 940MX) -- this is not a generalized GEMM library, just the one
+// tiling optimization the measured bottleneck justified (per the milestone
+// brief's "do not implement a generalized GEMM library" / "do not introduce
+// complex shared-memory/tiled implementations unless measurements justify
+// them" constraints). The Python side is unchanged: `cf_matmul_{f32,f64}`
+// keeps the same exported signature, called the same way for all four 1D/2D
+// matmul cases (`CUDABackend.matmul`, `forge/backend/cuda/backend.py`).
+
+constexpr int MATMUL_TILE = 16;
 
 template <typename T>
 __global__ void k_matmul(const T* A, const T* B, T* C, int M, int K, int N) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row < M && col < N) {
-        T acc = static_cast<T>(0);
-        for (int k = 0; k < K; ++k) {
-            acc += A[row * K + k] * B[k * N + col];
+    __shared__ T tile_a[MATMUL_TILE][MATMUL_TILE];
+    __shared__ T tile_b[MATMUL_TILE][MATMUL_TILE];
+
+    int row = blockIdx.y * MATMUL_TILE + threadIdx.y;
+    int col = blockIdx.x * MATMUL_TILE + threadIdx.x;
+
+    T acc = static_cast<T>(0);
+    int num_tiles = (K + MATMUL_TILE - 1) / MATMUL_TILE;
+    for (int t = 0; t < num_tiles; ++t) {
+        int a_col = t * MATMUL_TILE + threadIdx.x;
+        int b_row = t * MATMUL_TILE + threadIdx.y;
+
+        tile_a[threadIdx.y][threadIdx.x] =
+            (row < M && a_col < K) ? A[row * K + a_col] : static_cast<T>(0);
+        tile_b[threadIdx.y][threadIdx.x] =
+            (b_row < K && col < N) ? B[b_row * N + col] : static_cast<T>(0);
+        __syncthreads();
+
+#pragma unroll
+        for (int k = 0; k < MATMUL_TILE; ++k) {
+            acc += tile_a[threadIdx.y][k] * tile_b[k][threadIdx.x];
         }
+        __syncthreads();
+    }
+
+    if (row < M && col < N) {
         C[row * N + col] = acc;
     }
 }
@@ -349,8 +394,8 @@ __global__ void k_matmul(const T* A, const T* B, T* C, int M, int K, int N) {
 #define MATMUL_LAUNCHER(TYPE, SUFFIX)                                                      \
     extern "C" __declspec(dllexport) int cf_matmul_##SUFFIX(                               \
         const TYPE* A, const TYPE* B, TYPE* C, int M, int K, int N) {                      \
-        dim3 threads(16, 16);                                                              \
-        dim3 blocks((N + 15) / 16, (M + 15) / 16);                                         \
+        dim3 threads(MATMUL_TILE, MATMUL_TILE);                                            \
+        dim3 blocks((N + MATMUL_TILE - 1) / MATMUL_TILE, (M + MATMUL_TILE - 1) / MATMUL_TILE); \
         k_matmul<TYPE><<<blocks, threads>>>(A, B, C, M, K, N);                              \
         return static_cast<int>(cudaGetLastError());                                       \
     }

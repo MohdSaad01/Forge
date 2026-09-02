@@ -572,6 +572,19 @@ class CUDABackend(Backend):
         self._synchronize("sgd_step")
         return data
 
+    # -- public synchronization (Milestone 11) ----------------------------
+    #
+    # Every operation above already synchronizes internally before trusting
+    # its own result, so `synchronize()` is never required for correctness.
+    # It exists for external callers -- specifically `benchmarks/timing.py`
+    # -- that need to bracket a *sequence* of CUDA calls (or the boundary
+    # around one) with an explicit synchronization point of their own,
+    # without reaching into the private `_synchronize`/`_lib` internals.
+
+    def synchronize(self) -> None:
+        """Block until all previously issued CUDA work on this device completes."""
+        self._synchronize("explicit synchronize")
+
 
 _backend_singleton: "CUDABackend | None" = None
 _unavailable_reason: "str | None" = None
