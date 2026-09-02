@@ -414,10 +414,14 @@ training path itself has real, deliberate limits:
 - **No GPU `DataLoader`, pinned memory, async prefetch, or multiprocessing
   workers** -- explicitly out of scope per the milestone brief; `DataLoader`
   stays exactly as capable (and exactly as CPU-only) as Milestone 5 left it.
-- **No CUDA persistence.** `save_model`/`load_model` remain CPU-only
-  (unchanged from Milestone 7) -- a CUDA-trained model's parameters must be
-  moved to CPU (`model.to("cpu")`) before saving; `Trainer` does not do this
-  automatically. See `docs/architecture/persistence.md`.
+- **CUDA persistence (Milestone 13).** `save_model()` now saves a
+  CUDA-trained model directly, with no `model.to("cpu")` step required
+  first; `load_model()` restores it back onto CUDA by default (or `"cpu"`/
+  `"cuda"` explicitly via `device=`). `Trainer` itself gained no new
+  persistence behavior -- saving/loading a `Trainer`-trained model is still
+  a call the caller makes explicitly, before/after `fit()`, never something
+  `Trainer` does automatically. See `docs/architecture/persistence.md` and
+  `docs/architecture/cuda-backend.md`'s **CUDA model persistence** section.
 - **No automatic device placement beyond the validate-not-move policy** --
   `Trainer` never calls `model.to(device)` on the caller's behalf, on either
   device, for any reason.

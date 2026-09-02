@@ -62,6 +62,15 @@ or an unsafe fallback.
   ADR) and the *wire format* it produces can each evolve without being
   conflated -- a version bump is a deliberate, documented breaking change
   in `load_model()`, never silently tolerated.
-- Optimizer state and CUDA device state are out of scope for this format
-  by design (see `docs/architecture/persistence.md`); extending the format
-  to cover either is a distinct future decision, not implied by this one.
+- Optimizer state is out of scope for this format by design (see
+  `docs/architecture/persistence.md`); extending it to cover training-resume
+  checkpointing is a distinct future decision, not implied by this one.
+- **Update (Milestone 13):** CUDA device state turned out to fit this format
+  without a redesign -- a CUDA `Parameter`'s values are copied to host
+  memory before being written (the same device-to-host transfer `Tensor.to()`
+  already used elsewhere), so the archive itself needed no new field beyond
+  extending the existing top-level `"device"` value from `"cpu"`-only to
+  `{"cpu", "cuda"}`, and no `FORMAT_VERSION` bump. This was foreseeable from
+  the original decision (the registry and the array-per-parameter format
+  never encoded "cpu" anywhere except that one metadata field), but is noted
+  here since this ADR originally called CUDA device state out of scope.

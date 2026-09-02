@@ -362,3 +362,62 @@ with `requires_grad=False`/`grad_fn=None`, a structural monkeypatch of every
 match an identically-initialized CPU run within `1e-3` (measured max diff
 ~2e-7). See `docs/architecture/training-engine.md`'s **Device semantics**
 section and `docs/architecture/cuda-backend.md`'s **CUDA losses** section.
+
+### M13 — CUDA model persistence
+Extends `forge.serialization` (`save_model`/`load_model`, unchanged package
+layout: `registry.py`/`archive.py`/`model.py`) so models whose `Parameter`s
+live on CUDA can be saved and reloaded, closing the "No CUDA persistence"
+limitation carried since Milestone 9. No second serialization system, no
+`CUDA`-specific model class, and no archive-format redesign: the same
+ZIP(`metadata.json` + one `.npy` per parameter) format M7 introduced is
+unchanged, `numpy.load(..., allow_pickle=False)` and the explicit
+`register_module()` registry still gate reconstruction, and
+`FORMAT_VERSION` stays `1` (see ADR-003's Milestone-13 update). Two changes
+made this work: `save_model()` now computes the whole tree's device once via
+the existing M9 `Module.device` (a mixed-device tree still raises
+`ModuleError`, unchanged) and copies every `Parameter`'s values to host
+memory via `Backend.to_numpy()` before writing -- a persistence *transfer*,
+identical to the device-to-host copy `Tensor.to()`/`Module.to()` already
+use, never a computation; `load_model()` gained an optional `device=` kwarg
+and a device-availability policy: by default it restores onto the archive's
+recorded device only if that device is available right now (a
+`"cuda"`-recorded file with no CUDA backend raises a clear
+`PersistenceError` rather than silently falling back to CPU), while an
+explicit `device="cpu"`/`device="cuda"` performs a deliberate conversion in
+either direction (an unavailable explicit `"cuda"` still fails clearly). A
+restored CUDA `Parameter` is constructed via `Parameter(array,
+device="cuda", ...)`, which routes through `CUDABackend.from_array()` -- a
+real `cudaMalloc` + host-to-device transfer, never a NumPy array relabeled
+as `CUDAStorage`. `is_cuda_available()` is checked lazily (`forge.backend.cuda`
+is only imported when the recorded or requested device is actually
+`"cuda"`), so a CPU-only environment loading a CPU-recorded file never
+touches CUDA. One existing test was updated to match the new capability
+(`tests/test_module_cuda.py::test_saving_a_cuda_model_now_succeeds`,
+superseding the M9-era assertion that saving a CUDA model was rejected) and
+one was renamed/adjusted since `"cuda"` is now a legitimate recorded device
+rather than an unsupported one
+(`tests/test_serialization.py::test_load_unrecognized_device_raises_persistence_error`,
+now tampering to a truly unrecognized device string). New tests: the
+hardware-required `tests/test_cuda_persistence.py` (10 tests -- CUDA -> CUDA
+round trips covering parameter values/shapes/dtypes/`requires_grad`, a
+nested model's hierarchy and per-module training-mode round trip, fresh-leaf
+no-grad-state parameters, forward-output equivalence against the pre-save
+model, explicit `device="cpu"`/`device="cuda"` conversion round trips, a
+structural zero-`CPUBackend`-compute-calls check across a full save + load +
+forward cycle, and a real `Trainer(device="cuda")`-trained model saved and
+reloaded with matching predictions) and 5 new CPU-only tests in
+`tests/test_serialization.py` covering the availability policy
+deterministically via a monkeypatched `is_cuda_available` (no CUDA hardware
+required to exercise the "CUDA unavailable" failure paths), plus the
+CPU-only round-trip proof that a `"cuda"`-tagged file still loads correctly
+under an explicit `device="cpu"` override with no hardware involved. No
+optimizer-state/training-resume checkpointing, no multi-GPU-aware
+serialization (bound by the CUDA backend's existing single-GPU restriction),
+and no model computation of any kind during save/load, on CPU or CUDA
+(structurally verified). Verified on the actual development GPU (940MX,
+CC 5.0, driver 582.53, CUDA Toolkit 12.6): all 521 tests pass (358 CPU-only,
+up from 353; 163 CUDA, up from 153), and the full suite was also run with
+`PATH` stripped of the CUDA toolchain to confirm all 163 CUDA tests skip
+cleanly (`358 passed, 163 skipped`, `0 failed`). See
+`docs/architecture/persistence.md`'s **Device semantics** section and
+`docs/architecture/cuda-backend.md`'s **CUDA model persistence** section.

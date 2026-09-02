@@ -299,13 +299,21 @@ def test_cuda_model_backward_now_produces_cuda_resident_gradients():
         assert param.grad.device.type == "cuda", name
 
 
-# -- Persistence / Trainer boundaries (documented, not implemented in M9) --------
+# -- Persistence / Trainer boundaries -------------------------------------------
 
 
-def test_saving_a_cuda_model_is_rejected_not_silently_copied(tmp_path):
-    model = MLP().to("cuda")
-    with pytest.raises(forge.ForgeError):
-        forge.save_model(model, str(tmp_path / "model.forge"))
+def test_saving_a_cuda_model_now_succeeds(tmp_path):
+    """Superseded by Milestone 13: `save_model()`/`load_model()` now support
+    CUDA models (see `tests/test_cuda_persistence.py` for the full CUDA
+    round-trip suite) -- M9's "CUDA models cannot be saved" boundary no
+    longer holds. Uses `Linear` (already registered for persistence) rather
+    than this file's own `MLP`, which is not registered and would fail for
+    an unrelated reason (an unregistered module type)."""
+    model = Linear(4, 8).to("cuda")
+    path = tmp_path / "model.forge"
+    forge.save_model(model, str(path))
+    loaded = forge.load_model(str(path))
+    assert loaded.weight.device.type == "cuda"
 
 
 def test_trainer_configured_for_cpu_rejects_a_cuda_model():

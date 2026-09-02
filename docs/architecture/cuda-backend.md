@@ -1,4 +1,4 @@
-# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12)
+# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13)
 
 ## Summary
 Forge has a real CUDA execution backend for a small operation set: tensor
@@ -368,6 +368,41 @@ any part of the forward pass on CPU. Moving logits to CPU explicitly first
 `docs/architecture/training-engine.md`'s **CUDA losses through Trainer**
 section for the `Trainer`-level framing of this same boundary.
 
+## CUDA model persistence (Milestone 13)
+`save_model()`/`load_model()` (`forge/serialization/model.py`) now support
+models whose `Parameter`s live on CUDA -- see
+`docs/architecture/persistence.md`'s **Device semantics** for the full
+loading policy. Summary of the CUDA-specific mechanics:
+- **Saving** a CUDA `Parameter` copies its values to host memory via
+  `Backend.to_numpy()` -- the exact same device-to-host transfer
+  `Tensor.to()`/`Module.to()` already use, and a no-op copy for a CPU
+  `Parameter`. This is a *persistence transfer*, not computation: no
+  forward/backward pass runs as part of `save_model()`, on CPU or CUDA. The
+  archive format itself is unchanged (still ZIP(`metadata.json` + one `.npy`
+  per parameter, `numpy.load(..., allow_pickle=False)`) -- only the
+  `"device"` metadata field's legal values (`"cpu"` or `"cuda"`, from
+  `Module.device`) and what `load_model()` will do with that value changed.
+- **Loading** onto CUDA constructs each `Parameter` with `device="cuda"`
+  directly, which routes through `CUDABackend.from_array()` -- a real
+  `cudaMalloc` + host-to-device `memcpy`, never a NumPy array relabeled as
+  `CUDAStorage`.
+- **Availability policy**: `load_model()` restores onto the archive's
+  recorded device only when that device is actually available;
+  `is_cuda_available()` is checked (lazily -- `forge.backend.cuda` is only
+  imported when the recorded or requested device is `"cuda"`) before any
+  parameter is constructed, so a CUDA-saved file on a CUDA-less machine
+  fails with a clear `PersistenceError` rather than silently loading onto
+  CPU. An explicit `load_model(path, device="cpu")` or `device="cuda")`
+  overrides the recorded device for a deliberate conversion in either
+  direction; an unavailable explicit `device="cuda"` still fails clearly.
+- **No optimizer state, autograd graph, or `.grad`** is saved for a CUDA
+  model, same as CPU -- this milestone is model (inference-time)
+  persistence only, unchanged from Milestone 7's scope.
+See `tests/test_cuda_persistence.py` for the hardware-verified CUDA<->CUDA
+round-trip suite, and `tests/test_serialization.py`'s **CUDA device policy**
+section for the metadata-level availability-policy tests (deterministic on
+any machine via a monkeypatched `is_cuda_available`).
+
 ## Errors
 All CUDA-specific failures raise `forge.CUDAError` (`forge/exceptions.py`):
 CUDA unavailable (no `nvcc`, no compatible device), backend
@@ -481,6 +516,18 @@ driver 582.53, CUDA Toolkit 12.6):
   semantics** section for the `Trainer`-level design this exercises, and
   `docs/development/progress.md`'s M12 entry for the full test/verification
   summary.
+- **Milestone 13**: the new `tests/test_cuda_persistence.py` (10 CUDA tests;
+  163 CUDA tests total, 521 tests overall) passes directly on this machine,
+  exercising: CUDA -> CUDA round trips (parameter values, shapes, dtypes,
+  `requires_grad`, a nested model's hierarchy and per-module training mode,
+  fresh-leaf/no-grad-state parameters, and forward-output equivalence
+  against the pre-save model), explicit `device="cpu"`/`device="cuda"`
+  conversion round trips, a structural check (monkeypatched `CPUBackend`)
+  that save+load+forward for a CUDA model calls zero `CPUBackend` compute
+  methods, and a real `Trainer(device="cuda")`-trained model saved and
+  reloaded with matching post-load predictions. The full suite was also run
+  with `PATH` stripped of the CUDA toolchain to confirm all 163 CUDA tests
+  skip cleanly (`358 passed, 163 skipped`, `0 failed`).
 
 ## Limitations
 - **Operation set is intentionally small**: `add`/`sub`/`mul` (exact-shape,
@@ -499,16 +546,18 @@ driver 582.53, CUDA Toolkit 12.6):
     a CUDA `Trainer` using it fails clearly via `LossError`.
   - No GPU `DataLoader`, pinned memory, async prefetch, or multiprocessing
     workers -- explicit non-goals, unchanged.
-  - No CUDA persistence -- see the next bullet.
   - A `device="cpu"` `Trainer` fed a CUDA-resident model still fails clearly
     (now via `Trainer._check_model_device()`'s explicit validation, rather
     than incidentally from the first device-mismatched forward op) -- see
     `tests/test_module_cuda.py::test_trainer_configured_for_cpu_rejects_a_cuda_model`.
-- **No CUDA persistence**: `save_model`/`load_model` remain CPU-only
-  (unchanged from Milestone 7); saving a CUDA-resident model raises rather
-  than silently copying it to CPU (`Parameter.numpy()` itself refuses a
-  non-CPU tensor) -- see
-  `tests/test_module_cuda.py::test_saving_a_cuda_model_is_rejected_not_silently_copied`.
+- **CUDA persistence (Milestone 13)**: `save_model`/`load_model` support
+  CUDA models -- see **CUDA model persistence** above and
+  `docs/architecture/persistence.md`. What remains unsupported, unchanged
+  from Milestone 7: no optimizer-state/training-resume checkpointing, no
+  CUDA-specific archive format (the same portable ZIP(json + .npy) format
+  CPU files have always used), and only the device-coherent trees
+  `Module.device` already requires (a manually mixed-device tree raises
+  `ModuleError` before anything is written, same as `Module.device` itself).
 - **Single GPU, index 0 only**: `device="cuda:N"` for `N != 0` raises
   `CUDAError`. No multi-GPU support.
 - **No custom GPU memory allocator**: every operation's output is a fresh

@@ -289,7 +289,48 @@ def test_load_unsupported_module_type_raises_persistence_error(tmp_path):
         load_model(str(path))
 
 
-def test_load_unsupported_device_raises_persistence_error(tmp_path):
+def test_load_unrecognized_device_raises_persistence_error(tmp_path):
+    """`"cuda"` is a legitimate recorded device as of M13 -- an unknown device
+    string (not `"cpu"`/`"cuda"`) is what should still fail to load."""
+    model = Linear(2, 2)
+    path = tmp_path / "m.forge"
+    save_model(model, str(path))
+
+    metadata = _read_metadata(path)
+    metadata["device"] = "tpu"
+    _write_metadata(path, metadata)
+
+    with pytest.raises(PersistenceError):
+        load_model(str(path))
+
+
+def test_load_invalid_device_override_raises_persistence_error(tmp_path):
+    model = Linear(2, 2)
+    path = tmp_path / "m.forge"
+    save_model(model, str(path))
+
+    with pytest.raises(PersistenceError):
+        load_model(str(path), device="tpu")
+
+
+# -- CUDA device policy (metadata-level, no CUDA hardware required) ---------
+#
+# These exercise `load_model()`'s CUDA-availability policy by monkeypatching
+# `forge.backend.cuda.is_cuda_available` directly, so they run deterministically
+# on any machine regardless of whether CUDA is actually present. Hardware-
+# verified CUDA<->CUDA round trips live in `tests/test_cuda_persistence.py`.
+
+
+def test_saved_cpu_model_records_cpu_device_in_metadata(tmp_path):
+    model = Linear(2, 2)
+    path = tmp_path / "m.forge"
+    save_model(model, str(path))
+
+    metadata = _read_metadata(path)
+    assert metadata["device"] == "cpu"
+
+
+def test_load_cuda_saved_file_without_cuda_available_raises_clear_error(tmp_path, monkeypatch):
     model = Linear(2, 2)
     path = tmp_path / "m.forge"
     save_model(model, str(path))
@@ -298,8 +339,42 @@ def test_load_unsupported_device_raises_persistence_error(tmp_path):
     metadata["device"] = "cuda"
     _write_metadata(path, metadata)
 
-    with pytest.raises(PersistenceError):
+    import forge.backend.cuda as cuda_module
+
+    monkeypatch.setattr(cuda_module, "is_cuda_available", lambda: False)
+
+    with pytest.raises(PersistenceError, match="CUDA"):
         load_model(str(path))
+
+
+def test_load_device_cuda_override_without_cuda_available_raises_clear_error(tmp_path, monkeypatch):
+    model = Linear(2, 2)
+    path = tmp_path / "m.forge"
+    save_model(model, str(path))
+
+    import forge.backend.cuda as cuda_module
+
+    monkeypatch.setattr(cuda_module, "is_cuda_available", lambda: False)
+
+    with pytest.raises(PersistenceError, match="CUDA"):
+        load_model(str(path), device="cuda")
+
+
+def test_load_device_cpu_override_ignores_recorded_cuda_device_no_hardware_needed(tmp_path):
+    """A `device="cpu"` override never touches CUDA availability at all --
+    the archive's parameter bytes are already host-resident regardless of
+    what device they were saved from, so this works even without CUDA."""
+    model = Linear(2, 2)
+    path = tmp_path / "m.forge"
+    save_model(model, str(path))
+
+    metadata = _read_metadata(path)
+    metadata["device"] = "cuda"
+    _write_metadata(path, metadata)
+
+    loaded = load_model(str(path), device="cpu")
+    assert loaded.weight.device.type == "cpu"
+    np.testing.assert_array_equal(loaded.weight.numpy(), model.weight.numpy())
 
 
 def test_load_missing_parameter_data_raises_persistence_error(tmp_path):

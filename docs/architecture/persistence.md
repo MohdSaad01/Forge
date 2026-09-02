@@ -1,4 +1,4 @@
-# Model Persistence (Milestone 7)
+# Model Persistence (Milestone 7; CUDA persistence in Milestone 13)
 
 ## Package layout
 ```
@@ -18,6 +18,8 @@ level (`forge.save_model`, `forge.load_model`, `forge.PersistenceError`).
 ```python
 forge.save_model(model, path)
 loaded = forge.load_model(path)
+loaded = forge.load_model(path, device="cpu")    # explicit override (M13)
+loaded = forge.load_model(path, device="cuda")   # explicit override (M13)
 ```
 Free functions rather than `Module.save()`/`Module.load()` methods --
 persistence is a distinct concern layered *over* `Module`, not a
@@ -111,13 +113,70 @@ mismatches raise `PersistenceError` identifying the exact parameter and
 the discrepancy (see **Errors** below).
 
 ## Device semantics
-M7 remains CPU-only (see `docs/development/development-environment.md`).
-The archive records a single top-level `"device": "cpu"` field; every
-parameter loaded is explicitly constructed with `device="cpu"`.
-`load_model()` on a file whose `"device"` is anything else (e.g. a
-hypothetical future `"cuda"` value, or a tampered file) raises
-`PersistenceError` naming the unsupported device -- Forge never silently
-loads a CUDA-tagged model onto CPU or pretends CUDA execution occurred.
+As of Milestone 13, a model may be saved from and loaded onto either
+`"cpu"` or `"cuda"` (see `docs/architecture/cuda-backend.md`'s **CUDA model
+persistence** section for the CUDA-specific mechanics). `Module.device`
+(Milestone 9) already requires a device-coherent module tree -- `save_model()`
+calls it once up front, so a manually-assembled mixed-device tree raises
+`ModuleError` before anything is written, exactly as `Module.device` itself
+does; a module tree with no `Parameter`s anywhere records `"cpu"`.
+
+### Recorded metadata
+The archive's top-level `"device"` field records the whole tree's device at
+save time (`"cpu"` or `"cuda"`) -- Forge assumes one coherent device per
+model, matching `Module.device`'s own contract, so no per-parameter device
+field is needed. A file whose `"device"` is anything else (an unrecognized
+string, or a tampered file) raises `PersistenceError` before any module is
+constructed.
+
+### Loading policy
+```python
+load_model(path)                 # restore onto the recorded device, if available
+load_model(path, device="cpu")   # explicit override: always available
+load_model(path, device="cuda")  # explicit override: requires CUDA
+```
+- **`device=None` (default).** Restore onto the device recorded in the
+  archive -- but *only* when that device is actually available right now.
+  A `"cuda"`-recorded file loaded with no CUDA backend present raises
+  `PersistenceError` explaining that CUDA is required; Forge never silently
+  falls back to CPU or pretends CUDA execution occurred. `is_cuda_available()`
+  is checked lazily -- `forge.backend.cuda` is only imported at all when the
+  recorded (or requested) device is `"cuda"`, so a CPU-only environment
+  loading a CPU-recorded file never touches CUDA in any way.
+- **`device="cpu"`.** Explicit override: always succeeds regardless of the
+  recorded device (a deliberate CUDA -> CPU conversion at load time). Every
+  saved parameter's bytes are already host-resident in the archive (see
+  **Parameter/tensor state** below), so this override needs no CUDA backend
+  at all -- it works even on a machine with no CUDA toolchain.
+- **`device="cuda"`.** Explicit override: restores onto CUDA regardless of
+  the recorded device (a deliberate CPU -> CUDA conversion). Still requires
+  CUDA to actually be available -- an unavailable explicit `device="cuda"`
+  fails with the same clear `PersistenceError`, never a silent CPU fallback.
+- **Any other `device` value** (not `None`, `"cpu"`, or `"cuda"`) raises
+  `PersistenceError` immediately.
+
+Every parameter in the reconstructed tree lands on the same resolved target
+device -- `load_model()` never produces a mixed-device tree, matching the
+same coherence `Module.device`/`save_model()` require.
+
+### How a CUDA `Parameter` is saved and restored
+```text
+Saving:   CUDA Parameter -> Backend.to_numpy() (device-to-host copy) -> .npy/archive
+Loading:  .npy/archive -> host NumPy array -> Parameter(array, device="cuda", ...)
+                                                       |
+                                                       v
+                                        CUDABackend.from_array(): real
+                                        cudaMalloc + host-to-device memcpy
+```
+`Backend.to_numpy()`/`Parameter(..., device=...)` are the same primitives
+`Tensor.to()`/`Module.to()` already use elsewhere in Forge -- persistence
+introduces no second CUDA transfer code path, and no CUDA `Parameter` is
+ever produced by relabeling a NumPy array. These are *persistence
+transfers*: `save_model()`/`load_model()` never run a forward or backward
+pass, on CPU or CUDA, as part of saving or loading -- see
+`tests/test_cuda_persistence.py::test_save_load_cuda_model_never_calls_cpu_backend_compute_ops`
+for the structural proof (no CPU-side computation occurs either, even for a
+CUDA model's save/load).
 
 ## Autograd semantics
 A saved model captures **state**, not a computation graph: no `grad_fn`,
@@ -196,6 +255,15 @@ forward- or backward-compatibility shim in this milestone: a version
 change is a breaking change to the format until a later milestone
 implements migration, and Forge does not claim otherwise.
 
+**Milestone 13 did not bump `FORMAT_VERSION`.** CUDA persistence needed no
+new metadata field or archive layout -- only the `"device"` field's set of
+legal values (`"cpu"` and now `"cuda"`) and `load_model()`'s own runtime
+policy for that value changed, both handled entirely in Python without
+touching the wire format. An M7-M12 CPU-only file (`"device": "cpu"`) is
+still valid version-`1` metadata and loads unmodified; `load_model()`
+applies exactly the same version check to every file regardless of which
+device it names.
+
 ## Atomicity and file safety
 `save_model()` writes the full archive to a temporary file in the
 destination's own directory, then `os.replace()`s it into place only after
@@ -238,14 +306,19 @@ covering: a non-`Module` passed to `save_model()`, a module type not
 registered for persistence (`save_model()` or `load_model()`), an invalid
 save destination (missing parent directory, OS-level write failure), a
 missing model file, a corrupt/non-ZIP file, missing or malformed
-`metadata.json`, an unsupported format version, an unsupported device, a
-missing parameter's data, a parameter shape/dtype mismatch between
-metadata and the actual array, corrupted parameter bytes, and a
-structural inconsistency between a file's declared parameters/children and
-what the registered constructor actually produced ("inconsistent model
-state"). Low-level exceptions (`zipfile.BadZipFile`, `json.JSONDecodeError`,
-raw `OSError`s) are always caught and re-raised as `PersistenceError` with
-added context, never surfaced directly to callers.
+`metadata.json`, an unsupported format version, an unrecognized recorded
+device, an invalid `device=` override passed to `load_model()`, a
+CUDA-recorded (or explicitly `device="cuda"`-requested) load with no CUDA
+backend available, a missing parameter's data, a parameter shape/dtype
+mismatch between metadata and the actual array, corrupted parameter bytes,
+and a structural inconsistency between a file's declared parameters/children
+and what the registered constructor actually produced ("inconsistent model
+state"). A mixed-device module tree passed to `save_model()` raises
+`ModuleError` (from `Module.device`), not `PersistenceError` -- the same
+error that operation already raises everywhere else in Forge. Low-level
+exceptions (`zipfile.BadZipFile`, `json.JSONDecodeError`, raw `OSError`s)
+are always caught and re-raised as `PersistenceError` with added context,
+never surfaced directly to callers.
 
 ## Known limitations
 - Only `Linear` and `ReLU` are built-in registered module types; every
@@ -254,10 +327,12 @@ added context, never surfaced directly to callers.
   module limitations**.
 - No optimizer-state checkpointing or training-resume support (see
   **Optimizer-state limitations**).
-- CPU-only: saved files always declare `"device": "cpu"`; no CUDA
-  serialization exists yet, and a file claiming another device fails to
-  load rather than silently running on CPU or pretending to run on that
-  device.
+- CPU and CUDA only, one device per model tree: `"device"` is `"cpu"` or
+  `"cuda"` (Milestone 13); a file recording anything else fails to load
+  rather than silently running on CPU or pretending to run on that device.
+  No multi-GPU-aware serialization -- CUDA persistence is bound by the same
+  single-GPU (index 0) restriction as the rest of the CUDA backend (see
+  `docs/architecture/cuda-backend.md`).
 - No forward/backward format-version compatibility or migration.
 - No compression tuning, encryption, or model signing (all explicitly out
   of scope for this milestone).
