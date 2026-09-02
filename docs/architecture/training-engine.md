@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12)
 
 ## Package layout
 ```
@@ -58,14 +58,20 @@ history = trainer.fit(train_loader, epochs=10, validation_loader=val_loader)
 results = trainer.evaluate(test_loader)
 ```
 Construction validates every component eagerly and raises `TrainerError`
-(or `UnsupportedDeviceError` for the device) rather than failing later with
-an unrelated `AttributeError`:
+(or `UnsupportedDeviceError`/`CUDAError` for the device) rather than failing
+later with an unrelated `AttributeError`:
 - `model` must be a `forge.nn.Module` instance.
 - `loss_fn` must be a `forge.nn.Loss` instance.
 - `optimizer` must be a `forge.optim.Optimizer` instance.
-- `device` must resolve (via `forge.Device.parse`) to `"cpu"` -- see
-  **Device semantics** below.
+- `device` must resolve (via `forge.Device.parse`) to `"cpu"` or `"cuda"`,
+  and that backend must actually be usable right now -- see **Device
+  semantics** below.
 - `metrics`, if given, must be `Metric` instances with unique `.name`s.
+
+Construction deliberately does **not** validate that `model` already sits on
+`device` -- that is checked lazily, at the start of `fit()`/`evaluate()`
+(see **Device semantics**), so building a `Trainer` and moving the model
+(`model.to(device)`) can happen in either order.
 
 ## Training lifecycle
 `fit()` runs `_run_training_epoch` once per epoch:
@@ -73,6 +79,7 @@ an unrelated `AttributeError`:
 model.train()
 for batch in train_loader:
     x, y = batch                 # (features, target), enforced -- see below
+    x, y = x.to(device), (y.to(device) if isinstance(y, Tensor) else y)  # M12
     optimizer.zero_grad()
     prediction = model(x)
     loss = loss_fn(prediction, y)
@@ -89,7 +96,9 @@ produces for a `TensorDataset`-style dataset, per
 `docs/architecture/data-system.md`). A batch that is a single Tensor, a
 tuple of the wrong length, or has non-Tensor features raises `TrainerError`
 identifying the mismatch rather than failing deeper inside `model()`/
-`loss_fn()`.
+`loss_fn()`. This validation (`Trainer._unpack_batch`) runs *before* the
+Milestone 12 device transfer described above, so an unsupported batch shape
+fails with the same clear `TrainerError` regardless of `self.device`.
 
 **Loss/metric aggregation.** `MSELoss`/`CrossEntropyLoss` each return a
 *mean* over their batch (per-element or per-sample, respectively). Trainer
@@ -105,13 +114,17 @@ results = trainer.evaluate(loader)
 # results.loss, results.metrics, results.samples, results.duration, results.device
 ```
 `evaluate()`:
-1. Records the model's current mode (`was_training = model.training`).
-2. Calls `model.eval()` -- propagated to every nested child module by the
+1. Validates the model's device against `self.device` (Milestone 12 -- see
+   **Device semantics** below), before touching the loader or the model's
+   mode.
+2. Records the model's current mode (`was_training = model.training`).
+3. Calls `model.eval()` -- propagated to every nested child module by the
    existing M3 `Module.train()`/`eval()` recursion.
-3. Runs the forward pass over every batch inside `forge.no_grad()` (see
+4. Runs the forward pass over every batch inside `forge.no_grad()` (see
    **`no_grad`** below) -- no `loss.backward()`, no `optimizer.step()`, and
-   no autograd graph is built for the predictions.
-4. Restores the model's prior mode (`model.train(was_training)`), in a
+   no autograd graph is built for the predictions. Each batch is
+   device-transferred first, exactly like `fit()`'s training loop.
+5. Restores the model's prior mode (`model.train(was_training)`), in a
    `finally` block so a mid-evaluation exception cannot leave the model
    stuck in eval mode.
 
@@ -171,6 +184,24 @@ All three raise `TrainerError` on a shape mismatch or on `compute()` with
 zero samples seen, rather than returning `nan` silently. None mutate
 `prediction`/`target` or touch model parameters.
 
+### CUDA metrics (Milestone 12)
+Each built-in metric's `update()` is a small, non-differentiable NumPy
+reduction (`_as_numpy` in `forge/training/metrics.py`) -- not a good fit for
+a dedicated CUDA kernel, and metrics never participate in the autograd graph
+in the first place. Rather than leaving them CUDA-incompatible, `_as_numpy`
+transfers a `Tensor` argument to CPU first (`value.to("cpu").numpy()`) and
+computes exactly as before; a non-`Tensor` argument (e.g. a raw class-index
+array) is used as-is. This is a one-way, read-only transfer of
+already-computed prediction/target values purely for reporting -- it never
+feeds anything back into training, and it never invokes a `CPUBackend`
+*compute* method (`Tensor.to("cpu")` is a transfer, going through
+`CUDABackend.to_numpy` and `CPUBackend.from_array`, not `CPUBackend.add`/
+`matmul`/etc.), so it does not violate Trainer's no-CPU-fallback guarantee
+for training computation -- see **Device semantics** below and
+`docs/architecture/cuda-backend.md`. All three built-in metrics therefore
+work unmodified for a CUDA `Trainer`; there is no CUDA-incompatible
+built-in metric in this milestone.
+
 ## Training history
 `fit()` returns a `TrainingHistory`: an ordered, indexable, iterable
 sequence of `EpochResult` records, one per completed epoch:
@@ -227,13 +258,125 @@ epoch's just-updated parameters. No early stopping and no checkpointing are
 implemented on top of this (explicitly out of scope for this milestone).
 
 ## Device semantics
-Milestone 6 remains CPU-only, matching the rest of Forge at this milestone.
-`Trainer(..., device=...)` resolves the device via the existing
-`forge.Device.parse` and requires `device.type == "cpu"`; anything else
-(`"cuda"`, `"cuda:0"`, or an unrecognized string) raises
-`UnsupportedDeviceError` immediately at construction. Trainer never moves a
-tensor to another device merely because a device string was accepted
-elsewhere in Forge, and never claims to execute on CUDA.
+Milestone 6 shipped `Trainer` as CPU-only. **As of Milestone 12, `Trainer`
+executes a real training/evaluation workflow on CUDA** through the exact
+same `Trainer` class -- there is no `CUDATrainer` subclass, and the
+`optimizer.zero_grad() -> model(x) -> loss_fn -> loss.backward() ->
+optimizer.step()` sequence above is unchanged on either device. This
+section documents the three device-related decisions that extension
+required: what `device=` validates at construction, how `Trainer` decides
+whether the model is where it needs to be, and how a batch produced by a
+CPU-only `DataLoader` reaches a CUDA model.
+
+### Construction: device *support*, not model placement
+`Trainer(..., device=...)` resolves the device via `forge.Device.parse` (as
+before) and now additionally calls `forge.backend.get_backend(device)` to
+confirm that backend can actually be used right now:
+- An unrecognized device string (anything other than `"cpu"`/`"cuda"`, e.g.
+  `"tpu"`) raises `UnsupportedDeviceError` immediately, unchanged from
+  Milestone 6.
+- `device="cuda"` on a machine without a working CUDA backend (no driver, no
+  compatible device, a failed kernel compile) raises `CUDAError`
+  immediately -- the same failure `Tensor(..., device="cuda")` or
+  `Module.to("cuda")` would raise, surfaced at `Trainer` construction rather
+  than deferred to the first batch.
+
+Construction does **not** touch `model` at all: it neither inspects nor
+moves it. Building a CUDA `Trainer` around a still-CPU-resident model is
+valid; see the next section for when that becomes an error.
+
+### Model placement: Trainer validates, it never moves
+Two policies were available (per the milestone brief): have `Trainer`
+silently call `model.to(device)` on the caller's behalf, or have `Trainer`
+require the model already be there and fail clearly otherwise. **`Trainer`
+validates; it does not move.** `Trainer._check_model_device()` -- called at
+the start of both `fit()` and `evaluate()`, before any batch is touched --
+compares `self.model.device` (the single device shared by every `Parameter`
+the model owns; `None` for a `Parameter`-less model, which is exempt from
+this check) against `self.device`, raising `UnsupportedDeviceError` naming
+the exact `model.to(device)` call needed if they differ.
+
+This was the only policy compatible with an existing Milestone 9 test
+(`tests/test_module_cuda.py::test_trainer_configured_for_cpu_rejects_a_cuda_model`,
+renamed from Milestone 9's `..._fails_clearly_on_forward` but unchanged in
+intent): a `device="cpu"` `Trainer` fed a CUDA-resident model must still
+fail clearly, never silently repatriate the model to CPU to make training
+"work". Auto-moving would have made that call succeed by quietly relocating
+the model -- exactly the "silently move a tensor outside the documented
+Trainer lifecycle" behavior the milestone brief prohibits. Validating
+instead keeps `Trainer`'s behavior identical however the caller reaches a
+device mismatch (constructed with the wrong `device=`, or `model.to()`'d to
+the wrong place afterward), and keeps `Module.to(device)` -- already the
+one sanctioned, explicit way to move a model (`docs/architecture/modules.md`)
+-- the *only* way, with no second, implicit code path duplicating it.
+
+### Batch movement: Trainer transfers, DataLoader never does
+`DataLoader` is explicitly **not** made device-aware (per the milestone
+brief's non-goals: no GPU `DataLoader`, no automatic batching to a device).
+It continues to yield ordinary CPU Tensors, exactly as `docs/architecture/
+data-system.md` describes, regardless of what device a `Trainer` consuming
+it is configured for.
+
+`Trainer._to_device_batch()` -- the Milestone 12 replacement for a bare
+`_unpack_batch()` call inside `fit()`'s training loop and `evaluate()` --
+unpacks the batch as before and then explicitly transfers it:
+```python
+x, y = self._unpack_batch(batch)
+x = x.to(self.device)
+if isinstance(y, Tensor):
+    y = y.to(self.device)
+return x, y
+```
+`x` (always a `Tensor`, enforced by `_unpack_batch`) is always transferred.
+`y` is transferred only if it is itself a `Tensor` -- a raw array-like
+target (which `MSELoss`/`CrossEntropyLoss`/the built-in metrics already
+accept directly) is passed through unchanged, since `.to()` has no meaning
+for it. `Tensor.to(device)` is a no-op returning the original object when
+already on `device` (`docs/architecture/cuda-backend.md`), so this costs a
+CPU `Trainer` nothing extra and introduces no new code path for the
+CPU-only case. This is the *only* place in Forge a `DataLoader`-produced
+batch crosses a device boundary -- never inside `Dataset`/`DataLoader`
+itself, matching the target flow:
+```text
+Dataset -> CPU DataLoader -> Trainer -> explicit x.to(device)/y.to(device)
+    -> CUDA Module -> CUDA Loss -> CUDA autograd -> CUDA SGD
+```
+
+### CUDA losses through Trainer
+`Trainer` calls `self.loss_fn(prediction, y)` exactly as before -- it has no
+CUDA-specific loss-handling code. Whether that succeeds on CUDA is entirely
+the loss's own concern: `MSELoss` works unmodified (see
+`docs/architecture/cuda-backend.md`'s **CUDA losses** section);
+`CrossEntropyLoss` raises `LossError` immediately for non-CPU logits (a
+deliberate Milestone 12 deferral, same section) rather than `Trainer`
+special-casing it. A `Trainer(device="cuda", loss_fn=CrossEntropyLoss())`
+therefore fails clearly the first time `fit()`/`evaluate()` calls the loss,
+not through any Trainer-level device check.
+
+### Reporting the loss/metrics still touches CPU -- deliberately
+`total_loss += float(loss.to("cpu").numpy()) * batch_size` (both `fit()`'s
+training loop and `evaluate()`) and metrics' `_as_numpy` (see **CUDA
+metrics** above) both call `.to("cpu")` on a CUDA scalar/tensor. This is the
+one sanctioned host round-trip in the whole CUDA training path: extracting
+an already-computed Python `float`/NumPy value for bookkeeping
+(`EpochResult`/`EvaluationResult`/metric accumulation), never recomputing
+anything on CPU. `Tensor.to("cpu")` goes through `CUDABackend.to_numpy` (a
+`cudaMemcpy` D2H) and `CPUBackend.from_array` (a transfer primitive) -- it
+never calls a `CPUBackend` *compute* method (`add`/`sub`/`mul`/`matmul`/
+`sum`/`reshape`/`relu`/`exp`/`log`/`sgd_step`), so it does not compromise
+the no-CPU-fallback guarantee below.
+
+### No CPU fallback
+For a `Trainer(device="cuda")`, every computation in the
+`zero_grad -> forward -> loss -> backward -> step` sequence executes as a
+real CUDA operation: `CUDABackend` forward/backward kernels for the model
+and loss, the existing backend-aware autograd engine
+(`docs/architecture/autograd.md`) dispatching to `CUDABackend`, and
+`CUDABackend.sgd_step` for the optimizer update. `tests/test_trainer_cuda.py`
+asserts this structurally (monkeypatching every `CPUBackend` compute method,
+the same technique `tests/test_module_cuda.py`/`tests/test_cuda_autograd.py`
+already use) across a full multi-epoch `fit()` call with validation and
+metrics: zero `CPUBackend` compute-method calls occur.
 
 ## Epoch semantics
 - One epoch is exactly one full pass over `train_loader` -- as many batches
@@ -253,11 +396,31 @@ elsewhere in Forge, and never claims to execute on CUDA.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and
-the milestone's own non-goals): CUDA execution, distributed training, mixed
-precision, checkpointing, early stopping, learning-rate schedulers,
-hyperparameter tuning, multiprocessing DataLoader workers, a general
-logging/observability platform, experiment tracking, a CLI, model
-serialization, and a callbacks system. `no_grad()` is a single global flag,
-not a general context-management system -- no `retain_graph` equivalent,
-no per-tensor/per-thread grad state, no nesting-depth tracking beyond plain
+the milestone's own non-goals): distributed training, mixed precision,
+checkpointing, early stopping, learning-rate schedulers, hyperparameter
+tuning, multiprocessing DataLoader workers, a general logging/observability
+platform, experiment tracking, a CLI, model serialization, and a callbacks
+system. `no_grad()` is a single global flag, not a general
+context-management system -- no `retain_graph` equivalent, no
+per-tensor/per-thread grad state, no nesting-depth tracking beyond plain
 save/restore.
+
+As of Milestone 12, CUDA execution is no longer on this list, but the CUDA
+training path itself has real, deliberate limits:
+- **`CrossEntropyLoss` is CPU-only.** A CUDA `Trainer` using it fails
+  clearly (`LossError`) the first time the loss is called -- see
+  `docs/architecture/cuda-backend.md`'s **CUDA losses** section for why this
+  was deferred rather than implemented.
+- **No GPU `DataLoader`, pinned memory, async prefetch, or multiprocessing
+  workers** -- explicitly out of scope per the milestone brief; `DataLoader`
+  stays exactly as capable (and exactly as CPU-only) as Milestone 5 left it.
+- **No CUDA persistence.** `save_model`/`load_model` remain CPU-only
+  (unchanged from Milestone 7) -- a CUDA-trained model's parameters must be
+  moved to CPU (`model.to("cpu")`) before saving; `Trainer` does not do this
+  automatically. See `docs/architecture/persistence.md`.
+- **No automatic device placement beyond the validate-not-move policy** --
+  `Trainer` never calls `model.to(device)` on the caller's behalf, on either
+  device, for any reason.
+- **Single GPU, index 0 only**, inherited unchanged from
+  `docs/architecture/cuda-backend.md`'s existing CUDA backend limitation --
+  `Trainer` introduces no new multi-GPU behavior.

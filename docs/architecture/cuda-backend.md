@@ -1,4 +1,4 @@
-# CUDA Backend (Milestones 8-10)
+# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12)
 
 ## Summary
 Forge has a real CUDA execution backend for a small operation set: tensor
@@ -34,7 +34,10 @@ forge/
     tensor/tensor.py         Tensor.to(device); Tensor._move_storage_() (M9); backward() (device-generic as of M10)
     autograd/engine.py        run_backward -- backend-dispatched gradient accumulation (M10)
     nn/module.py              Module.to(device), Module.device (new in M9)
+    nn/loss.py                MSELoss CUDA-compatible unmodified; CrossEntropyLoss CPU-only guard (M12)
     optim/sgd.py               SGD.step() -- Backend.sgd_step() dispatch (M10)
+    training/trainer.py        Trainer device validation + explicit batch transfer (M12)
+    training/metrics.py        Metric._as_numpy() transfers CUDA inputs to CPU for reporting (M12)
     exceptions.py             CUDAError (new in M8)
 ```
 
@@ -290,6 +293,81 @@ structurally (via a monkeypatched `CPUBackend`, the same technique
 already used for forward execution): a full CUDA model forward + backward
 pass calls zero `CPUBackend` methods.
 
+## CUDA losses (Milestone 12)
+### `MSELoss`: CUDA-compatible with zero new kernels
+`MSELoss` (`forge/nn/loss.py`) computes `mean((prediction - target)^2)` as
+```python
+diff = prediction - target                                    # exact-shape sub
+squared = diff * diff                                          # exact-shape mul
+scale = Tensor(1.0 / n, dtype=prediction.dtype, device=prediction.device)
+return squared.sum() * scale                                   # full-reduction sum, exact-shape mul
+```
+-- exclusively `-`, `*`, and `.sum(axis=None)`, every one of which
+`CUDABackend` already implements forward *and* backward (Milestones 8-10;
+see **Operation set** and **CUDA autograd** above). No new CUDA kernel, no
+new `Backend` method, and no `CUDAMSELoss` subclass were needed: this is the
+"determine the minimum CUDA primitives required" outcome the milestone
+brief asked for turning out to be *zero*, because Milestone 8's own
+operation-set choices (driven by what `Linear`'s forward pass needed)
+already happened to cover what `MSELoss` needs.
+
+The one real fix this milestone made: the scale is built as
+`Tensor(1.0 / n, dtype=prediction.dtype, ...)` rather than the more obvious
+`squared.sum() * (1.0 / n)`. `Tensor._coerce()` (`forge/tensor/tensor.py`)
+turns a bare Python scalar into a `Tensor` using Forge's global default
+dtype (`float32`) regardless of the *other* operand's dtype -- harmless on
+CPU (`np.multiply` freely upcasts a dtype mismatch) but fatal on CUDA
+(`CUDABackend._require_compute_dtype` requires exact dtype agreement and
+raises `CUDAError` otherwise). A `float64` CUDA loss would otherwise fail on
+its very last multiply. Building the scale with `prediction`'s own dtype
+explicitly sidesteps `_coerce`'s inference and keeps both operands aligned,
+for either compute dtype. This is a `loss.py`-local fix, not a change to
+`Tensor._coerce()` itself -- the latter's default-dtype inference is
+long-standing, exercised-elsewhere CPU behavior (e.g. `int_tensor + 1`
+promoting `1` to `int64` rather than the tensor's own dtype) that this
+milestone had no reason to touch.
+
+`MSELoss` also already satisfies the milestone's **loss device validation**
+requirement with no new code: `prediction - target` is an ordinary
+`Tensor.__sub__` call, and `_binary_op`'s existing device-consistency check
+(**Device transfer** above) rejects a CUDA/CPU operand mismatch with
+`UnsupportedDeviceError` before any op-specific logic runs -- exactly the
+same guarantee every other Tensor operation already has.
+
+### `CrossEntropyLoss`: deliberately deferred to CPU
+`CrossEntropyLoss` needs `.exp()`, `.log()` (both CPU-only -- see
+**Operation set** above), and an axis-wise `logits.exp().sum(axis=1,
+keepdims=True).log()` (CUDA `sum()` supports only a full reduction). Making
+it CUDA-compatible (the milestone brief's "Approach A") would mean: a new
+CUDA `exp` kernel and backward, a new CUDA `log` kernel and backward (with
+care to preserve the log-sum-exp numerical-stability trick this loss
+depends on -- see `docs/architecture/optimization.md`'s **CrossEntropyLoss**
+section), and a new axis-wise-reduction CUDA kernel and backward distinct
+from the existing full-reduction `sum`/`sum_backward`. That is real,
+multi-kernel surface area unrelated to what the milestone's core objective
+(CUDA training through `Trainer`, demonstrated end-to-end by `MSELoss`)
+actually required -- exactly the kind of scope the milestone brief's
+"Approach B" explicitly sanctions deferring ("do not force CrossEntropy
+into the milestone merely to claim completeness").
+
+`CrossEntropyLoss.forward()` therefore rejects non-CPU logits immediately
+and explicitly:
+```python
+if logits.device.type != "cpu":
+    raise LossError(
+        "CrossEntropyLoss is CPU-only in this milestone ..."
+    )
+```
+rather than silently running part of the computation on CPU (a disguised
+fallback) or letting the failure surface indirectly from deep inside
+`.numpy()`'s own device check. A `Trainer(device="cuda",
+loss_fn=CrossEntropyLoss())` fails this way the first time `fit()`/
+`evaluate()` calls the loss -- clearly, immediately, and without executing
+any part of the forward pass on CPU. Moving logits to CPU explicitly first
+(`logits.to("cpu")`) still works exactly as before Milestone 12; see
+`docs/architecture/training-engine.md`'s **CUDA losses through Trainer**
+section for the `Trainer`-level framing of this same boundary.
+
 ## Errors
 All CUDA-specific failures raise `forge.CUDAError` (`forge/exceptions.py`):
 CUDA unavailable (no `nvcc`, no compatible device), backend
@@ -385,6 +463,24 @@ driver 582.53, CUDA Toolkit 12.6):
   The full suite was also run with `PATH` stripped of the CUDA toolchain to
   confirm all 121 CUDA tests skip cleanly (`338 passed, 121 skipped`, `0
   failed`) rather than erroring.
+- **Milestone 12**: the new `tests/test_cuda_loss.py` and
+  `tests/test_trainer_cuda.py` (153 CUDA tests total; 506 tests overall)
+  pass directly on this machine, plus a standalone hardware-verification
+  script following the milestone's 12-step checklist exactly: constructing
+  a matched CPU/CUDA `Linear(2, 1)` pair, a plain CPU `DataLoader`,
+  `Trainer(device="cuda")`, training 40 epochs through `Trainer.fit()`,
+  confirming every `Parameter` and gradient is `CUDAStorage`-backed,
+  confirming zero `CPUBackend` compute-method calls across both `fit()` and
+  a subsequent `evaluate()` (via monkeypatched `CPUBackend`), an explicit
+  `CUDABackend.synchronize()` before trusting the results, and a CPU/CUDA
+  comparison. Measured: loss dropped from `2.7186` to effectively `0`
+  (>10^13x reduction) recovering the true weight `[3, -2]`/bias `[1]` within
+  `3e-7`; CUDA and CPU loss curves agreed within `1.8e-7` (max abs diff) at
+  every one of the 40 epochs, and final CUDA/CPU parameters agreed within
+  `2.4e-7`. See `docs/architecture/training-engine.md`'s **Device
+  semantics** section for the `Trainer`-level design this exercises, and
+  `docs/development/progress.md`'s M12 entry for the full test/verification
+  summary.
 
 ## Limitations
 - **Operation set is intentionally small**: `add`/`sub`/`mul` (exact-shape,
@@ -392,15 +488,22 @@ driver 582.53, CUDA Toolkit 12.6):
   (full reduction), `reshape`, `relu`, and transfer -- forward *and*
   backward, as of Milestone 10. No `exp`/`log`, no general N-D
   broadcasting, no axis-wise reduction on CUDA, in either direction.
-- **No CUDA `Trainer`/DataLoader integration**: `forge.training.Trainer`
-  remains CPU-only (unchanged from Milestone 6); nothing wires a training
-  loop to CUDA tensors automatically -- a CUDA training loop (see
-  `tests/test_cuda_autograd.py::test_small_cuda_training_loop_reduces_loss_and_recovers_weights`)
-  is written as a small direct optimization loop, moving each batch to CUDA
-  explicitly, not through `Trainer`. A `Trainer` fed a CUDA-moved model
-  still fails clearly (at the first device-mismatched forward op against
-  its CPU-only `DataLoader` batches), never silently training -- see
-  `tests/test_module_cuda.py::test_trainer_with_a_cuda_model_fails_clearly_on_forward`.
+- **`forge.training.Trainer` now supports CUDA (Milestone 12)**, superseding
+  the note this bullet used to make about Milestone 6-10: `Trainer(...,
+  device="cuda")` runs a real end-to-end training/evaluation workflow --
+  `DataLoader` stays CPU-only, and `Trainer` explicitly transfers each batch
+  and validates (never moves) the model's device. See
+  `docs/architecture/training-engine.md`'s **Device semantics** section and
+  this file's **CUDA losses** section above. What remains unsupported:
+  - `CrossEntropyLoss` is CPU-only (deferred; see **CUDA losses** above) --
+    a CUDA `Trainer` using it fails clearly via `LossError`.
+  - No GPU `DataLoader`, pinned memory, async prefetch, or multiprocessing
+    workers -- explicit non-goals, unchanged.
+  - No CUDA persistence -- see the next bullet.
+  - A `device="cpu"` `Trainer` fed a CUDA-resident model still fails clearly
+    (now via `Trainer._check_model_device()`'s explicit validation, rather
+    than incidentally from the first device-mismatched forward op) -- see
+    `tests/test_module_cuda.py::test_trainer_configured_for_cpu_rejects_a_cuda_model`.
 - **No CUDA persistence**: `save_model`/`load_model` remain CPU-only
   (unchanged from Milestone 7); saving a CUDA-resident model raises rather
   than silently copying it to CPU (`Parameter.numpy()` itself refuses a

@@ -7,6 +7,16 @@ parameters. `Metric.update()` is called once per batch and accumulates raw
 running totals (not per-batch means), so `compute()` after a full epoch
 reflects every sample seen, correctly weighted even when batches have
 different sizes. See `docs/architecture/training-engine.md`.
+
+As of Milestone 12, `_as_numpy` (below) transfers a non-CPU `Tensor` to CPU
+before reading it, so every built-in metric works unchanged for CUDA
+predictions/targets -- each is a small, non-differentiable NumPy reduction
+that was never a good fit for a dedicated CUDA kernel (see
+`docs/architecture/training-engine.md`'s **CUDA metrics** section). This is
+a one-way, read-only transfer of already-computed values for reporting; it
+never feeds back into training and never touches `CPUBackend`'s compute
+methods (`Tensor.to()` calls `CPUBackend.from_array`, a transfer primitive,
+not a compute one).
 """
 
 from __future__ import annotations
@@ -20,7 +30,9 @@ from ..tensor.tensor import Tensor
 
 
 def _as_numpy(value: "Tensor | Any") -> np.ndarray:
-    return value.numpy() if isinstance(value, Tensor) else np.asarray(value)
+    if isinstance(value, Tensor):
+        return value.to("cpu").numpy()
+    return np.asarray(value)
 
 
 class Metric:

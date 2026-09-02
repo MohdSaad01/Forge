@@ -89,10 +89,24 @@ def test_construction_rejects_non_optimizer():
         Trainer(model=model, loss_fn=loss_fn, optimizer=object())
 
 
-def test_construction_rejects_cuda_device():
+def test_construction_accepts_cuda_device_when_available():
+    """Superseded by Milestone 12: Trainer's device semantics were extended to
+    `"cpu"`/`"cuda"` (see `docs/architecture/training-engine.md`), so
+    `device="cuda"` is no longer rejected outright. Construction only probes
+    backend availability -- not model placement, which `fit()`/`evaluate()`
+    validate lazily (see `tests/test_trainer_cuda.py`) -- so this must not
+    require CUDA to run; it branches on `is_cuda_available()` exactly like
+    `tests/test_device.py::test_tensor_on_cuda_behaves_per_hardware_availability`.
+    """
+    from forge.backend.cuda import is_cuda_available
+
     model, loss_fn, optimizer = _trainer_components()
-    with pytest.raises(UnsupportedDeviceError):
-        Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device="cuda")
+    if is_cuda_available():
+        trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device="cuda")
+        assert str(trainer.device) == "cuda"
+    else:
+        with pytest.raises(forge.CUDAError):
+            Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device="cuda")
 
 
 def test_construction_rejects_unknown_device_string():

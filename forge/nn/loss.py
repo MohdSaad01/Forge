@@ -1,9 +1,20 @@
 """Loss functions: differentiable Tensor-valued comparisons between predictions and targets.
 
 Built entirely from ordinary Tensor operations (`-`, `*`, `.sum()`, and the
-`.exp()`/`.log()` primitives added in this milestone), so gradients flow
-through the existing autograd graph -- a loss attaches no backward math of
-its own. See `docs/architecture/optimization.md`.
+`.exp()`/`.log()` primitives added in Milestone 8), so gradients flow through
+the existing autograd graph -- a loss attaches no backward math of its own.
+See `docs/architecture/optimization.md`.
+
+As of Milestone 12, `MSELoss` is CUDA-compatible: it composes only `-`
+(exact-shape sub), `*` (exact-shape mul), and `.sum()` (full reduction,
+`axis=None`) -- every one of which `CUDABackend` already implements forward
+*and* backward (Milestones 8-10). No new CUDA kernel was needed; see
+`docs/architecture/cuda-backend.md`'s **CUDA losses** section.
+`CrossEntropyLoss` remains CPU-only: it needs `.exp()`/`.log()` and an
+axis-wise `.sum(axis=1, keepdims=True)`, none of which the CUDA backend
+implements, and adding them was judged out of scope for this milestone (see
+that same section for the deferral rationale). It fails clearly and
+immediately for non-CPU logits rather than silently falling back to CPU.
 """
 
 from __future__ import annotations
@@ -38,6 +49,11 @@ class MSELoss(Loss):
     `prediction` and `target` must have exactly the same shape -- the mean is
     taken over every element of that shape (e.g. for a `(batch, features)`
     prediction, this averages over both batch and feature dimensions).
+
+    Device-agnostic by construction: `prediction`/`target` on different
+    devices is rejected by `-` itself (`Tensor._binary_op`'s existing
+    device-consistency check), never silently reconciled. Works unmodified
+    on CUDA as of Milestone 12 -- see the module docstring.
     """
 
     def forward(self, prediction: Tensor, target: "Tensor | Any") -> Tensor:
@@ -52,7 +68,15 @@ class MSELoss(Loss):
         diff = prediction - target
         squared = diff * diff
         n = int(np.prod(prediction.shape)) if prediction.shape else 1
-        return squared.sum() * (1.0 / n)
+        # `Tensor(1.0 / n, ...)` is built with `prediction`'s own dtype
+        # explicitly, rather than multiplying by a bare Python float (which
+        # `Tensor._coerce` would infer as float32 regardless of
+        # `prediction`'s dtype): CPU tolerates that mismatch by upcasting
+        # via NumPy, but `CUDABackend`'s elementwise ops require the two
+        # operands to already share a dtype, so a float64 CUDA loss would
+        # otherwise raise `CUDAError` here.
+        scale = Tensor(1.0 / n, dtype=prediction.dtype, device=prediction.device)
+        return squared.sum() * scale
 
 
 class CrossEntropyLoss(Loss):
@@ -72,11 +96,27 @@ class CrossEntropyLoss(Loss):
     as a constant does not change the gradient. Target selection uses a
     one-hot multiply (also a plain, non-differentiable constant) rather than
     a new indexing/gather primitive, so this loss needs only the `.exp()`
-    and `.log()` Tensor primitives added in this milestone, plus existing
-    ops.
+    and `.log()` Tensor primitives added in Milestone 8, plus existing ops.
+
+    CPU-only (Milestone 12 deferral). Beyond `.exp()`/`.log()`, this
+    implementation also needs an axis-wise `.sum(axis=1, keepdims=True)` --
+    CUDA `sum()` supports only a full reduction. Implementing all three
+    (plus their CUDA backward rules, plus a numerically-stable interaction
+    between them) was judged substantial enough to expand this milestone
+    beyond its core objective (CUDA `Trainer` integration via `MSELoss`,
+    which needed none of them); see `docs/architecture/cuda-backend.md`'s
+    **CUDA losses** section. Rather than silently running part of this loss
+    on CPU, `forward()` rejects non-CPU logits immediately and clearly.
     """
 
     def forward(self, logits: Tensor, target: "Tensor | Any") -> Tensor:
+        if logits.device.type != "cpu":
+            raise LossError(
+                "CrossEntropyLoss is CPU-only in this milestone (it needs .exp()/.log() "
+                "and an axis-wise .sum(), none of which the CUDA backend implements); got "
+                f"logits on device '{logits.device}'. Move logits (and target, if a Tensor) "
+                "to CPU explicitly with .to('cpu') first -- this is never done automatically."
+            )
         if logits.ndim != 2:
             raise LossError(
                 "CrossEntropyLoss expects logits of shape (batch_size, num_classes), "

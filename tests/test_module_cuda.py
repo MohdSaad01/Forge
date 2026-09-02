@@ -308,10 +308,14 @@ def test_saving_a_cuda_model_is_rejected_not_silently_copied(tmp_path):
         forge.save_model(model, str(tmp_path / "model.forge"))
 
 
-def test_trainer_with_a_cuda_model_fails_clearly_on_forward():
-    """Trainer itself stays CPU-only (unchanged M6 boundary); a CUDA-moved model
-    fed CPU batches by a CPU DataLoader fails at the first device-mismatched
-    forward op, never silently training or silently transferring anything."""
+def test_trainer_configured_for_cpu_rejects_a_cuda_model():
+    """Milestone 12 extended Trainer to support `device="cuda"` (see
+    `tests/test_trainer_cuda.py`), but a `device="cpu"` Trainer still rejects
+    a CUDA-moved model -- now via `Trainer._check_model_device()`'s explicit
+    validation at the start of `fit()`/`evaluate()`, raised before any batch
+    is touched, rather than accidentally surfacing from the first
+    device-mismatched forward op. Trainer never silently moves the model or
+    the batch to reconcile them."""
     model = MLP().to("cuda")
     optimizer = SGD(model.parameters(), lr=0.01)
     loss_fn = forge.nn.MSELoss()

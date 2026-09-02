@@ -150,11 +150,18 @@ don't sum to the dataset size or that are negative, a zero `Normalize` std,
 and a non-callable `Compose`/`Lambda` member.
 
 ## Device behavior
-M5 remains CPU-only, matching the rest of Forge at this milestone (see
-`docs/development/development-environment.md`). Batches are plain CPU
-Tensors; nothing in `forge.data` hides a device-movement decision inside the
-dataset/loader -- that stays a concern of a future training/execution layer,
-not this milestone's abstractions.
+`forge.data` (`Dataset`/`DataLoader`/transforms) remains CPU-only,
+unchanged since Milestone 5 -- this was a deliberate, permanent boundary,
+not a placeholder later milestones were expected to lift. As of Milestone
+12, `forge.training.Trainer` supports CUDA training (see
+`docs/architecture/training-engine.md`), and it is the layer that turned out
+to own device movement, exactly as anticipated here: `Trainer` explicitly
+calls `x.to(device)`/`y.to(device)` on each batch a CPU `DataLoader` yields,
+immediately before the forward pass. Nothing in `forge.data` itself became
+device-aware to make that possible -- `DataLoader` still only ever produces
+plain CPU Tensors, with no GPU-batching, pinned-memory, or async-prefetch
+behavior (explicit Milestone 12 non-goals), regardless of what device the
+`Trainer` consuming it is configured for.
 
 ## Known limitations
 - No multiprocessing workers or asynchronous prefetching.
@@ -166,4 +173,7 @@ not this milestone's abstractions.
 - `Normalize`/`Reshape`/`Flatten` operate on a single Tensor component only,
   not on nested/dict-shaped samples.
 - As of Milestone 6, `forge.training.Trainer` consumes `DataLoader` output
-  for training/evaluation -- see `docs/architecture/training-engine.md`.
+  for training/evaluation -- see `docs/architecture/training-engine.md`. As
+  of Milestone 12, that includes CUDA training: `Trainer` explicitly moves
+  each CPU batch to its configured device, but `DataLoader` itself gained no
+  new capability and no device awareness.

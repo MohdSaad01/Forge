@@ -1,4 +1,4 @@
-# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10)
+# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10; CUDA `MSELoss` as of Milestone 12)
 
 ## Package layout
 ```
@@ -21,7 +21,7 @@ Both built-in losses are implemented entirely from ordinary Tensor operations (`
 ```text
 MSE = mean((prediction - target)^2)
 ```
-`prediction` and `target` must have **exactly** the same shape (no implicit broadcasting between them) -- a mismatch raises `LossError` before reaching a confusing broadcast/shape error deeper in the op. The mean is taken over every element of that shape: for a `(batch, features)` pair this averages over both batch and feature dimensions, matching the common per-element convention. Implementation: `((prediction - target) * (prediction - target)).sum() * (1/n)`, entirely ordinary Tensor ops.
+`prediction` and `target` must have **exactly** the same shape (no implicit broadcasting between them) -- a mismatch raises `LossError` before reaching a confusing broadcast/shape error deeper in the op. The mean is taken over every element of that shape: for a `(batch, features)` pair this averages over both batch and feature dimensions, matching the common per-element convention. Implementation: `((prediction - target) * (prediction - target)).sum() * scale`, entirely ordinary Tensor ops (`scale` is a `Tensor(1/n, dtype=prediction.dtype, device=prediction.device)` built explicitly, rather than multiplying by a bare Python float, so a CUDA `prediction` of either supported compute dtype still gets a matching-dtype operand for that last multiply -- see `docs/architecture/cuda-backend.md`'s **CUDA losses** section, Milestone 12). This composition needs only `-`, `*`, `.sum()` -- as of Milestone 12, every one of those already has a CUDA forward *and* backward implementation, so `MSELoss` runs on CUDA with no CUDA-specific code of its own.
 
 ### CrossEntropyLoss
 ```text
@@ -88,6 +88,6 @@ optimizer.step()        # in-place parameter update from .grad; no new graph
 ## Known limitations
 - SGD only: no momentum, Adam, RMSProp, weight decay, or learning-rate schedules.
 - No training engine/`Trainer`, `DataLoader`, or dataset abstraction yet -- the training loop above is written by hand in this milestone.
-- Losses remain CPU-only in practice where they depend on `.exp()`/`.log()` (`CrossEntropyLoss`; CUDA has no kernel for either -- see `docs/architecture/cuda-backend.md`), but `MSELoss` (built only from `-`, `*`, `.sum()`) works on CUDA like any other differentiable Tensor expression. As of Milestone 10, `SGD` is device-aware via `Backend.sgd_step()` -- see **Parameter mutation does not extend the autograd graph** above; no CUDA-specific optimizer class exists.
+- `CrossEntropyLoss` remains CPU-only -- it depends on `.exp()`/`.log()` (CUDA has no kernel for either) and an axis-wise `.sum()` (CUDA `sum()` supports only a full reduction). As of Milestone 12 this is a confirmed, deliberate deferral (not just an unexercised gap): `CrossEntropyLoss.forward()` rejects non-CPU logits explicitly with `LossError` rather than silently running part of the computation on CPU -- see `docs/architecture/cuda-backend.md`'s **CUDA losses** section. `MSELoss` (built only from `-`, `*`, `.sum()`) works on CUDA like any other differentiable Tensor expression, and is now exercised end-to-end through `forge.training.Trainer(device="cuda")` -- see `docs/architecture/training-engine.md`. As of Milestone 10, `SGD` is device-aware via `Backend.sgd_step()` -- see **Parameter mutation does not extend the autograd graph** above; no CUDA-specific optimizer class exists.
 - `CrossEntropyLoss` supports exactly the `(batch_size, num_classes)` / `(batch_size,)` shape convention; no class weighting, label smoothing, or ignored-index support.
 - `Tensor.log()` has no domain validation; calling it directly (outside `CrossEntropyLoss`'s controlled use) on non-positive values produces NumPy's usual `-inf`/`nan` rather than a Forge-level error.

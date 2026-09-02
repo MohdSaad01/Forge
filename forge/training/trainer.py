@@ -12,6 +12,14 @@ optimizer.zero_grad() -> model(x) -> loss_fn(prediction, target)
 
 `Trainer` just runs that sequence over every batch of every epoch, and
 records what happened. See `docs/architecture/training-engine.md`.
+
+As of Milestone 12, that sequence runs unmodified on CUDA: `Trainer` owns
+device placement the same minimal way it owns everything else -- it
+validates the model's device (never moves it) and explicitly transfers each
+CPU batch `DataLoader` yields to `self.device` before the forward pass.
+`DataLoader` itself is never made device-aware. See the **Device**
+paragraphs on the `Trainer` class docstring below and
+`docs/architecture/training-engine.md`'s **Device semantics** section.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Iterator
 
 from ..autograd import no_grad
+from ..backend import get_backend
 from ..backend.device import Device
 from ..exceptions import TrainerError, UnsupportedDeviceError
 from ..nn.loss import Loss
@@ -109,12 +118,32 @@ class Trainer:
 
     `model`/`loss_fn`/`optimizer` must be actual Forge `Module`/`Loss`/
     `Optimizer` instances -- `Trainer` composes them, it does not duplicate
-    what they do. `device` must resolve to `"cpu"`; this milestone remains
-    CPU-only, and an unrecognized or unsupported (e.g. `"cuda"`) device
-    raises `UnsupportedDeviceError` rather than silently running on CPU
-    anyway or claiming CUDA execution. `metrics` is an optional iterable of
-    `Metric` instances (each supplying a unique `.name`), reported alongside
-    the loss but never replacing it as the training objective.
+    what they do. `metrics` is an optional iterable of `Metric` instances
+    (each supplying a unique `.name`), reported alongside the loss but never
+    replacing it as the training objective.
+
+    **Device (Milestone 12).** `device` must resolve (via `Device.parse`) to
+    `"cpu"` or `"cuda"`; anything else raises `UnsupportedDeviceError`
+    immediately, and `device="cuda"` on a machine without a working CUDA
+    backend raises `CUDAError` immediately (construction actually probes the
+    backend via `get_backend()` rather than deferring the failure to the
+    first batch). There is no CUDA-specific `Trainer` subclass -- one class
+    handles both devices, per `docs/architecture/training-engine.md`'s
+    **Device semantics** section.
+
+    `Trainer` never moves the model: it *validates*, at the start of
+    `fit()`/`evaluate()`, that every `Parameter` the model owns already sits
+    on `self.device` (via `Module.device`), raising `UnsupportedDeviceError`
+    with a clear message naming the required `model.to(device)` call
+    otherwise. Call `model.to(device)` yourself before constructing/using a
+    `Trainer` configured for that device. A model with no `Parameter`s
+    (`Module.device is None`) is exempt -- there is nothing to validate.
+
+    `Trainer` *does* move each batch explicitly: `fit()`/`evaluate()` call
+    `x.to(self.device)` (and `y.to(self.device)` when `y` is a `Tensor`) on
+    every batch `DataLoader` yields, before the forward pass. `DataLoader`
+    itself remains entirely CPU-side and is never made device-aware -- see
+    **Batch movement** below.
     """
 
     def __init__(
@@ -141,12 +170,10 @@ class Trainer:
             )
 
         resolved_device = Device.parse(device)
-        if resolved_device.type != "cpu":
-            raise UnsupportedDeviceError(
-                f"Trainer only supports CPU execution in this milestone; got device "
-                f"'{resolved_device}'. This does not mean CUDA is unsupported "
-                "elsewhere in Forge -- Trainer itself does not yet execute on it."
-            )
+        # Probes the backend now (raises `CUDAError` immediately for
+        # `device="cuda"` on a machine without a working CUDA backend)
+        # rather than deferring the failure to the first batch.
+        get_backend(resolved_device)
 
         self.model = model
         self.loss_fn = loss_fn
@@ -193,6 +220,45 @@ class Trainer:
             )
         return x, y
 
+    def _to_device_batch(self, batch: Any) -> "tuple[Tensor, Any]":
+        """`_unpack_batch`, then explicit `x.to(device)`/`y.to(device)` (Milestone 12).
+
+        The one place a CPU `DataLoader` batch becomes a `self.device` batch.
+        `x` is always a Tensor (`_unpack_batch` already enforces this) and is
+        always moved. `y` is moved only if it is itself a Tensor (matching
+        `DataLoader`'s own contract: a `TensorDataset`-backed loader always
+        yields a Tensor target, but Trainer does not assume every `Dataset`
+        does) -- a non-Tensor `y` (e.g. a raw NumPy target array) is passed
+        through unchanged, since `.to()` has no meaning for it and each
+        `Loss`/`Metric` already accepts raw array-like targets directly. Both
+        calls are no-ops (return the original object) when the batch is
+        already on `self.device`, so this costs nothing extra for a CPU
+        `Trainer`.
+        """
+        x, y = self._unpack_batch(batch)
+        x = x.to(self.device)
+        if isinstance(y, Tensor):
+            y = y.to(self.device)
+        return x, y
+
+    def _check_model_device(self) -> None:
+        """Validate (never move) that the model already sits on `self.device` (Milestone 12).
+
+        `Trainer`'s chosen device policy: validate, don't relocate -- see the
+        class docstring's **Device** section and
+        `docs/architecture/training-engine.md`. A model with no `Parameter`s
+        (`Module.device is None`, e.g. a bare activation-only module) is
+        exempt: there is no device to be inconsistent with.
+        """
+        model_device = self.model.device
+        if model_device is not None and model_device != self.device:
+            raise UnsupportedDeviceError(
+                f"Trainer is configured for device '{self.device}' but the model's "
+                f"Parameters are on device '{model_device}'. Trainer validates model "
+                "placement rather than moving it implicitly -- call "
+                f"model.to('{self.device}') explicitly first."
+            )
+
     # -- loader / config validation --------------------------------------
 
     @staticmethod
@@ -224,7 +290,7 @@ class Trainer:
         total_loss = 0.0
         total_samples = 0
         for batch in loader:
-            x, y = self._unpack_batch(batch)
+            x, y = self._to_device_batch(batch)
             batch_size = x.shape[0]
 
             self.optimizer.zero_grad()
@@ -233,7 +299,7 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
 
-            total_loss += float(loss.numpy()) * batch_size
+            total_loss += float(loss.to("cpu").numpy()) * batch_size
             total_samples += batch_size
             for m in self.metrics.values():
                 m.update(prediction, y)
@@ -259,6 +325,7 @@ class Trainer:
         result of evaluation.
         """
         self._validate_loader(loader, "loader")
+        self._check_model_device()
 
         was_training = self.model.training
         self.model.eval()
@@ -271,13 +338,13 @@ class Trainer:
         try:
             with no_grad():
                 for batch in loader:
-                    x, y = self._unpack_batch(batch)
+                    x, y = self._to_device_batch(batch)
                     batch_size = x.shape[0]
 
                     prediction = self.model(x)
                     loss = self.loss_fn(prediction, y)
 
-                    total_loss += float(loss.numpy()) * batch_size
+                    total_loss += float(loss.to("cpu").numpy()) * batch_size
                     total_samples += batch_size
                     for m in self.metrics.values():
                         m.update(prediction, y)
@@ -326,6 +393,7 @@ class Trainer:
         self._validate_loader(train_loader, "train_loader")
         if validation_loader is not None:
             self._validate_loader(validation_loader, "validation_loader")
+        self._check_model_device()
 
         history = TrainingHistory()
         for epoch in range(1, epochs + 1):

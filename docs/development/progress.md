@@ -289,3 +289,76 @@ than hidden. All 121 CUDA tests and the full 474-test suite pass unchanged
 against the rewritten kernel. See `docs/performance/benchmarking.md` for
 full methodology, environment, baseline numbers, and the optimization
 decision's complete reasoning.
+
+## Phase 4 — GPU/CUDA (continued after Phase 5 — Performance)
+
+### M12 — CUDA Trainer and loss integration
+Extends `forge.training.Trainer` to run a real end-to-end training/
+evaluation workflow on CUDA through the existing high-level abstractions --
+`Dataset -> CPU DataLoader -> Trainer(device="cuda") -> explicit batch
+transfer -> CUDA Module -> CUDA Loss -> CUDA autograd -> CUDA SGD` -- rather
+than the hand-written direct optimization loop M10 verified CUDA training
+with. `Trainer.__init__` now accepts `device="cuda"` (probing
+`get_backend()` immediately, so an unavailable CUDA backend raises
+`CUDAError` at construction, not the first batch) instead of unconditionally
+rejecting non-CPU devices. `Trainer` chose a **validate, never move** model-
+placement policy: `_check_model_device()`, called at the start of
+`fit()`/`evaluate()`, compares `model.device` against `self.device` and
+raises `UnsupportedDeviceError` naming the required `model.to(device)` call
+rather than silently relocating the model -- the only policy compatible with
+the existing M9 test that a `device="cpu"` Trainer must still reject a
+CUDA-resident model (renamed, behavior preserved:
+`tests/test_module_cuda.py::test_trainer_configured_for_cpu_rejects_a_cuda_model`).
+A new `Trainer._to_device_batch()` explicitly transfers each batch
+(`x.to(device)`, and `y.to(device)` when `y` is a Tensor) immediately before
+the forward pass; `DataLoader`/`Dataset` gained no device awareness and no
+new capability -- this is the only place a batch crosses a device boundary.
+`Metric._as_numpy()` (`forge/training/metrics.py`) now transfers a `Tensor`
+argument to CPU first, so all three built-in metrics (`MeanSquaredError`/
+`MeanAbsoluteError`/`Accuracy`) work unmodified for CUDA predictions -- a
+one-way, read-only transfer for reporting, never a `CPUBackend` compute call.
+
+**CUDA losses.** `MSELoss` needed zero new CUDA kernels: it composes only
+`-`/`*`/`.sum(axis=None)`, all already CUDA-forward-and-backward-capable
+since M8-M10. The one real fix: its internal `* (1/n)` scale is now built as
+an explicit `Tensor(1/n, dtype=prediction.dtype, ...)` rather than a bare
+Python float (`Tensor._coerce` infers `float32` for a bare scalar regardless
+of the tensor's own dtype -- harmless on CPU, `CUDAError`-raising on a
+`float64` CUDA loss, since `CUDABackend` requires matching operand dtypes).
+`CrossEntropyLoss` is deliberately deferred to CPU-only (Approach B): it
+needs `.exp()`/`.log()` (CUDA-unsupported since M8) and an axis-wise
+`.sum(axis=1, keepdims=True)` (CUDA `sum()` supports only a full reduction)
+-- implementing all three plus their CUDA backward rules plus preserving
+numerical stability was judged out of proportion to the milestone's core
+objective, which needed none of them. `CrossEntropyLoss.forward()` now
+rejects non-CPU logits immediately with a clear `LossError` rather than
+partially executing on CPU or failing indirectly via `.numpy()`'s own device
+check.
+
+New tests: `tests/test_cuda_loss.py` (13 tests -- CUDA `MSELoss` forward/
+backward correctness and CPU/CUDA consistency across `float32`/`float64`,
+gradient residency, device-mismatch rejection, a structural
+zero-`CPUBackend`-calls check, and the `CrossEntropyLoss` CUDA-rejection
+behavior) and `tests/test_trainer_cuda.py` (19 tests -- CUDA `Trainer`
+construction/validation, explicit batch movement, full training/validation/
+evaluation lifecycle with metrics, `no_grad()` evaluation building no graph,
+a structural no-CPU-fallback check across a multi-epoch `fit()` +
+`evaluate()` call, a 60-epoch end-to-end regression that recovers the true
+weights, and CPU/CUDA training consistency from identical initial
+parameters). One existing test (`tests/test_trainer.py`) was updated from
+asserting `device="cuda"` is always rejected to branching on
+`is_cuda_available()`, matching `tests/test_device.py`'s own established
+convention -- this is the one test whose assertion this milestone
+deliberately supersedes. All other M1-M11 tests pass unmodified. 506 tests
+total (153 CUDA tests, up from 121; 353 CPU-only, up from 338), verified
+directly on the development GPU (940MX, CC 5.0, driver 582.53, CUDA Toolkit
+12.6): CUDA `Trainer.fit()` over 40 epochs reduces a linear-regression loss
+by >10^13x (recovering the true weight/bias within 3e-7), CUDA-resident
+Parameters and gradients confirmed throughout, `SGD.sgd_step` never touches
+`CPUBackend`, `evaluate()`'s `no_grad()` forward pass produces a prediction
+with `requires_grad=False`/`grad_fn=None`, a structural monkeypatch of every
+`CPUBackend` compute method records zero calls across a full `fit()` +
+`evaluate()` run, and the resulting CUDA loss curve and final parameters
+match an identically-initialized CPU run within `1e-3` (measured max diff
+~2e-7). See `docs/architecture/training-engine.md`'s **Device semantics**
+section and `docs/architecture/cuda-backend.md`'s **CUDA losses** section.
