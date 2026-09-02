@@ -85,6 +85,43 @@ def test_sum_full_reduction_consistency(dtype, shape):
 
 
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
+@pytest.mark.parametrize("shape", [(3, 4), (1, 5), (6, 1)])
+def test_sum_axis1_consistency(dtype, shape):
+    """Milestone 14: axis=1 reduction on a 2D tensor."""
+    rng = np.random.default_rng(4)
+    data = rng.standard_normal(shape)
+    cpu, cuda = _both(data, dtype)
+
+    for keepdims in (False, True):
+        cpu_result = cpu.sum(axis=1, keepdims=keepdims)
+        cuda_result = cuda.sum(axis=1, keepdims=keepdims)
+        assert cuda_result.shape == cpu_result.shape
+        np.testing.assert_allclose(cuda_result.to("cpu").numpy(), cpu_result.numpy(), **TOL)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_exp_consistency(dtype):
+    data = [[-3.0, 2.5, 0.0], [1.5, -0.1, 4.0]]
+    cpu, cuda = _both(data, dtype)
+    cpu_result = cpu.exp()
+    cuda_result = cuda.exp()
+    assert cuda_result.dtype == cpu_result.dtype
+    assert cuda_result.shape == cpu_result.shape
+    np.testing.assert_allclose(cuda_result.to("cpu").numpy(), cpu_result.numpy(), **TOL)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_log_consistency(dtype):
+    data = [[0.5, 2.5, 1.0], [1.5, 10.0, 4.0]]
+    cpu, cuda = _both(data, dtype)
+    cpu_result = cpu.log()
+    cuda_result = cuda.log()
+    assert cuda_result.dtype == cpu_result.dtype
+    assert cuda_result.shape == cpu_result.shape
+    np.testing.assert_allclose(cuda_result.to("cpu").numpy(), cpu_result.numpy(), **TOL)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
 def test_relu_consistency(dtype):
     data = [[-3.0, 2.5, 0.0], [1.5, -0.1, 4.0]]
     cpu, cuda = _both(data, dtype)

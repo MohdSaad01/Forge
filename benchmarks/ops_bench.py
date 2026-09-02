@@ -8,9 +8,10 @@ uses -- rather than reaching into `Backend` methods directly, so the
 numbers include whatever argument-checking/dispatch overhead
 `Tensor`/`Backend` add on top of the raw kernel.
 
-CUDA-unsupported CPU-only ops (`exp`/`log`) are intentionally not
-benchmarked on CUDA, matching the milestone brief's "do not benchmark
-unsupported CUDA operations."
+`exp`/`log` gained real CUDA kernels in Milestone 14 (for `CrossEntropyLoss`)
+but remain outside this suite's fixed operation set -- benchmarking/CLI
+integration for them is out of that milestone's scope, matching its "no
+performance autotuning" constraint; this file's coverage is unchanged.
 """
 
 from __future__ import annotations

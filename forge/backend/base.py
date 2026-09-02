@@ -86,8 +86,31 @@ class Backend(ABC):
     @abstractmethod
     def relu_backward(self, grad_output: Any, a: Any) -> Any: ...
 
+    @abstractmethod
+    def exp_backward(self, grad_output: Any, result: Any) -> Any:
+        """`d(exp(x))/dx = exp(x)`, i.e. `grad_output * result` (`result` is exp's own saved output)."""
+
+    @abstractmethod
+    def log_backward(self, grad_output: Any, a: Any) -> Any:
+        """`d(log(x))/dx = 1/x`, i.e. `grad_output / a` (`a` is log's saved input)."""
+
     # -- optimizer (Milestone 10) ------------------------------------------
 
     @abstractmethod
     def sgd_step(self, data: Any, grad: Any, lr: float) -> Any:
         """In-place `data -= lr * grad`; returns `data` (same object where possible)."""
+
+    # -- CrossEntropyLoss support (Milestone 14) ----------------------------
+
+    @abstractmethod
+    def max_axis1(self, a: Any) -> Any:
+        """Row-wise max reduction for a 2D array: shape (rows, cols) -> (rows, 1).
+
+        Used internally by `CrossEntropyLoss`'s log-sum-exp numerical-
+        stability shift (`docs/architecture/optimization.md`). Not exposed as
+        a public differentiable Tensor operation -- the result is always
+        treated as a constant (the log-sum-exp identity `logsumexp(x - c) ==
+        logsumexp(x) - c` holds for any per-row constant `c`, so no gradient
+        needs to flow through the max itself), so there is no
+        `max_axis1_backward` counterpart.
+        """

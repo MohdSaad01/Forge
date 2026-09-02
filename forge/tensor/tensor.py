@@ -317,8 +317,12 @@ class Tensor:
         backend = get_backend(self._device)
         result = backend.exp(self._data)
 
-        def backward_fn(grad_output: np.ndarray):
-            return (grad_output * result,)
+        def backward_fn(grad_output):
+            # Dispatches through the backend (`Backend.exp_backward`), like
+            # `relu`'s backward closure above, rather than a raw `grad_output
+            # * result` -- a `CUDAStorage` has no `__mul__` of its own (see
+            # `docs/architecture/cuda-backend.md`).
+            return (backend.exp_backward(grad_output, result),)
 
         return self._differentiable_wrap(result, (self,), backward_fn, "exp")
 
@@ -328,8 +332,8 @@ class Tensor:
 
         input_data = self._data
 
-        def backward_fn(grad_output: np.ndarray):
-            return (grad_output / input_data,)
+        def backward_fn(grad_output):
+            return (backend.log_backward(grad_output, input_data),)
 
         return self._differentiable_wrap(result, (self,), backward_fn, "log")
 

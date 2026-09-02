@@ -421,3 +421,86 @@ up from 353; 163 CUDA, up from 153), and the full suite was also run with
 cleanly (`358 passed, 163 skipped`, `0 failed`). See
 `docs/architecture/persistence.md`'s **Device semantics** section and
 `docs/architecture/cuda-backend.md`'s **CUDA model persistence** section.
+
+### M14 — CUDA CrossEntropyLoss
+Completes CUDA support for Forge's basic supervised classification workflow
+by closing the "`CrossEntropyLoss` is CPU-only" limitation deliberately
+deferred at Milestone 12: `CrossEntropyLoss` now runs unmodified on CUDA,
+through the same high-level `forge/nn/loss.py` formulation as CPU (no
+`CUDACrossEntropyLoss` subclass, no second autograd engine). Four CUDA
+primitives made this possible, each added because the loss's own math
+genuinely needed it (not a general-purpose expansion of the CUDA operation
+set):
+1. **`exp`/`log`** (`cf_exp`/`cf_log_{f32,f64}`, plus `exp_backward`/
+   `log_backward` kernels) -- real CUDA kernels and backward rules,
+   superseding M8's "unsupported" stubs. `Tensor.exp()`/`Tensor.log()`
+   (`forge/tensor/tensor.py`) were also fixed to dispatch their backward math
+   through the new `Backend.exp_backward`/`Backend.log_backward` methods
+   rather than a raw `grad_output * result`/`grad_output / input_data` --
+   those relied on operator overloading that `CUDAStorage` (unlike
+   `numpy.ndarray`) does not provide, so they would have raised
+   `AttributeError` the moment a real CUDA `exp`/`log` made this backward
+   path reachable.
+2. **`sum(axis=1)`** -- `CUDABackend.sum()`/`sum_backward()` now accept
+   `axis=1` (equivalently `-1`) on a 2D tensor, via a new `cf_sum_axis1`/
+   `cf_broadcast_axis1` kernel pair (one thread per row) alongside the
+   existing full-reduction (`axis=None`) path. Deliberately not general
+   N-D axis reduction -- only the one axis a `(batch, classes)` tensor needs.
+3. **Column-broadcast `sub`** -- a new `cf_sub_colbcast` kernel (plus a
+   `_reduce_axis1`-based backward, reusing `cf_sum_axis1`) supporting a
+   `(rows, cols)` matrix combined with a `(rows, 1)` per-row scalar,
+   broadcasting it across every column of its row -- the transpose of the M9
+   row-broadcast case (a `(cols,)` vector broadcast down every row). Needed
+   because both `logits - max_axis1(logits)` and `shifted - log_sum_exp`
+   have this shape. Added for `sub` only; `add`/`mul` still reject it.
+4. **`max_axis1`** -- a new, deliberately non-public `Backend` method (no
+   `Tensor.max()` was added -- out of the milestone's scope), computing each
+   row's max directly against backend storage (CPU: `np.max`; CUDA: a
+   dedicated `cf_max_axis1` kernel) so the log-sum-exp numerical-stability
+   shift is real backend computation on whichever device `logits` is on,
+   never a host round-trip. The result is wrapped as a `requires_grad=False`
+   leaf via `Tensor._wrap`, exactly mirroring how the pre-existing CPU
+   implementation already treated the max as a constant (the log-sum-exp
+   identity makes this exact, not an approximation).
+
+`CrossEntropyLoss.forward()` itself was generalized rather than rewritten:
+target-device validation now happens explicitly (`UnsupportedDeviceError` if
+a `Tensor` target's device doesn't match `logits`'s), target values are read
+to host via `Backend.to_numpy()` (device-agnostic, works for both CPU and
+CUDA) instead of the CPU-only `Tensor.numpy()`, and the final `* (-1/n)`
+scale is built as an explicit dtype-matched `Tensor` rather than a bare
+Python float -- the same `Tensor._coerce`-default-dtype fix `MSELoss` needed
+in Milestone 12. The `logits - shift`, `.exp().sum(axis=1,
+keepdims=True).log()`, and one-hot-multiply-then-`.sum(axis=1)` expressions
+themselves needed **no changes at all**: once the four primitives above
+existed, the exact same Tensor-level code already ran correctly on CUDA.
+
+Updated tests: `tests/test_cuda_backend.py` (exp/log/`sum(axis=1)`/
+column-broadcast-sub forward correctness, replacing the old "unsupported"
+assertions), `tests/test_cuda_autograd.py` (exp/log/`sum(axis=1)`/
+column-broadcast-sub backward-vs-CPU checks, replacing the old
+CUDAError-on-exp/log assertions), `tests/test_cuda_consistency.py` (new
+exp/log/`sum(axis=1)` CPU/CUDA agreement cases), and a substantially expanded
+`tests/test_cuda_loss.py` (CrossEntropyLoss CUDA/CPU forward agreement
+across `float32`/`float64` and numerically difficult logits, CUDA backward
+matching both CPU and the closed-form `(softmax(logits) -
+one_hot(target))/batch_size`, a finite-difference gradient check, explicit
+mean-reduction/`1/batch_size` gradient-scaling verification, CUDA/CPU
+target-device-mismatch validation, and a structural zero-`CPUBackend`-calls
+check extended to the four new compute methods). New in
+`tests/test_trainer_cuda.py`: a full `TensorDataset -> DataLoader ->
+Trainer(device="cuda") -> Linear -> CrossEntropyLoss -> CUDA backward ->
+CUDA SGD` classification test on a deterministic two-class dataset (loss
+drops to under half its starting value over 30 epochs, final accuracy
+>90%, every Parameter/gradient confirmed CUDA-resident), a structural
+no-CPU-fallback check across a multi-epoch classification `fit()` call, and
+a CPU/CUDA classification training-consistency comparison. No changes were
+needed to `Trainer` itself -- it already called `self.loss_fn(...)`
+generically, so `CrossEntropyLoss` becoming CUDA-capable was enough on its
+own. 563 tests total (358 CPU-only, unchanged; 205 CUDA, up from 163),
+verified directly on the development GPU (940MX, CC 5.0, driver 582.53, CUDA
+Toolkit 12.6), and the full suite was also run with `PATH` stripped of the
+CUDA toolchain to confirm all 205 CUDA tests skip cleanly (`358 passed, 205
+skipped`, `0 failed`) with the CPU-only suite entirely unaffected. See
+`docs/architecture/cuda-backend.md`'s **CUDA CrossEntropyLoss** section and
+`docs/architecture/optimization.md`'s **CrossEntropyLoss** section.

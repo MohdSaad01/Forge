@@ -7,10 +7,13 @@ convention in `tests/test_cuda_backend.py`/`tests/test_cuda_consistency.py`/
 reverse-mode autograd for real: every backward computation for a supported
 operation executes as a genuine CUDA kernel (never a disguised CPU
 fallback), CUDA gradients agree with CPU gradients within tolerance, CUDA
-gradients are themselves CUDA-resident, device/dtype mismatches on
-`backward()` fail clearly, and unsupported CUDA operations (`exp`/`log`)
-still fail clearly rather than silently building a broken graph. See
-`docs/architecture/autograd.md` and `docs/architecture/cuda-backend.md`.
+gradients are themselves CUDA-resident, and device/dtype mismatches on
+`backward()` fail clearly. `exp`/`log` are real, differentiable CUDA ops as
+of Milestone 14 (added for `CrossEntropyLoss` -- see
+`tests/test_cuda_loss.py` for the loss-level backward/gradient-check
+coverage, including the column-broadcast `sub` and axis=1 `sum` backward
+rules its log-sum-exp needs). See `docs/architecture/autograd.md` and
+`docs/architecture/cuda-backend.md`.
 """
 
 from __future__ import annotations
@@ -106,6 +109,34 @@ def test_row_broadcast_backward_reversed_operand_order_matches_cpu(op):
     _assert_matching_grads([vec_cpu, mat_cpu], [vec_cuda, mat_cuda])
 
 
+def test_column_broadcast_sub_backward_matches_cpu():
+    """(rows, cols) - (rows, 1) -- the shape CrossEntropyLoss's log-sum-exp shift needs."""
+    mat = np.random.default_rng(20).standard_normal((4, 3))
+    colvec = np.random.default_rng(21).standard_normal((4, 1))
+    (mat_cpu, colvec_cpu), (mat_cuda, colvec_cuda) = _cpu_and_cuda_leaves(mat, colvec)
+
+    cpu_out = (mat_cpu - colvec_cpu).sum()
+    cuda_out = (mat_cuda - colvec_cuda).sum()
+    cpu_out.backward()
+    cuda_out.backward()
+
+    assert mat_cuda.grad.shape == (4, 3)
+    assert colvec_cuda.grad.shape == (4, 1)
+    _assert_matching_grads([mat_cpu, colvec_cpu], [mat_cuda, colvec_cuda])
+
+
+def test_column_broadcast_sub_backward_reversed_operand_order_matches_cpu():
+    colvec = np.random.default_rng(22).standard_normal((4, 1))
+    mat = np.random.default_rng(23).standard_normal((4, 3))
+    (colvec_cpu, mat_cpu), (colvec_cuda, mat_cuda) = _cpu_and_cuda_leaves(colvec, mat)
+
+    cpu_out = (colvec_cpu - mat_cpu).sum()
+    cuda_out = (colvec_cuda - mat_cuda).sum()
+    cpu_out.backward()
+    cuda_out.backward()
+    _assert_matching_grads([colvec_cpu, mat_cpu], [colvec_cuda, mat_cuda])
+
+
 def test_multiple_use_of_same_cuda_tensor_accumulates():
     """Two consumers contributing to the same tensor's gradient -- exercises the
     backend-dispatched accumulation path in `forge.autograd.engine.run_backward`
@@ -195,11 +226,29 @@ def test_sum_full_reduction_backward_matches_cpu():
     np.testing.assert_allclose(x_cuda.grad.to("cpu").numpy(), np.ones((3, 4)), **TOL)
 
 
-def test_sum_axis_is_unsupported_on_cuda_backward_too():
-    """Forward already refuses axis-wise CUDA sum; there is no reachable backward path."""
+def test_sum_axis0_is_unsupported_on_cuda_backward_too():
+    """Forward already refuses axis=0 CUDA sum; there is no reachable backward path."""
     t = Tensor([[1.0, 2.0], [3.0, 4.0]], device="cuda", requires_grad=True)
     with pytest.raises(CUDAError, match="axis"):
         t.sum(axis=0)
+
+
+def test_sum_axis1_backward_matches_cpu():
+    """Milestone 14: sum(axis=1) is a real, differentiable CUDA op."""
+    data = np.random.default_rng(19).standard_normal((3, 4))
+    (x_cpu,), (x_cuda,) = _cpu_and_cuda_leaves(data)
+    x_cpu.sum(axis=1).sum().backward()
+    x_cuda.sum(axis=1).sum().backward()
+    _assert_matching_grads([x_cpu], [x_cuda])
+    np.testing.assert_allclose(x_cuda.grad.to("cpu").numpy(), np.ones((3, 4)), **TOL)
+
+
+def test_sum_axis1_keepdims_backward_matches_cpu():
+    data = np.random.default_rng(18).standard_normal((3, 4))
+    (x_cpu,), (x_cuda,) = _cpu_and_cuda_leaves(data)
+    x_cpu.sum(axis=1, keepdims=True).sum().backward()
+    x_cuda.sum(axis=1, keepdims=True).sum().backward()
+    _assert_matching_grads([x_cpu], [x_cuda])
 
 
 def test_reshape_backward_matches_cpu():
@@ -383,21 +432,25 @@ def test_backward_with_mismatched_shape_gradient_on_cuda_still_raises_shape_erro
 # -- unsupported CUDA operations fail clearly, no fallback ----------------------------
 
 
-def test_exp_on_grad_requiring_cuda_tensor_raises_cuda_error_not_silent_fallback():
-    t = Tensor([1.0, 2.0], device="cuda", requires_grad=True)
-    with pytest.raises(CUDAError):
-        t.exp()
-    # No graph was built by the failed call -- the tensor is untouched.
-    assert t.is_leaf is True
-    assert t.grad_fn is None
+def test_exp_backward_matches_cpu():
+    """Milestone 14: exp is a real, differentiable CUDA op."""
+    data = np.array([0.0, 1.0, -1.0, 2.5])
+    (x_cpu,), (x_cuda,) = _cpu_and_cuda_leaves(data)
+    x_cpu.exp().sum().backward()
+    x_cuda.exp().sum().backward()
+    _assert_matching_grads([x_cpu], [x_cuda])
+    # d(exp(x))/dx = exp(x)
+    np.testing.assert_allclose(x_cuda.grad.to("cpu").numpy(), np.exp(data), **TOL)
 
 
-def test_log_on_grad_requiring_cuda_tensor_raises_cuda_error_not_silent_fallback():
-    t = Tensor([1.0, 2.0], device="cuda", requires_grad=True)
-    with pytest.raises(CUDAError):
-        t.log()
-    assert t.is_leaf is True
-    assert t.grad_fn is None
+def test_log_backward_matches_cpu():
+    data = np.array([0.5, 1.0, 2.0, 10.0])
+    (x_cpu,), (x_cuda,) = _cpu_and_cuda_leaves(data)
+    x_cpu.log().sum().backward()
+    x_cuda.log().sum().backward()
+    _assert_matching_grads([x_cpu], [x_cuda])
+    # d(log(x))/dx = 1/x
+    np.testing.assert_allclose(x_cuda.grad.to("cpu").numpy(), 1.0 / data, **TOL)
 
 
 # -- no_grad still suspends CUDA graph construction ------------------------------------

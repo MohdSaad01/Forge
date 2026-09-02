@@ -9,7 +9,9 @@ tensors are backed by genuine device memory (not a NumPy array wearing a
 operations fail with a clear `CUDAError` rather than silently running on
 CPU. `relu` is a real CUDA kernel as of Milestone 9 (see `test_module_cuda.py`
 for high-level `nn.Module`/`Linear`/`ReLU` CUDA execution tests); `exp`/`log`
-remain unsupported. As of Milestone 10, CUDA tensors support reverse-mode
+and `sum(axis=1)` are real CUDA kernels as of Milestone 14 (see
+`tests/test_cuda_loss.py` for `CrossEntropyLoss`, which is what they exist
+for). As of Milestone 10, CUDA tensors support reverse-mode
 autograd for this module's supported forward operations -- see
 `tests/test_cuda_autograd.py` -- so this file's own forward-only tests build
 their differentiable-op examples with `requires_grad=False` leaves (the
@@ -151,6 +153,39 @@ def test_row_broadcast_sub_respects_operand_order_on_cuda():
     np.testing.assert_allclose((vec - mat).to("cpu").numpy(), [[9.0, 18.0], [7.0, 16.0]], **TOL)
 
 
+def test_column_broadcast_sub_matches_cross_entropy_shift_shape_on_gpu():
+    """Milestone 14: (rows, cols) - (rows, 1) is supported for `sub` only --
+    the shape CrossEntropyLoss's log-sum-exp shift needs."""
+    mat = Tensor([[1.0, 2.0, 3.0], [4.0, -1.0, 0.5]]).to("cuda")
+    colvec = Tensor([[10.0], [20.0]]).to("cuda")
+    result = mat - colvec
+    assert result.device.type == "cuda"
+    assert isinstance(result._data, CUDAStorage)
+    np.testing.assert_allclose(
+        result.to("cpu").numpy(), [[-9.0, -8.0, -7.0], [-16.0, -21.0, -19.5]], **TOL
+    )
+
+
+def test_column_broadcast_sub_reversed_operand_order_on_cuda():
+    colvec = Tensor([[10.0], [20.0]]).to("cuda")
+    mat = Tensor([[1.0, 2.0, 3.0], [4.0, -1.0, 0.5]]).to("cuda")
+    result = colvec - mat
+    np.testing.assert_allclose(
+        result.to("cpu").numpy(), [[9.0, 8.0, 7.0], [16.0, 21.0, 19.5]], **TOL
+    )
+
+
+def test_column_broadcast_add_and_mul_remain_unsupported_on_cuda():
+    """Only `sub` gained column-broadcast support -- add/mul with a (rows, 1)
+    operand still isn't a shape either backend needs to handle."""
+    mat = Tensor([[1.0, 2.0], [3.0, 4.0]]).to("cuda")
+    colvec = Tensor([[10.0], [20.0]]).to("cuda")
+    with pytest.raises(CUDAError, match="broadcast"):
+        mat + colvec
+    with pytest.raises(CUDAError, match="broadcast"):
+        mat * colvec
+
+
 def test_elementwise_broadcasting_beyond_the_row_case_is_unsupported_on_cuda():
     """General N-D broadcasting is still out of scope -- only the row-vector case is supported."""
     a = Tensor([[[1.0, 2.0], [3.0, 4.0]]]).to("cuda")  # (1, 2, 2)
@@ -217,10 +252,28 @@ def test_sum_full_reduction_on_gpu():
     np.testing.assert_allclose(result.numpy(), 10.0, **TOL)
 
 
-def test_sum_with_axis_is_unsupported_on_cuda():
+def test_sum_axis0_is_unsupported_on_cuda():
+    """Milestone 14 adds axis=1 support only -- axis=0 (or any other axis) still isn't."""
     t = Tensor([[1.0, 2.0], [3.0, 4.0]]).to("cuda")
     with pytest.raises(CUDAError, match="axis"):
         t.sum(axis=0)
+
+
+def test_sum_axis1_executes_on_gpu_and_produces_correct_values():
+    """Milestone 14: sum(axis=1) is a real CUDA kernel, needed by CrossEntropyLoss."""
+    t = Tensor([[1.0, 2.0, 3.0], [4.0, -1.0, 0.5]]).to("cuda")
+    result = t.sum(axis=1)
+    assert result.device.type == "cuda"
+    assert isinstance(result._data, CUDAStorage)
+    assert result.shape == (2,)
+    np.testing.assert_allclose(result.to("cpu").numpy(), [6.0, 3.5], **TOL)
+
+
+def test_sum_axis1_keepdims_on_gpu():
+    t = Tensor([[1.0, 2.0, 3.0], [4.0, -1.0, 0.5]]).to("cuda")
+    result = t.sum(axis=1, keepdims=True)
+    assert result.shape == (2, 1)
+    np.testing.assert_allclose(result.to("cpu").numpy(), [[6.0], [3.5]], **TOL)
 
 
 def test_reshape_on_gpu_preserves_values():
@@ -261,15 +314,32 @@ def test_relu_unsupported_dtype_raises_clearly_on_cuda():
         t.relu()
 
 
-def test_exp_is_unsupported_on_cuda():
-    t = Tensor([1.0, 2.0]).to("cuda")
-    with pytest.raises(CUDAError):
+def test_exp_executes_on_gpu_and_produces_correct_values():
+    """Milestone 14: exp is a real CUDA kernel, needed by CrossEntropyLoss."""
+    t = Tensor([0.0, 1.0, -1.0, 2.0]).to("cuda")
+    result = t.exp()
+    assert result.device.type == "cuda"
+    assert isinstance(result._data, CUDAStorage)
+    np.testing.assert_allclose(result.to("cpu").numpy(), np.exp([0.0, 1.0, -1.0, 2.0]), **TOL)
+
+
+def test_log_executes_on_gpu_and_produces_correct_values():
+    t = Tensor([1.0, np.e, 0.5, 10.0]).to("cuda")
+    result = t.log()
+    assert result.device.type == "cuda"
+    assert isinstance(result._data, CUDAStorage)
+    np.testing.assert_allclose(result.to("cpu").numpy(), np.log([1.0, np.e, 0.5, 10.0]), **TOL)
+
+
+def test_exp_unsupported_dtype_raises_clearly_on_cuda():
+    t = Tensor([1, 2, 3], dtype="int32").to("cuda")
+    with pytest.raises(CUDAError, match="dtype"):
         t.exp()
 
 
-def test_log_is_unsupported_on_cuda():
-    t = Tensor([1.0, 2.0]).to("cuda")
-    with pytest.raises(CUDAError):
+def test_log_unsupported_dtype_raises_clearly_on_cuda():
+    t = Tensor([1, 2, 3], dtype="int32").to("cuda")
+    with pytest.raises(CUDAError, match="dtype"):
         t.log()
 
 

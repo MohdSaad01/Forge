@@ -1,4 +1,4 @@
-# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10; CUDA `MSELoss` as of Milestone 12)
+# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10; CUDA `MSELoss` as of Milestone 12; CUDA `CrossEntropyLoss` as of Milestone 14)
 
 ## Package layout
 ```
@@ -35,16 +35,16 @@ Validates, in order: `logits.ndim == 2`; `target.shape == (batch_size,)`; `targe
 ```text
 log_softmax(x) = (x - c) - log(sum(exp(x - c)))     where c = max(x, axis=1)
 ```
-`c` is computed as a plain NumPy array from `logits.numpy()`, wrapped in a `Tensor` with `requires_grad=False`, and subtracted before exponentiating -- so `exp` never sees an argument larger than `0` and cannot overflow regardless of the input's scale. Treating `c` as a constant (not differentiating through how it was computed) is exact, not an approximation: the identity above holds for *any* `c`, so `c`'s own dependence on `x` contributes nothing to the correct gradient.
+`c` is computed by `Backend.max_axis1(logits._data)` -- CPU: a plain `np.max`; CUDA (Milestone 14): a dedicated kernel, so a CUDA `logits` never has to leave the device to compute its shift. Either way the result is wrapped in a `Tensor` with `requires_grad=False` and subtracted before exponentiating -- so `exp` never sees an argument larger than `0` and cannot overflow regardless of the input's scale. Treating `c` as a constant (not differentiating through how it was computed) is exact, not an approximation: the identity above holds for *any* `c`, so `c`'s own dependence on `x` contributes nothing to the correct gradient.
 
-**Target selection** avoids adding a new gather/indexing primitive: targets are expanded into a one-hot NumPy array (also wrapped as a non-differentiable `Tensor`), multiplied elementwise against `log_softmax(logits)`, and summed over the class axis. This is exact (the one-hot row zeroes out every non-target class) and needs only ops Forge already has.
+**Target selection** avoids adding a new gather/indexing primitive: targets are expanded into a one-hot NumPy array (also wrapped as a non-differentiable `Tensor`, built on `logits`'s own device), multiplied elementwise against `log_softmax(logits)`, and summed over the class axis. This is exact (the one-hot row zeroes out every non-target class) and needs only ops Forge already has.
 
 ### New Tensor primitives: `.exp()` / `.log()`
 The existing operation set (`+`, `-`, `*`, `@`, `.sum()`, `.reshape()`, `.relu()`) could not express a numerically stable cross-entropy, so this milestone adds two elementwise primitives following the exact `Tensor` -> `Backend` -> `autograd.Node` pattern `.relu()` established in Milestone 3:
-- `Tensor.exp()`, backed by `Backend.exp`/`CPUBackend.exp` (`np.exp`). Backward: `grad_output * exp(x)` (reuses the forward result, no recomputation).
-- `Tensor.log()`, backed by `Backend.log`/`CPUBackend.log` (`np.log`). Backward: `grad_output / x`.
+- `Tensor.exp()`, backed by `Backend.exp` (CPU: `np.exp`; CUDA, Milestone 14: `cf_exp_{f32,f64}`). Backward dispatches to `Backend.exp_backward` (`grad_output * exp(x)`, reusing the forward result -- CPU: NumPy multiply; CUDA: `cf_exp_backward_{f32,f64}`, since a `CUDAStorage` has no `__mul__` of its own for the closure to fall back on).
+- `Tensor.log()`, backed by `Backend.log` (CPU: `np.log`; CUDA: `cf_log_{f32,f64}`). Backward dispatches to `Backend.log_backward` (`grad_output / x`; CUDA: `cf_log_backward_{f32,f64}`).
 
-No domain validation (`x > 0` for `log`) is added at the Tensor level -- exactly like the rest of the op set, invalid domains are the caller's responsibility. `CrossEntropyLoss` only ever calls `.log()` on a sum of exponentials, which is always `> 0`, so this is safe in the one place Forge currently uses it.
+No domain validation (`x > 0` for `log`) is added at the Tensor level -- exactly like the rest of the op set, invalid domains are the caller's responsibility. `CrossEntropyLoss` only ever calls `.log()` on a sum of exponentials, which is always `> 0`, so this is safe in the one place Forge currently uses it. See `docs/architecture/cuda-backend.md`'s **CUDA CrossEntropyLoss** section for the full Milestone 14 CUDA primitive set (`exp`/`log`, axis=1 `sum`, and the column-broadcast `sub` the shift/log-probability steps need).
 
 ## Optimizer abstraction
 `Optimizer` (`forge/optim/optimizer.py`) owns a flat `list[Parameter]`, built from whatever iterable is passed to its constructor -- typically `model.parameters()`, but never a model instance. This keeps the optimizer decoupled from `Module` internals, per the architecture's design rule that abstractions should enforce only the boundaries they need to.
@@ -88,6 +88,6 @@ optimizer.step()        # in-place parameter update from .grad; no new graph
 ## Known limitations
 - SGD only: no momentum, Adam, RMSProp, weight decay, or learning-rate schedules.
 - No training engine/`Trainer`, `DataLoader`, or dataset abstraction yet -- the training loop above is written by hand in this milestone.
-- `CrossEntropyLoss` remains CPU-only -- it depends on `.exp()`/`.log()` (CUDA has no kernel for either) and an axis-wise `.sum()` (CUDA `sum()` supports only a full reduction). As of Milestone 12 this is a confirmed, deliberate deferral (not just an unexercised gap): `CrossEntropyLoss.forward()` rejects non-CPU logits explicitly with `LossError` rather than silently running part of the computation on CPU -- see `docs/architecture/cuda-backend.md`'s **CUDA losses** section. `MSELoss` (built only from `-`, `*`, `.sum()`) works on CUDA like any other differentiable Tensor expression, and is now exercised end-to-end through `forge.training.Trainer(device="cuda")` -- see `docs/architecture/training-engine.md`. As of Milestone 10, `SGD` is device-aware via `Backend.sgd_step()` -- see **Parameter mutation does not extend the autograd graph** above; no CUDA-specific optimizer class exists.
+- `CrossEntropyLoss` works on CUDA as of Milestone 14 -- see `docs/architecture/cuda-backend.md`'s **CUDA CrossEntropyLoss** section for the primitives that made this possible (`exp`/`log` kernels, an axis=1 `sum`, and a column-broadcast `sub`) and the device-validation/no-fallback guarantees that carry over from `MSELoss`. `MSELoss` (built only from `-`, `*`, `.sum()`) has worked on CUDA since Milestone 12 like any other differentiable Tensor expression; both are now exercised end-to-end through `forge.training.Trainer(device="cuda")` -- see `docs/architecture/training-engine.md`. As of Milestone 10, `SGD` is device-aware via `Backend.sgd_step()` -- see **Parameter mutation does not extend the autograd graph** above; no CUDA-specific optimizer class exists.
 - `CrossEntropyLoss` supports exactly the `(batch_size, num_classes)` / `(batch_size,)` shape convention; no class weighting, label smoothing, or ignored-index support.
 - `Tensor.log()` has no domain validation; calling it directly (outside `CrossEntropyLoss`'s controlled use) on non-positive values produces NumPy's usual `-inf`/`nan` rather than a Forge-level error.

@@ -1,4 +1,5 @@
-"""CUDA `Trainer`/loss integration tests (Milestone 12).
+"""CUDA `Trainer`/loss integration tests (Milestone 12; classification via
+`CrossEntropyLoss` in Milestone 14).
 
 Every test in this module requires an actual working CUDA backend and is
 skipped cleanly otherwise via the module-level `pytestmark`, matching the
@@ -11,7 +12,9 @@ convention in `tests/test_cuda_backend.py`/`tests/test_cuda_autograd.py`/
 path documented in `docs/architecture/training-engine.md`'s **Device
 semantics** section: `DataLoader` stays CPU-side, `Trainer` validates (never
 moves) the model and explicitly transfers each batch, and no `CPUBackend`
-compute method is ever invoked along the way.
+compute method is ever invoked along the way -- for regression (`MSELoss`)
+throughout, and, as of Milestone 14, for classification (`CrossEntropyLoss`)
+too (see the **CUDA classification training** section below).
 """
 
 from __future__ import annotations
@@ -255,24 +258,109 @@ def test_cuda_trainer_fit_rejects_unsupported_batch_structure():
         trainer.fit(BadLoader(), epochs=1)
 
 
-# -- CUDA CrossEntropyLoss is a clean, explicit failure ------------------------
+# -- CUDA classification training via CrossEntropyLoss (Milestone 14) ---------
 
 
-def test_cuda_trainer_fit_with_cross_entropy_fails_clearly():
+def _classification_loader(n=64, batch_size=16, seed=5, shuffle=True):
+    """A small, linearly separable 2-class dataset -- a plain CPU DataLoader.
+
+    `shuffle` draws from the process-global `forge.random` generator (like
+    `Linear`'s own weight init) -- pass `shuffle=False` for a CPU/CUDA
+    consistency comparison so both `Trainer`s see identical batch order
+    regardless of how much of that shared generator's state each one's
+    model construction already consumed (matching `_regression_loader`'s
+    `shuffle=False` default above, used for the same reason).
+    """
+    rng = np.random.default_rng(seed)
+    class0 = rng.standard_normal((n // 2, 2)).astype(np.float32) + np.array([-2.0, -2.0], dtype=np.float32)
+    class1 = rng.standard_normal((n // 2, 2)).astype(np.float32) + np.array([2.0, 2.0], dtype=np.float32)
+    X = np.concatenate([class0, class1], axis=0)
+    y = np.concatenate([np.zeros(n // 2, dtype=np.int64), np.ones(n // 2, dtype=np.int64)])
+    perm = rng.permutation(n)
+    X, y = X[perm], y[perm]
+    dataset = TensorDataset(Tensor(X), Tensor(y))
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+
+
+def test_cuda_trainer_classification_end_to_end_learns():
+    """TensorDataset -> DataLoader -> Trainer(device="cuda") -> Linear ->
+    CrossEntropyLoss -> CUDA backward -> CUDA SGD, on a deterministic
+    classification dataset -- the M14 acceptance-criteria workflow."""
+    from forge.nn import CrossEntropyLoss
+    from forge.training import Accuracy
+
+    forge.random.seed(3)
+    model = Linear(2, 2).to("cuda")
+    optimizer = SGD(model.parameters(), lr=0.5)
+    trainer = Trainer(
+        model=model, loss_fn=CrossEntropyLoss(), optimizer=optimizer,
+        device="cuda", metrics=[Accuracy()], verbose=False,
+    )
+
+    loader = _classification_loader()
+    history = trainer.fit(loader, epochs=30)
+
+    assert history.train_losses[0] > history.train_losses[-1]
+    assert history.train_losses[-1] < history.train_losses[0] * 0.5
+    assert history[-1].train_metrics["accuracy"] > 0.9
+
+    for name, param in model.named_parameters():
+        assert param.device.type == "cuda", name
+        assert param.grad is not None, name
+        assert param.grad.device.type == "cuda", name
+
+
+def test_cuda_trainer_classification_never_calls_cpu_backend_compute_ops(monkeypatch):
     from forge.nn import CrossEntropyLoss
 
     model = Linear(2, 2).to("cuda")
-    rng = np.random.default_rng(0)
-    X = rng.standard_normal((16, 2)).astype(np.float32)
-    targets = rng.integers(0, 2, size=16)
-    loader = DataLoader(TensorDataset(Tensor(X), Tensor(targets)), batch_size=4)
-
     trainer = Trainer(
         model=model, loss_fn=CrossEntropyLoss(), optimizer=SGD(model.parameters(), lr=0.1),
         device="cuda", verbose=False,
     )
-    with pytest.raises(forge.LossError, match="CPU-only"):
-        trainer.fit(loader, epochs=1)
+
+    calls: list[str] = []
+    compute_ops = (
+        "add", "sub", "mul", "matmul", "sum", "reshape", "relu", "exp", "log",
+        "exp_backward", "log_backward", "max_axis1", "sgd_step",
+    )
+    for name in compute_ops:
+        original = getattr(CPUBackend, name)
+
+        def spy(self, *args, _name=name, _original=original, **kwargs):
+            calls.append(_name)
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(CPUBackend, name, spy)
+
+    trainer.fit(_classification_loader(n=32, batch_size=8), epochs=2)
+
+    assert calls == []
+
+
+def test_cpu_cuda_classification_training_consistency():
+    from forge.nn import CrossEntropyLoss
+
+    forge.random.seed(11)
+    cpu_model = Linear(2, 2)
+    cuda_model = Linear(2, 2)
+    for (_, p_cpu), (_, p_cuda) in zip(cpu_model.named_parameters(), cuda_model.named_parameters()):
+        p_cuda._data = np.array(p_cpu._data, copy=True)
+    cuda_model.to("cuda")
+
+    cpu_trainer = Trainer(
+        model=cpu_model, loss_fn=CrossEntropyLoss(), optimizer=SGD(cpu_model.parameters(), lr=0.3),
+        device="cpu", verbose=False,
+    )
+    cuda_trainer = Trainer(
+        model=cuda_model, loss_fn=CrossEntropyLoss(), optimizer=SGD(cuda_model.parameters(), lr=0.3),
+        device="cuda", verbose=False,
+    )
+
+    cpu_history = cpu_trainer.fit(_classification_loader(n=32, batch_size=8, seed=77, shuffle=False), epochs=10)
+    cuda_history = cuda_trainer.fit(_classification_loader(n=32, batch_size=8, seed=77, shuffle=False), epochs=10)
+
+    np.testing.assert_allclose(cpu_history.train_losses, cuda_history.train_losses, **TOL)
 
 
 # -- No CPU fallback ------------------------------------------------------------

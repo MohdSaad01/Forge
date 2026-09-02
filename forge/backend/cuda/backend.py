@@ -17,12 +17,14 @@ completed, verified operation.
 
 Deliberately small operation set (per the milestone brief): tensor
 creation/transfer, `add`/`sub`/`mul` (exact-shape, plus one targeted
-row-broadcast shape added in Milestone 9 -- see `_elementwise` -- still no
-general CUDA broadcasting), `matmul` (the same 1D/2D cases the CPU backend
-supports), `sum` (full reduction only, no `axis`), and, as of Milestone 9,
-`relu`. `exp`/`log` remain required by the `Backend` ABC but are not
-implemented for CUDA; calling them raises `CUDAError` rather than silently
-running on CPU.
+row-broadcast shape added in Milestone 9, plus one targeted column-broadcast
+shape for `sub` added in Milestone 14 -- see `_elementwise`/
+`_col_broadcast_kind` -- still no general CUDA broadcasting), `matmul` (the
+same 1D/2D cases the CPU backend supports), `sum` (full reduction, plus
+axis=1 on a 2D tensor as of Milestone 14), `relu`, and, as of Milestone 14,
+`exp`/`log` (needed by `CrossEntropyLoss`'s log-sum-exp) plus a private
+`max_axis1` row-reduction helper. See `docs/architecture/cuda-backend.md`'s
+**CUDA CrossEntropyLoss** section for the Milestone 14 additions.
 """
 
 from __future__ import annotations
@@ -124,6 +126,33 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         broadcast_scalar_fn = getattr(lib, f"cf_broadcast_scalar_{suffix}")
         broadcast_scalar_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
         broadcast_scalar_fn.restype = ctypes.c_int
+
+        # -- Milestone 14: exp/log, axis=1 reduction, column-broadcast sub --
+        for name in (f"cf_exp_{suffix}", f"cf_log_{suffix}"):
+            fn = getattr(lib, name)
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+            fn.restype = ctypes.c_int
+
+        for name in (f"cf_exp_backward_{suffix}", f"cf_log_backward_{suffix}"):
+            fn = getattr(lib, name)
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+            fn.restype = ctypes.c_int
+
+        for name in (f"cf_max_axis1_{suffix}", f"cf_sum_axis1_{suffix}"):
+            fn = getattr(lib, name)
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong]
+            fn.restype = ctypes.c_int
+
+        broadcast_axis1_fn = getattr(lib, f"cf_broadcast_axis1_{suffix}")
+        broadcast_axis1_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong]
+        broadcast_axis1_fn.restype = ctypes.c_int
+
+        sub_colbcast_fn = getattr(lib, f"cf_sub_colbcast_{suffix}")
+        sub_colbcast_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int,
+        ]
+        sub_colbcast_fn.restype = ctypes.c_int
 
 
 def _load_library() -> "ctypes.CDLL":
@@ -317,10 +346,65 @@ class CUDABackend(Backend):
         return self._elementwise(a, b, "add")
 
     def sub(self, a: Any, b: Any) -> CUDAStorage:
+        col_kind = self._col_broadcast_kind(a, b)
+        if col_kind is not None:
+            return self._sub_col_broadcast(a, b, col_kind)
         return self._elementwise(a, b, "sub")
 
     def mul(self, a: Any, b: Any) -> CUDAStorage:
         return self._elementwise(a, b, "mul")
+
+    # -- column-broadcast sub (Milestone 14) --------------------------------
+    #
+    # `CrossEntropyLoss`'s log-sum-exp shift combines a (rows, cols) matrix
+    # with a (rows, 1) per-row scalar (`max_axis1`'s or a preceding
+    # `sum(axis=1, keepdims=True)`'s own output shape), broadcasting that
+    # scalar across every column of its row -- the transpose of
+    # `_elementwise`'s existing row-broadcast case (a (cols,) vector
+    # broadcast down every row, for Linear's bias add). Only `sub` needs this
+    # broadcast direction in this milestone (see `kernels.cu`'s
+    # **column-broadcast subtract kernel** comment), so `add`/`mul` still
+    # raise `CUDAError` via `_elementwise` for a (rows, 1) operand.
+
+    def _col_broadcast_kind(self, a: Any, b: Any) -> "str | None":
+        a_shape, b_shape = getattr(a, "shape", None), getattr(b, "shape", None)
+        if a_shape is None or b_shape is None or len(a_shape) != 2 or len(b_shape) != 2:
+            return None
+        if a_shape == b_shape:
+            return None  # exact-shape case, handled by `_elementwise` as usual
+        if a_shape[0] == b_shape[0] and b_shape[1] == 1 and a_shape[1] != 1:
+            return "a_mat_b_col"
+        if a_shape[0] == b_shape[0] and a_shape[1] == 1 and b_shape[1] != 1:
+            return "a_col_b_mat"
+        return None
+
+    def _sub_col_broadcast(self, a: CUDAStorage, b: CUDAStorage, kind: str) -> CUDAStorage:
+        dtype = self._require_compute_dtype(a, b, op="sub (column-broadcast)")
+        if kind == "a_mat_b_col":
+            mat, colvec, vec_is_left, out_shape = a, b, 0, a.shape
+        else:
+            mat, colvec, vec_is_left, out_shape = b, a, 1, b.shape
+        rows, cols = mat.shape
+        out_ptr = self._alloc(rows * cols * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_sub_colbcast_{_SUFFIX[dtype]}")
+        code = fn(
+            mat.ptr, colvec.ptr, out_ptr,
+            ctypes.c_longlong(rows), ctypes.c_longlong(cols), ctypes.c_int(vec_is_left),
+        )
+        self._check(code, "sub (column-broadcast)")
+        self._synchronize("sub (column-broadcast)")
+        return CUDAStorage(out_ptr, out_shape, dtype, self._lib)
+
+    def _reduce_axis1(self, mat: CUDAStorage) -> CUDAStorage:
+        """Sum a (rows, cols) matrix down to a (rows,) vector -- undoes column-broadcast."""
+        dtype = self._require_compute_dtype(mat, op="reduce_axis1")
+        rows, cols = mat.shape
+        out_ptr = self._alloc(rows * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_sum_axis1_{_SUFFIX[dtype]}")
+        code = fn(mat.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+        self._check(code, "reduce_axis1 (column-broadcast gradient reduction)")
+        self._synchronize("reduce_axis1")
+        return CUDAStorage(out_ptr, (rows,), dtype, self._lib)
 
     # -- matmul ----------------------------------------------------------------
 
@@ -358,19 +442,36 @@ class CUDABackend(Backend):
     # -- reduction ---------------------------------------------------------------
 
     def sum(self, a: CUDAStorage, axis: Any, keepdims: bool) -> CUDAStorage:
-        if axis is not None:
-            raise CUDAError(
-                "CUDA sum() supports only a full reduction (axis=None) in this milestone; "
-                f"got axis={axis!r}. Move the tensor to CPU with .to('cpu') for axis-wise reduction."
-            )
         dtype = self._require_compute_dtype(a, op="sum")
-        out_ptr = self._alloc(dtype.itemsize)
-        fn = getattr(self._lib, f"cf_sum_{_SUFFIX[dtype]}")
-        code = fn(a.ptr, out_ptr, ctypes.c_longlong(a.size))
-        self._check(code, "sum")
-        self._synchronize("sum")
-        shape = (1,) * a.ndim if keepdims else ()
-        return CUDAStorage(out_ptr, shape, dtype, self._lib)
+        if axis is None:
+            out_ptr = self._alloc(dtype.itemsize)
+            fn = getattr(self._lib, f"cf_sum_{_SUFFIX[dtype]}")
+            code = fn(a.ptr, out_ptr, ctypes.c_longlong(a.size))
+            self._check(code, "sum")
+            self._synchronize("sum")
+            shape = (1,) * a.ndim if keepdims else ()
+            return CUDAStorage(out_ptr, shape, dtype, self._lib)
+
+        # Milestone 14: the one axis-wise reduction CrossEntropyLoss needs --
+        # summing a 2D (batch, classes) tensor's class dimension down to one
+        # value per row. See kernels.cu's "axis=1 reduction kernels" comment
+        # for why this stays a single fixed axis rather than general N-D
+        # reduction.
+        if a.ndim == 2 and axis in (1, -1):
+            rows, cols = a.shape
+            out_ptr = self._alloc(rows * dtype.itemsize)
+            fn = getattr(self._lib, f"cf_sum_axis1_{_SUFFIX[dtype]}")
+            code = fn(a.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+            self._check(code, "sum(axis=1)")
+            self._synchronize("sum(axis=1)")
+            shape = (rows, 1) if keepdims else (rows,)
+            return CUDAStorage(out_ptr, shape, dtype, self._lib)
+
+        raise CUDAError(
+            "CUDA sum() supports only a full reduction (axis=None) or axis=1 (equivalently "
+            f"-1) on a 2D tensor in this milestone; got axis={axis!r} for a tensor of shape "
+            f"{a.shape}. Move the tensor to CPU with .to('cpu') for other axis-wise reductions."
+        )
 
     # -- reshape (metadata + device-side copy, no kernel needed) -----------------
 
@@ -398,19 +499,27 @@ class CUDABackend(Backend):
         self._synchronize("relu")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
-    # -- explicitly unsupported in this milestone --------------------------------
+    # -- exp / log (Milestone 14) -------------------------------------------------
 
-    def exp(self, a: Any) -> Any:
-        raise CUDAError(
-            "The CUDA backend does not implement exp() in this milestone. "
-            "Move the tensor to CPU with .to('cpu') to use it."
-        )
+    def exp(self, a: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(a, op="exp")
+        n = a.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_exp_{_SUFFIX[dtype]}")
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n))
+        self._check(code, "exp")
+        self._synchronize("exp")
+        return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
-    def log(self, a: Any) -> Any:
-        raise CUDAError(
-            "The CUDA backend does not implement log() in this milestone. "
-            "Move the tensor to CPU with .to('cpu') to use it."
-        )
+    def log(self, a: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(a, op="log")
+        n = a.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_log_{_SUFFIX[dtype]}")
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n))
+        self._check(code, "log")
+        self._synchronize("log")
+        return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
     # -- backward helpers (Milestone 10) ---------------------------------------
     #
@@ -486,6 +595,16 @@ class CUDABackend(Backend):
         return self._reduce_rows(grad_output), grad_output
 
     def sub_backward(self, grad_output: CUDAStorage, a: CUDAStorage, b: CUDAStorage):
+        col_kind = self._col_broadcast_kind(a, b)
+        if col_kind == "a_mat_b_col":
+            # out = a(mat) - b(colvec); d/da = grad_output, d/db = -sum_over_cols(grad_output)
+            grad_b = self.reshape(self._neg(self._reduce_axis1(grad_output)), b.shape)
+            return grad_output, grad_b
+        if col_kind == "a_col_b_mat":
+            # out = a(colvec) - b(mat); d/da = sum_over_cols(grad_output), d/db = -grad_output
+            grad_a = self.reshape(self._reduce_axis1(grad_output), a.shape)
+            return grad_a, self._neg(grad_output)
+
         kind = self._row_broadcast_kind(a, b)
         if kind == "exact":
             return grad_output, self._neg(grad_output)
@@ -529,25 +648,34 @@ class CUDABackend(Backend):
     def sum_backward(
         self, grad_output: CUDAStorage, original_shape: "tuple[int, ...]", ndim: int, axis, keepdims: bool
     ) -> CUDAStorage:
-        if axis is not None:
-            # Forward CUDA `sum(axis=...)` already raises CUDAError (see
-            # `sum` above), so a backward closure for a non-None axis can
-            # never actually be built -- this branch is defensive, not a
-            # reachable path from `Tensor.sum()`.
-            raise CUDAError(
-                "CUDA sum() backward supports only a full reduction (axis=None) in this milestone; "
-                f"got axis={axis!r}."
-            )
         dtype = self._require_compute_dtype(grad_output, op="sum_backward")
-        n = 1
-        for s in original_shape:
-            n *= s
-        out_ptr = self._alloc(n * dtype.itemsize)
-        fn = getattr(self._lib, f"cf_broadcast_scalar_{_SUFFIX[dtype]}")
-        code = fn(grad_output.ptr, out_ptr, ctypes.c_longlong(n))
-        self._check(code, "sum backward (broadcast)")
-        self._synchronize("sum backward")
-        return CUDAStorage(out_ptr, original_shape, dtype, self._lib)
+        if axis is None:
+            n = 1
+            for s in original_shape:
+                n *= s
+            out_ptr = self._alloc(n * dtype.itemsize)
+            fn = getattr(self._lib, f"cf_broadcast_scalar_{_SUFFIX[dtype]}")
+            code = fn(grad_output.ptr, out_ptr, ctypes.c_longlong(n))
+            self._check(code, "sum backward (broadcast)")
+            self._synchronize("sum backward")
+            return CUDAStorage(out_ptr, original_shape, dtype, self._lib)
+
+        if ndim == 2 and axis in (1, -1):
+            rows, cols = original_shape
+            out_ptr = self._alloc(rows * cols * dtype.itemsize)
+            fn = getattr(self._lib, f"cf_broadcast_axis1_{_SUFFIX[dtype]}")
+            code = fn(grad_output.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+            self._check(code, "sum(axis=1) backward (broadcast)")
+            self._synchronize("sum(axis=1) backward")
+            return CUDAStorage(out_ptr, original_shape, dtype, self._lib)
+
+        # Forward CUDA `sum(axis=...)` already raises CUDAError for any other
+        # axis (see `sum` above), so this branch is defensive, not a
+        # reachable path from `Tensor.sum()`.
+        raise CUDAError(
+            "CUDA sum() backward supports only a full reduction (axis=None) or axis=1 "
+            f"(equivalently -1) on a 2D tensor in this milestone; got axis={axis!r}."
+        )
 
     def reshape_backward(self, grad_output: CUDAStorage, original_shape: "tuple[int, ...]") -> CUDAStorage:
         return self.reshape(grad_output, original_shape)
@@ -561,6 +689,40 @@ class CUDABackend(Backend):
         self._check(code, "relu backward")
         self._synchronize("relu backward")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
+    def exp_backward(self, grad_output: CUDAStorage, result: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(grad_output, result, op="exp_backward")
+        n = result.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_exp_backward_{_SUFFIX[dtype]}")
+        code = fn(grad_output.ptr, result.ptr, out_ptr, ctypes.c_longlong(n))
+        self._check(code, "exp backward")
+        self._synchronize("exp backward")
+        return CUDAStorage(out_ptr, result.shape, dtype, self._lib)
+
+    def log_backward(self, grad_output: CUDAStorage, a: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(grad_output, a, op="log_backward")
+        n = a.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_log_backward_{_SUFFIX[dtype]}")
+        code = fn(grad_output.ptr, a.ptr, out_ptr, ctypes.c_longlong(n))
+        self._check(code, "log backward")
+        self._synchronize("log backward")
+        return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
+    # -- CrossEntropyLoss support (Milestone 14) ---------------------------------
+
+    def max_axis1(self, a: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(a, op="max_axis1")
+        if a.ndim != 2:
+            raise CUDAError(f"CUDA max_axis1 requires a 2D tensor, got shape {a.shape}.")
+        rows, cols = a.shape
+        out_ptr = self._alloc(rows * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_max_axis1_{_SUFFIX[dtype]}")
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+        self._check(code, "max_axis1")
+        self._synchronize("max_axis1")
+        return CUDAStorage(out_ptr, (rows, 1), dtype, self._lib)
 
     # -- optimizer (Milestone 10) -----------------------------------------------
 

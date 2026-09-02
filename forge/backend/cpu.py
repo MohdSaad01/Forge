@@ -112,8 +112,19 @@ class CPUBackend(Backend):
         positive_mask = a > 0
         return np.where(positive_mask, grad_output, 0).astype(grad_output.dtype, copy=False)
 
+    def exp_backward(self, grad_output: np.ndarray, result: np.ndarray) -> np.ndarray:
+        return grad_output * result
+
+    def log_backward(self, grad_output: np.ndarray, a: np.ndarray) -> np.ndarray:
+        return grad_output / a
+
     # -- optimizer (Milestone 10) ------------------------------------------
 
     def sgd_step(self, data: np.ndarray, grad: np.ndarray, lr: float) -> np.ndarray:
         data -= lr * grad
         return data
+
+    # -- CrossEntropyLoss support (Milestone 14) ----------------------------
+
+    def max_axis1(self, a: np.ndarray) -> np.ndarray:
+        return np.max(a, axis=1, keepdims=True)

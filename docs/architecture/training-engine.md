@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14)
 
 ## Package layout
 ```
@@ -345,13 +345,13 @@ Dataset -> CPU DataLoader -> Trainer -> explicit x.to(device)/y.to(device)
 ### CUDA losses through Trainer
 `Trainer` calls `self.loss_fn(prediction, y)` exactly as before -- it has no
 CUDA-specific loss-handling code. Whether that succeeds on CUDA is entirely
-the loss's own concern: `MSELoss` works unmodified (see
-`docs/architecture/cuda-backend.md`'s **CUDA losses** section);
-`CrossEntropyLoss` raises `LossError` immediately for non-CPU logits (a
-deliberate Milestone 12 deferral, same section) rather than `Trainer`
-special-casing it. A `Trainer(device="cuda", loss_fn=CrossEntropyLoss())`
-therefore fails clearly the first time `fit()`/`evaluate()` calls the loss,
-not through any Trainer-level device check.
+the loss's own concern: both built-in losses now work unmodified --
+`MSELoss` since Milestone 12, `CrossEntropyLoss` since Milestone 14 (see
+`docs/architecture/cuda-backend.md`'s **CUDA losses**/**CUDA
+CrossEntropyLoss** sections). `Trainer(device="cuda",
+loss_fn=CrossEntropyLoss())` therefore trains a real classification model
+end-to-end on CUDA -- `Trainer` never needed to know which loss it was
+calling, in either milestone.
 
 ### Reporting the loss/metrics still touches CPU -- deliberately
 `total_loss += float(loss.to("cpu").numpy()) * batch_size` (both `fit()`'s
@@ -407,10 +407,6 @@ save/restore.
 
 As of Milestone 12, CUDA execution is no longer on this list, but the CUDA
 training path itself has real, deliberate limits:
-- **`CrossEntropyLoss` is CPU-only.** A CUDA `Trainer` using it fails
-  clearly (`LossError`) the first time the loss is called -- see
-  `docs/architecture/cuda-backend.md`'s **CUDA losses** section for why this
-  was deferred rather than implemented.
 - **No GPU `DataLoader`, pinned memory, async prefetch, or multiprocessing
   workers** -- explicitly out of scope per the milestone brief; `DataLoader`
   stays exactly as capable (and exactly as CPU-only) as Milestone 5 left it.

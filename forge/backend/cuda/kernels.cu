@@ -163,6 +163,40 @@ BCAST_LAUNCHER(cf_sub, k_sub_bcast, double, f64)
 BCAST_LAUNCHER(cf_mul, k_mul_bcast, float, f32)
 BCAST_LAUNCHER(cf_mul, k_mul_bcast, double, f64)
 
+// -- column-broadcast subtract kernel (Milestone 14) ---------------------------
+//
+// CrossEntropyLoss's log-sum-exp shift (`logits - max_axis1(logits)`) and its
+// log-probability step (`shifted - log_sum_exp`) both combine a (rows, cols)
+// matrix with a (rows, 1) per-row scalar, broadcasting that scalar across
+// every column of its own row -- the transpose of the row-broadcast case
+// above (a (cols,) vector broadcast down every row, for Linear's bias add).
+// Only `sub` is ever combined with a (rows, 1) operand anywhere in Forge, so
+// only a subtract kernel is added (no column-broadcast add/mul).
+
+template <typename T>
+__global__ void k_sub_colbcast(const T* mat, const T* colvec, T* out, long long rows, long long cols, int vec_is_left) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = rows * cols;
+    if (i < total) {
+        long long row = i / cols;
+        out[i] = vec_is_left ? (colvec[row] - mat[i]) : (mat[i] - colvec[row]);
+    }
+}
+
+#define COLBCAST_LAUNCHER(NAME, KERNEL, TYPE, SUFFIX)                                    \
+    extern "C" __declspec(dllexport) int NAME##_colbcast_##SUFFIX(                       \
+        const TYPE* mat, const TYPE* colvec, TYPE* out,                                  \
+        long long rows, long long cols, int vec_is_left) {                               \
+        long long total = rows * cols;                                                   \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        KERNEL<TYPE><<<blocks, threads>>>(mat, colvec, out, rows, cols, vec_is_left);    \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+COLBCAST_LAUNCHER(cf_sub, k_sub_colbcast, float, f32)
+COLBCAST_LAUNCHER(cf_sub, k_sub_colbcast, double, f64)
+
 // -- unary kernels ------------------------------------------------------------
 //
 // relu is new in Milestone 9 -- required to run the existing high-level
@@ -188,6 +222,36 @@ __global__ void k_relu(const T* a, T* out, long long n) {
 
 UNARY_LAUNCHER(cf_relu, k_relu, float, f32)
 UNARY_LAUNCHER(cf_relu, k_relu, double, f64)
+
+// -- exp / log (Milestone 14) --------------------------------------------------
+//
+// Required by CrossEntropyLoss's numerically-stable log-sum-exp. CUDA's math
+// library exposes type-specific `expf`/`logf` (float) and `exp`/`log`
+// (double) rather than one overloaded name; these tiny `__device__` wrappers
+// give the `k_exp`/`k_log` templates below a single call spelling that
+// resolves to the right one for each instantiation.
+
+__device__ inline float cf_expv(float x) { return expf(x); }
+__device__ inline double cf_expv(double x) { return exp(x); }
+__device__ inline float cf_logv(float x) { return logf(x); }
+__device__ inline double cf_logv(double x) { return log(x); }
+
+template <typename T>
+__global__ void k_exp(const T* a, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = cf_expv(a[i]);
+}
+
+template <typename T>
+__global__ void k_log(const T* a, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = cf_logv(a[i]);
+}
+
+UNARY_LAUNCHER(cf_exp, k_exp, float, f32)
+UNARY_LAUNCHER(cf_exp, k_exp, double, f64)
+UNARY_LAUNCHER(cf_log, k_log, float, f32)
+UNARY_LAUNCHER(cf_log, k_log, double, f64)
 
 // -- backward-only kernels (Milestone 10) -------------------------------------
 //
@@ -222,6 +286,30 @@ __global__ void k_relu_backward(const T* grad_output, const T* input, T* out, lo
 
 ELEMENTWISE_LAUNCHER(cf_relu_backward, k_relu_backward, float, f32)
 ELEMENTWISE_LAUNCHER(cf_relu_backward, k_relu_backward, double, f64)
+
+// exp/log backward (Milestone 14): `d(exp(x))/dx = exp(x)` (so the backward
+// rule is `grad_output * result`, `result` being exp's own saved forward
+// output -- no need to re-read `x`) and `d(log(x))/dx = 1/x` (`grad_output /
+// input`, the saved forward input). Each is a small dedicated kernel, like
+// `k_relu_backward` above, rather than a generic elementwise-divide
+// primitive that nothing else in Forge needs.
+
+template <typename T>
+__global__ void k_exp_backward(const T* grad_output, const T* result, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = grad_output[i] * result[i];
+}
+
+template <typename T>
+__global__ void k_log_backward(const T* grad_output, const T* input, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = grad_output[i] / input[i];
+}
+
+ELEMENTWISE_LAUNCHER(cf_exp_backward, k_exp_backward, float, f32)
+ELEMENTWISE_LAUNCHER(cf_exp_backward, k_exp_backward, double, f64)
+ELEMENTWISE_LAUNCHER(cf_log_backward, k_log_backward, float, f32)
+ELEMENTWISE_LAUNCHER(cf_log_backward, k_log_backward, double, f64)
 
 template <typename T>
 __global__ void k_scale(const T* scalar, const T* vec, T* out, long long n) {
@@ -453,3 +541,83 @@ __global__ void k_sum(const T* a, T* out, long long n) {
 
 SUM_LAUNCHER(float, f32)
 SUM_LAUNCHER(double, f64)
+
+// -- axis=1 reduction kernels (Milestone 14) -----------------------------------
+//
+// CrossEntropyLoss needs a per-row reduction across the class dimension: for
+// logits shaped (batch, classes), reduce (max, for the numerical-stability
+// shift; sum, for the log-sum-exp denominator and for picking out each
+// target's log-probability) each row down to one value. One thread per row,
+// looping over that row's `cols` elements -- the same "one thread per output
+// element, loop over the reduced dimension" shape `k_reduce_rows` (above)
+// already uses for the *other* axis (columns down to one row-broadcast
+// vector). Not a general axis-reduction primitive: only axis=1 on a 2D
+// tensor is supported, which is all CrossEntropyLoss (or anything else in
+// Forge) needs -- `CUDABackend.sum()` still raises `CUDAError` for any other
+// axis (see `docs/architecture/cuda-backend.md`).
+
+template <typename T>
+__global__ void k_max_axis1(const T* mat, T* out, long long rows, long long cols) {
+    long long row = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (row < rows) {
+        T m = mat[row * cols];
+        for (long long c = 1; c < cols; ++c) {
+            T v = mat[row * cols + c];
+            if (v > m) m = v;
+        }
+        out[row] = m;
+    }
+}
+
+template <typename T>
+__global__ void k_sum_axis1(const T* mat, T* out, long long rows, long long cols) {
+    long long row = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (row < rows) {
+        T acc = static_cast<T>(0);
+        for (long long c = 0; c < cols; ++c) {
+            acc += mat[row * cols + c];
+        }
+        out[row] = acc;
+    }
+}
+
+#define AXIS1_REDUCE_LAUNCHER(NAME, KERNEL, TYPE, SUFFIX)                                \
+    extern "C" __declspec(dllexport) int NAME##_##SUFFIX(                                \
+        const TYPE* mat, TYPE* out, long long rows, long long cols) {                    \
+        int blocks, threads;                                                             \
+        launch_config(rows, blocks, threads);                                            \
+        KERNEL<TYPE><<<blocks, threads>>>(mat, out, rows, cols);                         \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+AXIS1_REDUCE_LAUNCHER(cf_max_axis1, k_max_axis1, float, f32)
+AXIS1_REDUCE_LAUNCHER(cf_max_axis1, k_max_axis1, double, f64)
+AXIS1_REDUCE_LAUNCHER(cf_sum_axis1, k_sum_axis1, float, f32)
+AXIS1_REDUCE_LAUNCHER(cf_sum_axis1, k_sum_axis1, double, f64)
+
+// Backward of sum(axis=1): broadcast each row's single upstream gradient
+// value to every element of that row -- the axis=1 analog of
+// `k_broadcast_scalar` (above), which broadcasts one global scalar to every
+// element instead of one scalar per row.
+template <typename T>
+__global__ void k_broadcast_axis1(const T* rowvals, T* out, long long rows, long long cols) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = rows * cols;
+    if (i < total) {
+        long long row = i / cols;
+        out[i] = rowvals[row];
+    }
+}
+
+#define BROADCAST_AXIS1_LAUNCHER(TYPE, SUFFIX)                                           \
+    extern "C" __declspec(dllexport) int cf_broadcast_axis1_##SUFFIX(                    \
+        const TYPE* rowvals, TYPE* out, long long rows, long long cols) {                \
+        long long total = rows * cols;                                                   \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_broadcast_axis1<TYPE><<<blocks, threads>>>(rowvals, out, rows, cols);          \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+BROADCAST_AXIS1_LAUNCHER(float, f32)
+BROADCAST_AXIS1_LAUNCHER(double, f64)
