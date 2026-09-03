@@ -21,7 +21,11 @@ backend (`forge.backend.cuda`) for a small forward-only operation set
 for explicit CPU<->CUDA transfer, and `CUDAError` for CUDA-specific
 failures -- see `docs/architecture/cuda-backend.md`. Milestone 22 adds the
 `forge.cuda` package (`memory_stats()`, `reset_peak_memory_stats()`) for
-observing CUDA allocation/free lifecycle and peak memory usage.
+observing CUDA allocation/free lifecycle and peak memory usage. Milestone 25
+adds an exact-size CUDA caching allocator sitting between `CUDAStorage` and
+the driver (`forge.cuda.empty_cache()`; `memory_stats()` grows
+`reserved_bytes`/`cached_bytes`/`cache_hit_count`/`cache_miss_count`) -- see
+`docs/architecture/cuda-memory-allocator.md`.
 """
 
 from . import backend, cuda, data, nn, optim, random, serialization, training

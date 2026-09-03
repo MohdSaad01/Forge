@@ -614,3 +614,87 @@ microbenchmark) should be checked first, and Section 15's risks (chiefly,
 VRAM that does not shrink automatically on a 2 GiB card) weighed against the
 measured benefit at implementation time. Per the milestone's own
 instructions, **no caching allocator was implemented in Milestone 24**.
+
+## Implementation (Milestone 25)
+
+Milestone 25 implements Section 11's design essentially as specified here:
+`forge/backend/cuda/allocator.py`'s `CUDACachingAllocator`, an exact-size
+`dict[nbytes, list[ptr]]` free-block cache sitting between `CUDABackend.
+_alloc()`/`CUDAStorage.__del__()` and the real `cudaMalloc`/`cudaFree`
+boundary. See `docs/architecture/cuda-backend.md`'s **CUDA Caching Allocator
+(Milestone 25)** section for the full design writeup (ownership boundary,
+OOM handling, statistics fields, `empty_cache()`, synchronization
+assumptions, limitations) -- this section records the **measured results**
+against this document's own predictions, on the same hardware (940MX, driver
+582.53, CUDA 12.6).
+
+### Allocation microbenchmark (Section 21) vs. Section 9's overhead numbers
+
+`benchmarks/allocator_bench.py`, direct (`raw_malloc`/`raw_free`, bypassing
+the cache) vs. cached (`allocate`/`release`, after a one-call warmup), 200
+measured cycles per size:
+
+| Size | Direct (mean) | Cached (mean) | Speedup | Cache hits / misses |
+|---|---:|---:|---:|---|
+| 4,096 B | 559-701 us | 3.9-5.8 us | 122-144x | 200 / 0 |
+| 65,536 B | 10.0-10.5 us | 3.6-4.9 us | 2.1-2.8x | 200 / 0 |
+| 1,048,576 B | 604-686 us | 2.0-2.5 us | 243-336x | 200 / 0 |
+
+(Two runs each; ranges cover both.) The 65,536-byte "direct" figure is
+consistently ~10 us here -- an order of magnitude below the 4 KB/1 MB direct
+figures (~600-700 us, consistent with Section 9's original ~175-300 us/call
+estimate at a different sample size/methodology) -- reproducibly, across
+repeated runs. This looks like a WDDM/driver-level small-pool effect specific
+to this exact byte count on this hardware, not something Forge's allocator
+controls or explains; reported honestly rather than smoothed over, per this
+document's own "environment-specific number, not a general CUDA claim"
+convention (Section 9). It does not change the qualitative conclusion: the
+cached path never issues a driver call after warmup (0 misses across 600
+requests at 3 sizes in the multi-size interleaving check,
+`bench_multi_size()`), so its cost floor is a few microseconds of pure Python
+bookkeeping regardless of size, while every direct path pays a real driver
+round-trip every time.
+
+### M20 MNIST workload (Section 19-20) vs. Section 3's baseline
+
+Real `examples.mnist.model.build_model()`, batch 64, `CrossEntropyLoss` +
+`Adam`, 5 untracked warmup iterations then 30 measured (`benchmarks/mnist_
+bench.py`, same configuration Section 3 used):
+
+| Metric | M24 (direct, Section 3) | M25 (caching allocator) |
+|---|---:|---:|
+| Mean iteration time | 25.21 ms | 19.56-19.68 ms (two runs) |
+| Real `cudaMalloc` calls, steady-state window | 64/iteration (1,920 over 30 iters) | **0** (cache already warm from the 5 untracked warmup iterations) |
+| Cache hit count, steady-state window | n/a | 1,920 (100% of requests) |
+| Real `cudaMalloc` calls, cold process start through 35 iterations (warmup + steady) | ~2,240 (direct model, extrapolated) | **66** |
+| Persistent (`allocated_bytes`) before/after | 440,992 B, flat | 440,992 B, flat (unchanged) |
+| Peak active bytes | 7,789,424 B | 7,789,424 B (unchanged -- caching does not change *active* peak) |
+| Reserved bytes (steady state) | n/a (no concept under direct allocation) | 9,573,304 B |
+| Cached bytes (steady state) | n/a | 9,132,312 B |
+
+Mean iteration time drops **~22%** (25.21 ms -> ~19.6 ms), consistent across
+two independent runs (stdev ~1.8 ms each) -- large enough relative to
+Milestone 21's documented WDDM clock/thermal variance to be a real effect,
+not noise. Real driver `cudaMalloc` calls collapse from a projected ~2,240
+(one per allocation, direct model, over a cold-start 35-iteration run) to
+**66** -- a **97.1% reduction** -- closely matching, and in the measured
+steady-state window *exceeding*, Section 8's offline simulation's predicted
+97.8% hit rate / 42-call figure. The steady-state window alone shows exactly
+**zero** new driver calls: because this measurement's own 5 warmup iterations
+already ran through the same live caching allocator (unlike Section 8's
+simulation, which modeled a cache starting cold at the beginning of its
+30-iteration trace), every one of the 14 distinct sizes is already cached by
+the time the timed window begins.
+
+### Conclusion
+
+Every prediction in this document's **Decision** held on real hardware: the
+exact-size cache captures essentially all of this workload's reuse
+opportunity, real driver-call volume collapses by two orders of magnitude,
+and a real (not merely projected) ~22% mean-iteration-time improvement was
+measured and reproduced. `peak_allocated_bytes` (active memory) is unchanged
+by caching, as designed -- only `reserved_bytes`/`cached_bytes` grow, and
+`forge.cuda.empty_cache()` reclaims them on demand. See `docs/architecture/
+cuda-backend.md` for the full API/statistics/ownership writeup and `docs/
+performance/benchmarking.md` for the benchmark-harness-level methodology
+notes.

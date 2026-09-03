@@ -1120,3 +1120,93 @@ passing on the 940MX, and the full suite was also run with `PATH` stripped
 of the CUDA toolchain to confirm a clean skip (658 passed, 325 skipped, 0
 failed). No CUDA kernel changed, no caching allocator implemented, and
 every Milestone 1-23 behavior is unchanged.
+
+### M25 — Exact-size CUDA caching allocator
+Implements the caching allocator Milestone 24 recommended (**"JUSTIFIED,
+evidence-backed"**) but deliberately did not build. New `forge/backend/cuda/
+allocator.py`: `CUDACachingAllocator`, a process-wide singleton owning
+`_free_blocks: dict[nbytes, list[ptr]]` (raw `ctypes.c_void_p` pointers only
+-- never a `CUDAStorage`/`Tensor` reference, the same discipline M22's
+counters and M24's profiler already established). `CUDABackend._alloc()`
+now delegates to `allocator.allocate(lib, nbytes)` (cache hit: pop and
+return, no driver call; cache miss: `cudaMalloc`, with the M24-designed
+OOM policy of one `empty_cache()` purge and one retry before raising
+`CUDAError`, unchanged from M22 otherwise); `CUDAStorage.__del__()`
+delegates to `allocator.release(nbytes, ptr)` (pushes onto the exact-size
+free list, no driver call), clearing `self.ptr = None` first -- the same
+"guard against a second `__del__`" pattern M22 used for `cf_free`, now
+guarding a double-*release* instead of a double-*free*. `release()` also
+scans its target size's cached list for the same pointer value before
+appending, raising `RuntimeError` on a match (an internal-bug indicator,
+never expected in normal use). Exact-size only, per the M24 design's
+Candidate A: no size-class rounding, no block splitting, no coalescing --
+three differently-sized cached blocks are never combined to serve a request
+between them, by design (documented, not an oversight).
+
+`CUDAMemoryStats` (moved into `allocator.py`, re-exported from `memory.py`
+for import-path compatibility) keeps its original four fields' names,
+positions, and meaning (`allocated_bytes`/`peak_allocated_bytes`: unchanged,
+bytes owned by live `CUDAStorage`; a caller's old four-keyword construction
+still works) and redefines `allocation_count`/`free_count` to mean **real
+driver calls only** (a cache hit/release advances neither) per the M24
+design doc's own recommended migration path, adding `cuda_malloc_count`/
+`cuda_free_count` as clearer-named aliases. Five new fields default to `0`:
+`reserved_bytes` (active + cached), `peak_reserved_bytes`, `cached_bytes`,
+`cache_hit_count`, `cache_miss_count`. New public API: `forge.cuda.
+empty_cache()` -- returns every cached (not active) block to the driver,
+never touches live storage, returns the freed-block count. `benchmarks/
+memory.py::cuda_memory_extra()` keeps its original five keys and gains eight
+new `cuda_active_*`/`cuda_reserved_*`/`cuda_cached_*`/`cuda_cache_*`/
+`cuda_driver_*` keys; `benchmarks/alloc_profile.py`'s driver-overhead timing
+now calls new `allocator.raw_malloc`/`raw_free` helpers explicitly (bypassing
+the cache) so it keeps measuring true, uncached driver cost now that
+`CUDABackend._alloc()` itself is cached.
+
+**Measured on the 940MX** (real hardware, CC 5.0, CUDA 12.6, driver
+582.53): new `benchmarks/allocator_bench.py` (direct `cudaMalloc`/`cudaFree`
+vs. cached `allocate`/`release`, 200 cycles/size, two runs) shows 2.1-2.8x
+speedup at 65,536 bytes and 122-336x at 4,096/1,048,576 bytes (the 65,536-byte
+scale's unusually fast *direct* driver calls, ~10 us vs. ~600-700 us at the
+other two sizes, reproduced across runs -- reported as an unexplained,
+environment-specific artifact, not a Forge allocator effect). The real M20
+MNIST workload (batch=64, 5 warmup + 30 steady-state iterations, `benchmarks/
+mnist_bench.py`) shows mean iteration time dropping from M24's 25.21 ms to
+19.56-19.68 ms across two runs (~22% lower, well outside M21's documented
+WDDM-variance noise floor) and real `cudaMalloc` calls collapsing from a
+projected ~2,240 (direct model, cold start through 35 iterations including
+warmup) to a measured 66 -- exceeding Section 8's offline-simulated 42-call
+prediction in the *steady-state-only* window, which shows exactly zero new
+driver calls (this run's own warmup iterations already populated the real
+cache, unlike the M24 simulation's cold-start trace). Peak active memory
+(7,789,424 bytes) and persistent memory (440,992 bytes, flat) are unchanged
+from M24, as designed -- only `reserved_bytes`/`cached_bytes` grow, reclaimed
+on demand via `empty_cache()`.
+
+16 new hardware-gated tests (`tests/test_cuda_allocator.py` -- exact-size
+cache hit/miss and pointer reuse, no-coalescing/no-split across distinct
+sizes, `empty_cache()` correctness including a live-tensor-untouched check
+with actual value round-tripping, the active/cached ownership invariant,
+double-release protection at both the allocator and `CUDAStorage.__del__`
+level, repeated-same-shape steady-state hit rate, a reused-block-has-no-
+stale-data correctness check, a monkeypatched CPUBackend-explodes no-
+fallback check, checkpoint save/load interaction with interleaved
+`empty_cache()` calls, and an isolated-subprocess OOM test proving the
+cache is purged before the final `CUDAError` -- mirroring M22's own
+process-poisoning isolation rationale exactly), 1 CPU-only availability test
+(`tests/test_cuda_allocator_availability.py`, split out for the same
+module-level-`pytestmark` reason `test_cuda_memory_availability.py` is), and
+1 new benchmark-harness test (`tests/test_benchmarks.py`, the new
+`cuda_memory_extra()` fields). Two pre-existing M22 tests in `tests/
+test_cuda_memory.py` were updated for the new "`allocation_count`/
+`free_count` count real driver calls only" meaning (an autouse `empty_cache()`
+before/after fixture added to that file for cross-test cache isolation, plus
+one test split into an explicit `del` -> `cached_bytes` assertion and an
+explicit `empty_cache()` -> `free_count` assertion) -- every other M1-M24
+test passes completely unmodified. 1,001 tests total (983 + 18; CUDA-
+hardware-gated count up from 325 to 341), all passing on the 940MX, and the
+full suite was also run with `PATH` stripped of the CUDA toolchain to
+confirm a clean skip (660 passed, 341 skipped, 0 failed). See
+`docs/architecture/cuda-backend.md`'s **CUDA Caching Allocator (Milestone
+25)** section, `docs/architecture/cuda-memory-allocator.md`'s
+**Implementation (Milestone 25)** section, and `docs/performance/
+benchmarking.md`'s **Milestone 25** section.

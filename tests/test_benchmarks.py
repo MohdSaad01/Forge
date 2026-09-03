@@ -238,6 +238,10 @@ def test_forge_does_not_expose_or_depend_on_benchmarks():
 
 
 def test_cuda_memory_extra_reports_expected_keys_and_deltas():
+    """Milestone 22's original five keys keep their original values (`CUDAMemoryStats`
+    still accepts these four fields positionally/by-keyword, per Milestone 25's
+    backwards-compatibility requirement) -- the new Milestone 25 fields default
+    to 0 when not given, exercising the caching-allocator counters' zero case."""
     from benchmarks.memory import cuda_memory_extra
     from forge.backend.cuda.memory import CUDAMemoryStats
 
@@ -251,7 +255,39 @@ def test_cuda_memory_extra_reports_expected_keys_and_deltas():
         "cuda_allocated_after_bytes": 120,
         "cuda_allocation_count_delta": 7,
         "cuda_free_count_delta": 4,
+        "cuda_active_bytes": 120,
+        "cuda_reserved_bytes": 0,
+        "cuda_cached_bytes": 0,
+        "cuda_peak_reserved_bytes": 0,
+        "cuda_cache_hit_count": 0,
+        "cuda_cache_miss_count": 0,
+        "cuda_driver_malloc_count": 7,
+        "cuda_driver_free_count": 4,
     }
+
+
+def test_cuda_memory_extra_reports_caching_allocator_fields():
+    from benchmarks.memory import cuda_memory_extra
+    from forge.backend.cuda.memory import CUDAMemoryStats
+
+    before = CUDAMemoryStats(
+        allocated_bytes=0, peak_allocated_bytes=0, allocation_count=1, free_count=0,
+        reserved_bytes=100, peak_reserved_bytes=100, cached_bytes=100, cache_hit_count=2, cache_miss_count=1,
+    )
+    after = CUDAMemoryStats(
+        allocated_bytes=100, peak_allocated_bytes=100, allocation_count=1, free_count=0,
+        reserved_bytes=100, peak_reserved_bytes=100, cached_bytes=0, cache_hit_count=5, cache_miss_count=1,
+    )
+
+    extra = cuda_memory_extra(before, after)
+    assert extra["cuda_active_bytes"] == 100
+    assert extra["cuda_reserved_bytes"] == 100
+    assert extra["cuda_cached_bytes"] == 0
+    assert extra["cuda_peak_reserved_bytes"] == 100
+    assert extra["cuda_cache_hit_count"] == 3
+    assert extra["cuda_cache_miss_count"] == 0
+    assert extra["cuda_driver_malloc_count"] == 0
+    assert extra["cuda_driver_free_count"] == 0
 
 
 # -- Milestone 24: CUDA allocation profiling ---------------------------------

@@ -63,6 +63,22 @@ def _small_model():
 pytestmark = pytest.mark.skipif(not is_cuda_available(), reason="CUDA is not available on this machine")
 
 
+@pytest.fixture(autouse=True)
+def _empty_cache_between_tests():
+    """Milestone 25: the caching allocator's cache persists across tests --
+    process-wide, like every other `forge.cuda` counter. Purge it before and
+    after every test in this module so a block a *previous* test's tensor
+    left cached can never turn one of *this* test's expected `cudaMalloc`
+    cache misses into a hit. That would change `allocation_count`/`free_count`
+    (real driver-call counts, see `docs/architecture/cuda-memory-allocator.md`)
+    but never `allocated_bytes`/`cached_bytes` -- exactly why this file's other
+    tests, which only assert `allocated_bytes` deltas, never needed this fixture
+    to pass, while the handful asserting `allocation_count`/`free_count` did."""
+    forge.cuda.empty_cache()
+    yield
+    forge.cuda.empty_cache()
+
+
 # -- 1. Basic allocation ------------------------------------------------------
 
 
@@ -109,7 +125,19 @@ def test_deleting_a_cuda_tensor_eventually_decreases_allocated_bytes():
     del t
     after = _stable_stats()
     assert after.allocated_bytes == before.allocated_bytes
-    assert after.free_count - before.free_count == 1
+    # Milestone 25: `del t` returns the block to the caching allocator's
+    # exact-size cache rather than issuing a real `cudaFree` -- `free_count`
+    # (real driver frees) is unaffected until an explicit `empty_cache()`,
+    # while `cached_bytes` picks up exactly the freed tensor's bytes.
+    assert after.free_count == before.free_count
+    assert after.cached_bytes - before.cached_bytes == 5000 * 4
+
+    freed = forge.cuda.empty_cache()
+    purged = forge.cuda.memory_stats()
+    assert freed >= 1
+    assert purged.free_count > after.free_count
+    assert purged.cached_bytes == 0
+    assert purged.allocated_bytes == after.allocated_bytes  # empty_cache never touches active memory
 
 
 def test_multiple_tensors_each_release_their_own_bytes_independently():

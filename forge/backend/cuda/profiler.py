@@ -6,11 +6,13 @@ handful of running counters. This module answers "what allocation *behavior*
 produced that state?" -- a chronological trace of individual alloc/free
 events, recorded only while a profiler is explicitly started.
 
-Instrumented at exactly the same two real `cudaMalloc`/`cudaFree` call sites
-`memory.py` already instruments (`CUDABackend._alloc`, `CUDAStorage.__del__`,
-in `backend.py`) -- no new call sites, no per-operation instrumentation
-elsewhere. `record()` is called unconditionally from `memory.py`'s
-`record_alloc`/`record_free`, so the *disabled* cost is exactly one
+Instrumented at the same two logical allocation-request boundaries `memory.py`
+originally instrumented directly (`CUDABackend._alloc`, `CUDAStorage.__del__`,
+in `backend.py`) -- since Milestone 25, those two call sites go through
+`forge.backend.cuda.allocator`'s caching allocator, which calls `record()`
+itself from `allocate()`/`release()` (on both a cache hit and a cache miss,
+so the trace still reflects every logical allocation *request*, not only real
+driver calls -- see that module). The *disabled* cost is exactly one
 `bool` attribute check per allocation/free -- no `AllocationEvent`
 construction, no `time.perf_counter()` call, no list append -- matching the
 milestone's "low overhead when disabled" requirement.

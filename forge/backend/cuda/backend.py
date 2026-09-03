@@ -30,15 +30,14 @@ axis=1 on a 2D tensor as of Milestone 14), `relu`, and, as of Milestone 14,
 from __future__ import annotations
 
 import ctypes
-import warnings
 from typing import Any
 
 import numpy as np
 
 from ...exceptions import CUDAError
 from ..base import Backend
+from . import allocator as _allocator
 from . import build as _build
-from . import memory as _memory
 
 _COMPUTE_DTYPES = (np.dtype(np.float32), np.dtype(np.float64))
 _SUFFIX = {np.dtype(np.float32): "f32", np.dtype(np.float64): "f64"}
@@ -220,10 +219,15 @@ def _load_library() -> "ctypes.CDLL":
 
 
 class CUDAStorage:
-    """A handle to a `cudaMalloc`-allocated device buffer plus its shape/dtype.
+    """A handle to a device buffer (allocated via the Milestone 25 caching allocator) plus its shape/dtype.
 
-    Holds real GPU-resident memory -- never a NumPy array. Freed via
-    `cudaFree` when garbage collected.
+    Holds real GPU-resident memory -- never a NumPy array. On destruction the
+    underlying pointer is returned to `forge.backend.cuda.allocator`'s
+    exact-size cache (see that module) rather than immediately `cudaFree`d --
+    `self.ptr = None` is set *before* that hand-off so a second `__del__`
+    call can never return the same pointer to the cache twice (the ownership
+    invariant `allocator.py` depends on: a live `CUDAStorage` and a cached
+    free block never alias the same pointer).
     """
 
     __slots__ = ("ptr", "shape", "dtype", "_lib")
@@ -256,23 +260,12 @@ class CUDAStorage:
         ptr = self.ptr
         if not ptr:
             return
+        nbytes = self.nbytes
+        self.ptr = None  # transfer ownership to the allocator's cache before it can be touched again
         try:
-            code = self._lib.cf_free(ptr)
+            _allocator.release(nbytes, ptr)
         except Exception:
-            return  # interpreter shutdown may have already torn down the library handle
-        block_id = ptr.value or 0
-        self.ptr = None  # guard against a second `__del__` call ever double-freeing/double-decrementing
-        if code == 0:
-            _memory.record_free(self.nbytes, block_id)
-        else:
-            message = self._lib.cf_error_string(code)
-            message = message.decode() if message is not None else "<no message>"
-            warnings.warn(
-                f"cudaFree failed while releasing a CUDAStorage (code {code}: {message}); "
-                "CUDA memory statistics were not decremented for this allocation.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+            return  # interpreter shutdown may have already torn down module globals
 
 
 class CUDABackend(Backend):
@@ -300,16 +293,17 @@ class CUDABackend(Backend):
         self._check(self._lib.cf_synchronize(), f"{action} (synchronize)")
 
     def _alloc(self, nbytes: int) -> "ctypes.c_void_p":
-        ptr = ctypes.c_void_p()
-        code = self._lib.cf_malloc(ctypes.byref(ptr), ctypes.c_size_t(max(nbytes, 1)))
-        if code != 0:
-            message = self._lib.cf_error_string(code)
-            message = message.decode() if message is not None else "<no message>"
-            raise CUDAError(f"CUDA memory allocation of {nbytes} bytes failed: {message} (code {code}).")
-        # Recorded only on this success path -- a failed `cudaMalloc` above already
-        # returned via `raise` and never reaches here, so statistics never see it.
-        _memory.record_alloc(nbytes, ptr.value or 0)
-        return ptr
+        """Request `nbytes` of device memory via the Milestone 25 caching allocator.
+
+        A cache hit returns an already-owned device pointer with no driver
+        call; a cache miss (or the first request of a new size) falls
+        through to a real `cudaMalloc`, including the M24-designed
+        purge-and-retry-once policy on OOM (see `allocator.py`). Either way,
+        `CUDAMemoryStats.allocated_bytes` gains `nbytes` -- the caching
+        allocator does not change what "active" means, only whether serving
+        it required a driver call.
+        """
+        return _allocator.allocate(self._lib, nbytes)
 
     # -- transfer ------------------------------------------------------------
 

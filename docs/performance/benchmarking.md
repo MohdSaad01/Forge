@@ -779,3 +779,73 @@ are unaffected by whether the profiler happens to be running
 (`tests/test_cuda_alloc_profiler.py::
 test_profiler_running_does_not_change_real_memory_stats`). No new
 synchronization was added at either instrumentation point.
+
+## Milestone 25: exact-size CUDA caching allocator
+
+### Purpose
+Implements the caching allocator Milestone 24 recommended but deliberately
+did not build. `CUDABackend._alloc()`/`CUDAStorage.__del__()` now go through
+`forge/backend/cuda/allocator.py`'s exact-size cache instead of a direct
+`cudaMalloc`/`cudaFree` per storage. See `docs/architecture/cuda-memory-
+allocator.md`'s **Implementation (Milestone 25)** section for the full
+measured results this summarizes, and `docs/architecture/cuda-backend.md`'s
+**CUDA Caching Allocator (Milestone 25)** section for the design.
+
+### New: `benchmarks/allocator_bench.py`
+A diagnostic script (like `alloc_profile.py`/`mnist_profile.py`), not part of
+the stable `BenchmarkResult` JSON schema or `python -m benchmarks`'s category
+list. `python -m benchmarks.allocator_bench` times, per `ELEMENTWISE_SIZES`
+scale: the **direct** path (`allocator.raw_malloc`/`raw_free`, bypassing the
+cache -- a real `cudaMalloc`/`cudaFree` every iteration) against the
+**cached** path (`allocator.allocate`/`release`, after a one-call warmup --
+every further iteration a cache hit/release, no driver call). A
+`bench_multi_size()` pass interleaves several distinct sizes to confirm the
+exact-size policy: 0 misses once every size is warm.
+
+### `benchmarks/alloc_profile.py` change
+`_measure_alloc_free_overhead()` (Milestone 24's isolated driver-call timing)
+now calls `allocator.raw_malloc`/`raw_free` explicitly instead of
+`CUDABackend._alloc()` -- since `_alloc()` itself now goes through the cache,
+timing it directly would measure the cache's cost, not the driver's, for any
+size the cache had already warmed earlier in the same script run. `raw_malloc`/
+`raw_free` bypass the cache unconditionally, preserving this section's
+original "true, uncached driver cost" measurement.
+
+### Measured example (940MX, real hardware)
+
+Allocation microbenchmark, 200 cycles/size, two runs:
+
+| Size | Direct (mean) | Cached (mean) | Speedup |
+|---|---:|---:|---:|
+| 4,096 B | 559-701 us | 3.9-5.8 us | ~130x |
+| 65,536 B | 10.0-10.5 us | 3.6-4.9 us | ~2.5x |
+| 1,048,576 B | 604-686 us | 2.0-2.5 us | ~290x |
+
+M20 MNIST workload, batch=64, 5 warmup + 30 steady-state iterations
+(`benchmarks/mnist_bench.py`'s `mnist` category, same configuration Milestone
+24's own MNIST measurement used):
+
+| Metric | M24 (direct) | M25 (caching allocator) |
+|---|---:|---:|
+| Mean iteration time | 25.21 ms | 19.56-19.68 ms (two runs, ~22% lower) |
+| Real `cudaMalloc` calls, steady-state window | 1,920 (64/iter x 30) | 0 |
+| Real `cudaMalloc` calls, cold start through 35 iters (incl. warmup) | ~2,240 (projected) | 66 (measured) |
+
+### Decision, realized
+Every qualitative prediction in `docs/architecture/cuda-memory-allocator.md`'s
+**Decision** held on real hardware: driver-call volume collapsed by two
+orders of magnitude, and a real (not merely estimated) ~22% mean-iteration
+speedup was measured and reproduced across independent runs -- large enough
+relative to Milestone 21's documented WDDM variance to be a real effect. See
+that document's **Implementation (Milestone 25)** section for the full
+numbers and the one unexplained (environment-specific, reproducible) timing
+anomaly at the 65,536-byte scale.
+
+### Performance overhead of the allocator on the non-caching path
+A cache hit is pure Python dict/list bookkeeping under one lock -- no CUDA
+call. A cache miss pays exactly the same `cudaMalloc` cost as before, plus
+one dict lookup that misses; `benchmarks/allocator_bench.py`'s "cached" timing
+already includes this (its first, warmup call is always a miss). No new
+synchronization was added: `allocate()`/`release()` are pure host-side
+bookkeeping around calls that already synchronized internally (see
+`docs/architecture/cuda-backend.md`'s **Synchronization assumptions**).

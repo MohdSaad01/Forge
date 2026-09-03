@@ -1,4 +1,4 @@
-# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21; CUDA memory statistics and allocation lifecycle in Milestone 22; CUDA allocation profiling and caching-allocator design in Milestone 24)
+# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21; CUDA memory statistics and allocation lifecycle in Milestone 22; CUDA allocation profiling and caching-allocator design in Milestone 24; exact-size CUDA caching allocator implemented in Milestone 25)
 
 ## Summary
 Forge has a real CUDA execution backend for a small operation set: tensor
@@ -973,12 +973,16 @@ benchmark JSON consumers that only read the established `BenchmarkResult`
 fields see no change. See `docs/performance/benchmarking.md`'s **Milestone
 22** section for full methodology and measured numbers.
 
-### No caching allocator
-Explicitly not introduced: no memory pool, block cache, best-fit/slab
-allocator, or CUDA memory pool. Every `CUDAStorage` is still one
-`cudaMalloc` at construction and one `cudaFree` at garbage collection,
-exactly as every earlier milestone's diagram at the top of this document
-describes -- Milestone 22 only counts those events, it does not change them.
+### No caching allocator (superseded by Milestone 25)
+As originally written for Milestone 22: no memory pool, block cache,
+best-fit/slab allocator, or CUDA memory pool -- every `CUDAStorage` was one
+`cudaMalloc` at construction and one `cudaFree` at garbage collection, and
+this milestone only counted those events, it did not change them. **Milestone
+25 changes this** -- see the **CUDA Caching Allocator (Milestone 25)** section
+below. `allocated_bytes`/`peak_allocated_bytes` keep their meaning exactly as
+described above (bytes owned by live `CUDAStorage`); `allocation_count`/
+`free_count` now count real driver calls only (a cache hit/release causes
+neither) -- see that section for the full field-by-field update.
 
 ## CUDA Allocation Profiling (Milestone 24)
 An optional, low-overhead diagnostic layer answering "what allocation
@@ -1065,11 +1069,187 @@ direct `cudaMalloc`/`cudaFree` host-API timing -- a diagnostic script (like
 `benchmarks/mnist_profile.py`, Milestone 21), not part of the stable
 `BenchmarkResult` schema.
 
-### No caching allocator
-Explicitly not introduced, same as Milestone 22's own note above: every
-`CUDAStorage` is still one `cudaMalloc` at construction and one `cudaFree`
-at destruction. The profiler only observes those events; it never changes
-them.
+### No caching allocator (superseded by Milestone 25)
+As originally written: the profiler only observed real `cudaMalloc`/
+`cudaFree` events, never changed them. Since Milestone 25, the profiler is
+instrumented at `forge.backend.cuda.allocator`'s `allocate()`/`release()`
+instead (still the same logical allocation-*request* boundary) -- it now
+records on both a cache hit and a cache miss, so a trace still reflects every
+allocation request, not only real driver calls. See the next section.
+
+## CUDA Caching Allocator (Milestone 25)
+Milestone 24 measured Forge's direct allocation model on the real 940MX and
+recommended a caching allocator (`docs/architecture/cuda-memory-allocator.md`'s
+**Decision**: "JUSTIFIED, evidence-backed"). Milestone 25 implements that
+recommendation -- the one point in this document's allocation model that
+actually changes:
+
+```text
+before (M8-M24)                        after (M25)
+CUDAStorage creation                   CUDAStorage creation
+    -> cudaMalloc                          -> allocator.allocate(nbytes)
+                                                 cache hit  -> reuse a cached block, no driver call
+                                                 cache miss -> cudaMalloc (+ OOM purge-and-retry)
+CUDAStorage destruction                CUDAStorage destruction
+    -> cudaFree                            -> allocator.release(nbytes, ptr)
+                                                 -> pushed onto the exact-size free list, no driver call
+```
+
+### Ownership boundary
+`forge/backend/cuda/allocator.py`'s `CUDACachingAllocator` (a process-wide
+singleton, `get_allocator()`) owns `_free_blocks: dict[nbytes, list[ptr]]` --
+raw `ctypes.c_void_p` pointers only, **never a `CUDAStorage`/`Tensor`
+reference**, the same discipline `memory.py`'s M22 counters and `profiler.py`'s
+`AllocationEvent.block_id` already establish (retaining a Forge object here
+would keep otherwise-unreachable state alive forever, independent of whether
+its device memory is reused). `CUDABackend._alloc()` now delegates to
+`allocator.allocate(self._lib, nbytes)`; `CUDAStorage.__del__()` delegates to
+`allocator.release(nbytes, ptr)`, clearing `self.ptr = None` *before* that
+call -- the same "guard against a second `__del__`" pattern M22 already used
+for `cf_free`, now guarding against a double-*release into the cache* instead
+of a double-*free*. `CUDAStorage` gains no new fields; it still holds exactly
+one device pointer and has no awareness of whether that pointer came from a
+fresh `cudaMalloc` or a cache hit.
+
+**The critical invariant**: a device allocation is at any moment either
+*active* (owned by exactly one live `CUDAStorage`) or *cached* (owned by the
+allocator) -- never both. A block enters the cache only via `release()`,
+called only from `CUDAStorage.__del__` after that storage has already stopped
+considering the pointer its own; it leaves only via `allocate()` (handed to a
+fresh `CUDAStorage`) or `empty_cache()` (returned to the driver). `release()`
+additionally scans the target size's cached list for the same pointer value
+before appending, raising `RuntimeError` on a match -- a double-release is an
+internal-bug indicator, not a normal runtime condition, per the milestone
+brief's "fail loudly rather than silently corrupt allocator state."
+
+### Exact-size cache only
+`_free_blocks` is keyed by the exact `nbytes` requested (before `CUDABackend.
+_alloc`'s own `max(nbytes, 1)` clamp, applied only at the real `cudaMalloc`
+call) -- no size-class rounding, no block splitting, no coalescing, matching
+`docs/architecture/cuda-memory-allocator.md`'s Candidate A recommendation. A
+4096-byte request never reuses a cached 4097- or 2048-byte block; three
+differently-sized cached blocks (e.g. 1 MiB/2 MiB/4 MiB) are never combined to
+serve a 3 MiB request -- that request is always a fresh `cudaMalloc`, and all
+three original blocks remain cached, untouched
+(`tests/test_cuda_allocator.py::test_distinct_sizes_all_remain_cached_
+independently_no_coalescing`). This is a deliberate, documented limitation
+(Section 14 of the milestone brief), not an oversight -- see `docs/
+architecture/cuda-memory-allocator.md`'s Section 8 for why exact-size already
+captures ~98% of this workload's reuse opportunity at zero fragmentation cost.
+
+### OOM handling
+`allocator.py`'s `_driver_malloc` implements the M24-designed policy exactly:
+a failed `cudaMalloc` triggers one `empty_cache()` (every cached block
+`cudaFree`d back to the driver), then one retry; a second failure raises
+`CUDAError`, unchanged from Milestone 22. No CPU fallback, no silent tensor
+migration, no endless retry loop. Verified on real hardware in an isolated
+**subprocess** (`tests/test_cuda_allocator.py::test_oom_purges_cache_before_
+final_failure`), for the same reason Milestone 22's own OOM test does: a
+sufficiently large failed `cudaMalloc` poisons subsequent kernel launches for
+the rest of the process on this hardware/driver combination (940MX, driver
+582.53) -- see **Known limitations** above. `empty_cache()`'s own `cudaFree`
+loop only removes a block from `_free_blocks` after its `cudaFree` call
+actually succeeds, so a `cudaFree` failure partway through a purge leaves the
+remaining not-yet-freed blocks exactly as cached as they were, rather than
+losing track of them.
+
+### Memory statistics
+`CUDAMemoryStats` (still `forge.backend.cuda.memory.CUDAMemoryStats`, now
+defined in `allocator.py` and re-exported for import-path compatibility)
+keeps its original four fields' names, positions, and meaning:
+- **`allocated_bytes`/`peak_allocated_bytes`**: unchanged -- bytes owned by
+  live `CUDAStorage`, and its historical peak. A cache hit and a cache miss
+  both still correspond to exactly one `CUDAStorage` becoming active.
+- **`allocation_count`/`free_count`**: now count **real driver calls only**
+  (`cudaMalloc`/`cudaFree`) -- a cache hit or a release-to-cache advances
+  neither. `cuda_malloc_count`/`cuda_free_count` are clearer-named properties
+  aliasing the same two fields, per `docs/architecture/cuda-memory-
+  allocator.md` Section 14's recommendation.
+
+New fields: `reserved_bytes` (`active + cached`, total device memory Forge
+currently holds), `peak_reserved_bytes`, `cached_bytes` (`reserved -
+allocated`), `cache_hit_count`, `cache_miss_count` (allocation *requests*,
+not driver calls, served from the cache vs. requiring `cudaMalloc`). All five
+new fields default to `0`, so `CUDAMemoryStats(allocated_bytes=..., peak_
+allocated_bytes=..., allocation_count=..., free_count=...)` -- the exact
+Milestone 22 call signature -- still constructs a valid instance
+(`tests/test_benchmarks.py::test_cuda_memory_extra_reports_expected_keys_
+and_deltas`).
+
+### `forge.cuda.empty_cache()`
+```python
+freed_count = forge.cuda.empty_cache()  # -> int, blocks actually freed
+```
+Returns every currently *cached* (not active) block to the driver via a real
+`cudaFree` per block. Never touches live Tensor/Parameter/Adam-state storage
+-- `tests/test_cuda_allocator.py::test_empty_cache_never_touches_active_
+tensors` constructs a tensor, purges the cache, and confirms both its byte
+count and its actual values (round-tripped through `.to("cpu").numpy()`) are
+unaffected. Raises `forge.CUDAError` if CUDA is unavailable, matching every
+other `forge.cuda` entry point.
+
+### Correctness: reused blocks never leak stale data
+A cache hit hands back a pointer to memory that still holds its previous
+occupant's bytes -- this is safe only because every Forge code path that
+receives a fresh `CUDAStorage` immediately overwrites the *entire* buffer
+(a full host-to-device `memcpy` in `from_array`, or a kernel that writes
+every output element) before any value is read back. No partial-write path
+exists that could observe stale bytes.
+`tests/test_cuda_allocator.py::test_reused_block_contains_only_the_new_
+tensor_data_not_stale_data` verifies this directly: allocate and free a
+1000-element tensor filled with 7.0, allocate a same-size tensor filled with
+3.0 (very likely the same reused pointer), and confirm it reads back as
+exactly 3.0 with no trace of the prior occupant.
+
+### Synchronization assumptions (inherited, not re-derived)
+Every Forge CUDA operation already calls `cudaDeviceSynchronize()` before
+trusting its own result (see **Operation set** above), so "a `CUDAStorage`
+becomes unreachable" and "the GPU is done touching that memory" already
+coincide -- no in-flight kernel can still be reading/writing a buffer at the
+moment its `__del__` runs and its pointer is released to the cache. The
+caching allocator changes nothing about *when* `__del__` runs, only what
+happens to the pointer afterward, so it inherits this safety property
+unchanged. This assumption would need to be re-established explicitly (e.g.
+stream-ordered "safe to reuse" events) before a future multi-stream Forge
+backend could reuse a just-freed block safely -- out of scope here; no CUDA
+streams, events, or asynchronous/stream-ordered frees were introduced.
+
+### Thread safety
+One `threading.Lock` inside `CUDACachingAllocator` guards `_free_blocks` and
+every counter -- released before any real `cudaMalloc`/`cudaFree` call, so a
+slow driver call never holds up unrelated bookkeeping reads. Same "cheap
+insurance, not a concurrency subsystem" convention as `memory.py`'s original
+`_MemoryTracker` lock; Forge remains single-threaded elsewhere.
+
+### Design limitations (deliberately deferred)
+No size classes, no block splitting, no coalescing, no best-fit search, no
+stream awareness, no multi-GPU allocation, no asynchronous allocation, no
+defragmentation/compaction. The cache is keyed by `nbytes` alone, not
+`(device_index, nbytes)`, since Forge supports exactly one CUDA device today.
+Reserved memory never shrinks on its own -- a workload with a brief
+large-allocation phase followed by a smaller one holds those cached blocks
+until an explicit `empty_cache()` call or an OOM-triggered purge, unlike the
+pre-M25 allocator, which returned memory to the driver the instant a
+`CUDAStorage` was freed. See `docs/architecture/cuda-memory-allocator.md` for
+the full candidate-design comparison and why these were judged unnecessary for
+Forge's current (fixed-shape, no-dynamic-control-flow) workloads.
+
+### Benchmark integration
+`benchmarks/memory.py::cuda_memory_extra()` keeps its original five keys
+(`cuda_allocated_before_bytes`, `cuda_peak_allocated_bytes`, `cuda_allocated_
+after_bytes`, `cuda_allocation_count_delta`, `cuda_free_count_delta`) and
+gains `cuda_active_bytes`, `cuda_reserved_bytes`, `cuda_cached_bytes`,
+`cuda_peak_reserved_bytes`, `cuda_cache_hit_count`, `cuda_cache_miss_count`,
+`cuda_driver_malloc_count`, `cuda_driver_free_count`. `benchmarks/allocator_
+bench.py` (new, `python -m benchmarks.allocator_bench`) directly compares
+`allocator.raw_malloc`/`raw_free` (bypassing the cache) against `allocator.
+allocate`/`release` (through it) at several sizes, plus a multi-size
+interleaving check proving the exact-size policy. `benchmarks/alloc_profile.
+py`'s driver-overhead section (`_measure_alloc_free_overhead`) now uses
+`allocator.raw_malloc`/`raw_free` explicitly so it keeps measuring true,
+uncached driver cost rather than being silently answered by the cache. See
+`docs/performance/benchmarking.md` and `docs/architecture/cuda-memory-
+allocator.md` for measured results.
 
 ## CUDA model persistence (Milestone 13)
 `save_model()`/`load_model()` (`forge/serialization/model.py`) now support

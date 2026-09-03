@@ -1,0 +1,104 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "76f9b7a1178eaa8c55a1367a11871969e1c4750b",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "results": {
+    "single_size": [
+      {
+        "scale": "tiny",
+        "nbytes": 4096,
+        "direct": {
+          "mean_seconds": 0.0005591249989811331,
+          "median_seconds": 0.0004635500372387469,
+          "min_seconds": 0.0003789999755099416,
+          "max_seconds": 0.002649799978826195,
+          "stdev_seconds": 0.00024582463351431274,
+          "iterations": 200
+        },
+        "cached": {
+          "mean_seconds": 3.8765004137530925e-06,
+          "median_seconds": 3.8000289350748062e-06,
+          "min_seconds": 3.6999699659645557e-06,
+          "max_seconds": 5.400041118264198e-06,
+          "stdev_seconds": 2.0980526004888114e-07,
+          "iterations": 200,
+          "cache_hit_count_delta": 200,
+          "cache_miss_count_delta": 0
+        },
+        "speedup_x": 144.23447421737993
+      },
+      {
+        "scale": "small",
+        "nbytes": 65536,
+        "direct": {
+          "mean_seconds": 9.990999824367464e-06,
+          "median_seconds": 5.699985194951296e-06,
+          "min_seconds": 5.299982149153948e-06,
+          "max_seconds": 0.0003277999931015074,
+          "stdev_seconds": 2.490411799560364e-05,
+          "iterations": 200
+        },
+        "cached": {
+          "mean_seconds": 3.6245014052838087e-06,
+          "median_seconds": 2.100015990436077e-06,
+          "min_seconds": 1.8999562598764896e-06,
+          "max_seconds": 3.190001007169485e-05,
+          "stdev_seconds": 3.151368594403591e-06,
+          "iterations": 200,
+          "cache_hit_count_delta": 200,
+          "cache_miss_count_delta": 0
+        },
+        "speedup_x": 2.7565170232249203
+      },
+      {
+        "scale": "medium",
+        "nbytes": 1048576,
+        "direct": {
+          "mean_seconds": 0.0006859014986548573,
+          "median_seconds": 0.0005411499878391623,
+          "min_seconds": 0.0003874000394716859,
+          "max_seconds": 0.005655699991621077,
+          "stdev_seconds": 0.0005240748889133,
+          "iterations": 200
+        },
+        "cached": {
+          "mean_seconds": 2.042500418610871e-06,
+          "median_seconds": 2.00001522898674e-06,
+          "min_seconds": 1.8999562598764896e-06,
+          "max_seconds": 4.300032742321491e-06,
+          "stdev_seconds": 1.822369645645525e-07,
+          "iterations": 200,
+          "cache_hit_count_delta": 200,
+          "cache_miss_count_delta": 0
+        },
+        "speedup_x": 335.8146183986328
+      }
+    ],
+    "multi_size": {
+      "sizes_bytes": [
+        4096,
+        65536,
+        1048576
+      ],
+      "requests_per_size": 200,
+      "total_requests": 600,
+      "cache_hit_count_delta": 600,
+      "cache_miss_count_delta": 0,
+      "cached_bytes_after": 1118208
+    }
+  }
+}

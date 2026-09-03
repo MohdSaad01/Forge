@@ -415,8 +415,18 @@ def _profile_transfers() -> dict:
 
 
 def _measure_alloc_free_overhead() -> dict:
-    """Direct host-API timing -- see module docstring for why no synchronize bracket is needed."""
-    from forge.backend.cuda import memory as _memory
+    """Direct, uncached host-API timing -- see module docstring for why no synchronize bracket is needed.
+
+    Milestone 25 gave `CUDABackend._alloc()` itself a caching allocator (see
+    `forge.backend.cuda.allocator`), so measuring *driver* overhead now goes
+    through `allocator.raw_malloc`/`raw_free` explicitly -- a real
+    `cudaMalloc`/`cudaFree` pair every iteration, bypassing the cache
+    entirely, matching this section's original (Milestone 24) intent of
+    isolated driver-call cost. `benchmarks/allocator_bench.py` (Milestone 25)
+    is the complementary benchmark: the same driver calls compared directly
+    against the caching allocator's `allocate`/`release` path.
+    """
+    from forge.backend.cuda import allocator as _allocator
     from forge.backend.cuda.backend import get_cuda_backend
 
     backend = get_cuda_backend()
@@ -426,18 +436,16 @@ def _measure_alloc_free_overhead() -> dict:
         nbytes = n * 4
 
         for _ in range(warmup):
-            ptr = backend._alloc(nbytes)
-            code = backend._lib.cf_free(ptr)
-            _memory.record_free(nbytes, ptr.value or 0)
+            ptr = _allocator.raw_malloc(backend._lib, nbytes)
+            _allocator.raw_free(backend._lib, ptr)
 
         alloc_times, free_times = [], []
         for _ in range(iterations):
             t0 = time.perf_counter()
-            ptr = backend._alloc(nbytes)
+            ptr = _allocator.raw_malloc(backend._lib, nbytes)
             t1 = time.perf_counter()
-            backend._lib.cf_free(ptr)
+            _allocator.raw_free(backend._lib, ptr)
             t2 = time.perf_counter()
-            _memory.record_free(nbytes, ptr.value or 0)
             alloc_times.append(t1 - t0)
             free_times.append(t2 - t1)
 

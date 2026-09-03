@@ -1,4 +1,4 @@
-# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10; CUDA `MSELoss` as of Milestone 12; CUDA `CrossEntropyLoss` as of Milestone 14; `Adam` as of Milestone 17; CUDA Conv2d-backward performance work in Milestone 21; allocation profiling in Milestone 24)
+# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10; CUDA `MSELoss` as of Milestone 12; CUDA `CrossEntropyLoss` as of Milestone 14; `Adam` as of Milestone 17; CUDA Conv2d-backward performance work in Milestone 21; allocation profiling in Milestone 24; CUDA caching allocator in Milestone 25)
 
 ## Package layout
 ```
@@ -197,6 +197,15 @@ test_adam_first_step_allocates_persistent_state_subsequent_steps_do_not_grow`
 (state is allocated once, lazily, on the first step with a real gradient,
 and reused in place forever after) -- Milestone 24 adds the confirmation
 that this holds for allocation *traffic*, not just net byte counts.
+
+Unchanged by Milestone 25's caching allocator: `Adam`'s `m`/`v` (and every
+`Parameter`) stay allocated for the optimizer's/module's entire lifetime, so
+their underlying blocks are never released to the allocator's cache at all
+(`allocator.release()` only ever runs from `CUDAStorage.__del__`, which only
+runs once nothing references that storage) -- `docs/architecture/cuda-
+memory-allocator.md`'s **Implementation (Milestone 25)** section confirms
+`memory_stats().allocated_bytes` (the persistent footprint) is
+byte-for-byte identical before and after caching was introduced.
 
 ## Known limitations
 - `SGD` and `Adam` only (as of Milestone 17): no RMSProp, Adagrad, AdamW, learning-rate schedules, gradient clipping, parameter groups, mixed precision, or fused/multi-GPU optimizers -- all explicit Milestone 17 non-goals.
