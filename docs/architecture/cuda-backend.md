@@ -1,4 +1,4 @@
-# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21; CUDA memory statistics and allocation lifecycle in Milestone 22)
+# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21; CUDA memory statistics and allocation lifecycle in Milestone 22; CUDA allocation profiling and caching-allocator design in Milestone 24)
 
 ## Summary
 Forge has a real CUDA execution backend for a small operation set: tensor
@@ -979,6 +979,97 @@ allocator, or CUDA memory pool. Every `CUDAStorage` is still one
 `cudaMalloc` at construction and one `cudaFree` at garbage collection,
 exactly as every earlier milestone's diagram at the top of this document
 describes -- Milestone 22 only counts those events, it does not change them.
+
+## CUDA Allocation Profiling (Milestone 24)
+An optional, low-overhead diagnostic layer answering "what allocation
+*behavior* produced this state?" -- distinct from Milestone 22's
+`memory_stats()`, which only answers "what is the current/peak state?".
+Explicitly not a caching allocator: the direct-allocation model this
+document describes throughout (`CUDABackend._alloc` -> `cudaMalloc`;
+`CUDAStorage.__del__` -> `cudaFree`) is completely unchanged.
+
+### Public API
+```python
+with forge.cuda.profiler.profile():        # reset + start; stop on exit
+    with forge.cuda.profiler.tag("forward"):
+        ...
+events = forge.cuda.profiler.events()      # -> tuple[AllocationEvent, ...]
+```
+or the explicit form: `forge.cuda.profiler.start()`/`.stop()`/`.reset()`/
+`.is_active()`. Every function raises `forge.CUDAError` if CUDA is
+unavailable, matching `memory_stats()`'s existing convention; importing
+`forge.cuda.profiler` never requires CUDA (`forge/backend/cuda/profiler.py`
+is pure Python, like `forge/backend/cuda/memory.py`).
+
+### Instrumentation point
+The same two call sites Milestone 22 already instruments:
+`CUDABackend._alloc()` and `CUDAStorage.__del__()` now also forward the
+allocated pointer's raw integer value (`ptr.value`) to `forge.backend.cuda.
+memory.record_alloc`/`record_free`, which forward `(kind, nbytes, block_id)`
+to `forge.backend.cuda.profiler`'s process-wide `CUDAMemoryProfiler`. No new
+call sites, no per-operation instrumentation.
+
+### `AllocationEvent`
+```python
+@dataclass(frozen=True)
+class AllocationEvent:
+    kind: str            # "alloc" | "free"
+    nbytes: int
+    timestamp: float      # time.perf_counter()
+    block_id: int          # correlates an alloc with its later free; never dereferenced
+    category: str | None   # the innermost active tag, if any
+```
+Three primitives plus an optional string -- **never a `CUDAStorage`,
+`Tensor`, or other Forge object**. Keeping one would keep that allocation
+alive forever, the same hazard `memory.py`'s counters already avoid (see
+Milestone 22's **Instrumentation point** above); `tests/test_cuda_alloc_
+profiler.py::test_profiler_does_not_keep_storage_alive` verifies real
+`cudaFree` still runs (via `memory_stats()` returning to baseline) while the
+profiler is actively recording.
+
+### Disabled-path overhead
+`CUDAMemoryProfiler.record()` is called unconditionally from `record_alloc`/
+`record_free`; its very first line checks one `bool` attribute and returns
+immediately if never started -- no event construction, no `time.
+perf_counter()` call, no list append. `memory_stats()`'s own counters are
+computed identically whether or not the profiler happens to be running
+(`tests/test_cuda_alloc_profiler.py::
+test_profiler_running_does_not_change_real_memory_stats`).
+
+### Categorization via tagging, not per-call-site instrumentation
+`tag(name)` pushes a name onto a small stack for the duration of a `with`
+block; every event recorded inside is stamped with the innermost active tag
+(or `None`). This avoids annotating every one of `CUDABackend`'s ~40 methods
+individually -- a caller wraps the code region it cares about (e.g.
+`benchmarks/alloc_profile.py` tags `"transfer"`/`"forward"`/`"loss"`/
+`"backward"`/`"optimizer"` around one training step's phases).
+
+### Offline analysis
+`benchmarks/alloc_analysis.py` -- pure functions over an `AllocationEvent`
+trace (no CUDA calls, nothing mutated): size distribution (with fixed
+buckets from < 1 KB to 64+ MB), lifetime distribution (`pair_lifetimes`
+matches each alloc to its chronologically-next same-`block_id` free, correct
+even when the driver reuses an address after a free), persistent-vs-
+temporary classification, a same-size reuse-opportunity statistic, and an
+**offline caching-allocator simulation** (exact-size and size-class
+policies) -- never integrated into Forge's real allocator. See
+`docs/architecture/cuda-memory-allocator.md` for the full measured results,
+candidate-allocator comparison, and the milestone's final recommendation.
+
+### Benchmark integration
+`benchmarks/alloc_profile.py` profiles the M20 MNIST workload (warmup vs.
+steady-state, phase-tagged), representative operations (forward and
+backward allocation traffic separately, per `docs/architecture/cuda-memory-
+allocator.md`'s Section 3/7), CPU<->CUDA transfer allocation behavior, and
+direct `cudaMalloc`/`cudaFree` host-API timing -- a diagnostic script (like
+`benchmarks/mnist_profile.py`, Milestone 21), not part of the stable
+`BenchmarkResult` schema.
+
+### No caching allocator
+Explicitly not introduced, same as Milestone 22's own note above: every
+`CUDAStorage` is still one `cudaMalloc` at construction and one `cudaFree`
+at destruction. The profiler only observes those events; it never changes
+them.
 
 ## CUDA model persistence (Milestone 13)
 `save_model()`/`load_model()` (`forge/serialization/model.py`) now support

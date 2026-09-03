@@ -260,9 +260,10 @@ class CUDAStorage:
             code = self._lib.cf_free(ptr)
         except Exception:
             return  # interpreter shutdown may have already torn down the library handle
+        block_id = ptr.value or 0
         self.ptr = None  # guard against a second `__del__` call ever double-freeing/double-decrementing
         if code == 0:
-            _memory.record_free(self.nbytes)
+            _memory.record_free(self.nbytes, block_id)
         else:
             message = self._lib.cf_error_string(code)
             message = message.decode() if message is not None else "<no message>"
@@ -307,7 +308,7 @@ class CUDABackend(Backend):
             raise CUDAError(f"CUDA memory allocation of {nbytes} bytes failed: {message} (code {code}).")
         # Recorded only on this success path -- a failed `cudaMalloc` above already
         # returned via `raise` and never reaches here, so statistics never see it.
-        _memory.record_alloc(nbytes)
+        _memory.record_alloc(nbytes, ptr.value or 0)
         return ptr
 
     # -- transfer ------------------------------------------------------------

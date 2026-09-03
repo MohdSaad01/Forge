@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from ..backend.cuda.memory import CUDAMemoryStats
 from ..exceptions import CUDAError
+from . import profiler
 
 
 def _require_cuda() -> None:
@@ -59,4 +60,4 @@ def reset_peak_memory_stats() -> None:
     _reset_peak()
 
 
-__all__ = ["memory_stats", "reset_peak_memory_stats", "CUDAMemoryStats"]
+__all__ = ["memory_stats", "reset_peak_memory_stats", "CUDAMemoryStats", "profiler"]

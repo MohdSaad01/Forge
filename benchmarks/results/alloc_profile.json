@@ -1,0 +1,4792 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "c571e6d7bb3028b10bc12c2ca90c9bd55aacb8fb",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "mnist_workload": {
+      "total_events": 3840,
+      "alloc_size_distribution": {
+        "count": 1920,
+        "total_bytes": 284273280,
+        "min_bytes": 4,
+        "max_bytes": 1384448,
+        "mean_bytes": 148059,
+        "median_bytes": 2560.0,
+        "common_sizes": [
+          {
+            "nbytes": 2560,
+            "count": 450
+          },
+          {
+            "nbytes": 256,
+            "count": 390
+          },
+          {
+            "nbytes": 102400,
+            "count": 210
+          },
+          {
+            "nbytes": 16384,
+            "count": 180
+          },
+          {
+            "nbytes": 4,
+            "count": 180
+          },
+          {
+            "nbytes": 1384448,
+            "count": 120
+          },
+          {
+            "nbytes": 495616,
+            "count": 120
+          },
+          {
+            "nbytes": 200704,
+            "count": 60
+          },
+          {
+            "nbytes": 346112,
+            "count": 60
+          },
+          {
+            "nbytes": 40,
+            "count": 30
+          }
+        ],
+        "bucket_counts": {
+          "< 1 KB": 690,
+          "1-4 KB": 450,
+          "4-16 KB": 30,
+          "16-64 KB": 180,
+          "64-256 KB": 270,
+          "256 KB-1 MB": 180,
+          "1-4 MB": 120,
+          "4-16 MB": 0,
+          "16-64 MB": 0,
+          "64+ MB": 0
+        }
+      },
+      "free_size_distribution": {
+        "count": 1920,
+        "total_bytes": 284273280,
+        "min_bytes": 4,
+        "max_bytes": 1384448,
+        "mean_bytes": 148059,
+        "median_bytes": 2560.0,
+        "common_sizes": [
+          {
+            "nbytes": 2560,
+            "count": 450
+          },
+          {
+            "nbytes": 256,
+            "count": 390
+          },
+          {
+            "nbytes": 102400,
+            "count": 210
+          },
+          {
+            "nbytes": 4,
+            "count": 180
+          },
+          {
+            "nbytes": 16384,
+            "count": 180
+          },
+          {
+            "nbytes": 495616,
+            "count": 120
+          },
+          {
+            "nbytes": 1384448,
+            "count": 120
+          },
+          {
+            "nbytes": 346112,
+            "count": 60
+          },
+          {
+            "nbytes": 200704,
+            "count": 60
+          },
+          {
+            "nbytes": 288,
+            "count": 30
+          }
+        ],
+        "bucket_counts": {
+          "< 1 KB": 690,
+          "1-4 KB": 450,
+          "4-16 KB": 30,
+          "16-64 KB": 180,
+          "64-256 KB": 270,
+          "256 KB-1 MB": 180,
+          "1-4 MB": 120,
+          "4-16 MB": 0,
+          "16-64 MB": 0,
+          "64+ MB": 0
+        }
+      },
+      "lifetime_distribution": {
+        "paired_count": 1912,
+        "still_live_count": 8,
+        "mean_seconds": 0.009567732845224093,
+        "median_seconds": 0.007378900016192347,
+        "min_seconds": 0.00011600001016631722,
+        "max_seconds": 0.027556200046092272,
+        "bucket_counts": {
+          "< 1 ms": 724,
+          "1-10 ms": 264,
+          "10-100 ms": 924,
+          "100 ms-1 s": 0,
+          "1-10 s": 0,
+          "> 10 s": 0
+        }
+      },
+      "persistent_vs_temporary": {
+        "persistent_bytes": 110248,
+        "persistent_count": 8,
+        "temporary_bytes": 284163032,
+        "temporary_count": 1912,
+        "total_alloc_bytes": 284273280,
+        "total_alloc_count": 1920
+      },
+      "reuse_opportunity": {
+        "total_bytes": 284273280,
+        "total_count": 1920,
+        "reusable_bytes": 281719764,
+        "reusable_count": 1906,
+        "reusable_byte_fraction": 0.9910173900269487,
+        "reusable_count_fraction": 0.9927083333333333,
+        "distinct_sizes": 14
+      },
+      "cache_simulation_exact": {
+        "policy": "exact",
+        "total_alloc_requests": 1920,
+        "simulated_malloc_count": 42,
+        "cache_hits": 1878,
+        "cache_misses": 42,
+        "cache_hit_rate": 0.978125,
+        "reserved_bytes_final": 9132312,
+        "peak_reserved_bytes": 9132312,
+        "peak_active_bytes": 7348432,
+        "cached_bytes_final": 9132312,
+        "internal_fragmentation_bytes": 0
+      },
+      "cache_simulation_size_class": {
+        "policy": "size_class",
+        "total_alloc_requests": 1920,
+        "simulated_malloc_count": 36,
+        "cache_hits": 1884,
+        "cache_misses": 36,
+        "cache_hit_rate": 0.98125,
+        "reserved_bytes_final": 23445504,
+        "peak_reserved_bytes": 23445504,
+        "peak_active_bytes": 20793344,
+        "cached_bytes_final": 23445504,
+        "internal_fragmentation_bytes": 484556160
+      },
+      "by_category": {
+        "transfer": {
+          "alloc_count": 30,
+          "alloc_bytes": 6021120,
+          "free_count": 0,
+          "free_bytes": 0
+        },
+        "(untagged)": {
+          "alloc_count": 0,
+          "alloc_bytes": 0,
+          "free_count": 330,
+          "free_bytes": 9405480
+        },
+        "forward": {
+          "alloc_count": 360,
+          "alloc_bytes": 130959360,
+          "free_count": 0,
+          "free_bytes": 0
+        },
+        "loss": {
+          "alloc_count": 360,
+          "alloc_bytes": 415080,
+          "free_count": 0,
+          "free_bytes": 0
+        },
+        "backward": {
+          "alloc_count": 1170,
+          "alloc_bytes": 146877720,
+          "free_count": 1590,
+          "free_bytes": 274867800
+        }
+      },
+      "per_iteration": {
+        "alloc_count": 64.0,
+        "alloc_bytes": 9475776.0,
+        "free_count": 64.0
+      },
+      "batch_size": 64,
+      "iterations": 30,
+      "warmup_iterations": 5,
+      "mean_iteration_seconds": 0.025208943333321562,
+      "peak_allocated_bytes": 7789424,
+      "allocated_bytes_before": 440992,
+      "allocated_bytes_after_no_gc": 440992,
+      "allocated_bytes_after_gc": 440992
+    },
+    "operations": {
+      "add": {
+        "forward": {
+          "total_events": 180,
+          "alloc_size_distribution": {
+            "count": 90,
+            "total_bytes": 5898240,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 90,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 90,
+            "total_bytes": 5898240,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 90,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 90,
+            "still_live_count": 0,
+            "mean_seconds": 0.0004225922192239927,
+            "median_seconds": 0.00025004998315125704,
+            "min_seconds": 8.100003469735384e-05,
+            "max_seconds": 0.001248599961400032,
+            "bucket_counts": {
+              "< 1 ms": 86,
+              "1-10 ms": 4,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 5898240,
+            "temporary_count": 90,
+            "total_alloc_bytes": 5898240,
+            "total_alloc_count": 90
+          },
+          "reuse_opportunity": {
+            "total_bytes": 5898240,
+            "total_count": 90,
+            "reusable_bytes": 5832704,
+            "reusable_count": 89,
+            "reusable_byte_fraction": 0.9888888888888889,
+            "reusable_count_fraction": 0.9888888888888889,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 196608,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 196608,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 90,
+              "alloc_bytes": 5898240,
+              "free_count": 90,
+              "free_bytes": 5898240
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 3.0,
+            "alloc_bytes": 196608.0,
+            "free_count": 3.0
+          }
+        },
+        "backward": {
+          "total_events": 60,
+          "alloc_size_distribution": {
+            "count": 0,
+            "total_bytes": 0,
+            "min_bytes": 0,
+            "max_bytes": 0,
+            "mean_bytes": 0.0,
+            "median_bytes": 0.0,
+            "common_sizes": [],
+            "bucket_counts": {}
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 0,
+            "still_live_count": 0,
+            "mean_seconds": 0.0,
+            "median_seconds": 0.0,
+            "min_seconds": 0.0,
+            "max_seconds": 0.0,
+            "bucket_counts": {
+              "< 1 ms": 0,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 0,
+            "temporary_count": 0,
+            "total_alloc_bytes": 0,
+            "total_alloc_count": 0
+          },
+          "reuse_opportunity": {
+            "total_bytes": 0,
+            "total_count": 0,
+            "reusable_bytes": 0,
+            "reusable_count": 0,
+            "reusable_byte_fraction": 0.0,
+            "reusable_count_fraction": 0.0,
+            "distinct_sizes": 0
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 0,
+            "simulated_malloc_count": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "cache_hit_rate": 0.0,
+            "reserved_bytes_final": 0,
+            "peak_reserved_bytes": 0,
+            "peak_active_bytes": 0,
+            "cached_bytes_final": 3932160,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 0,
+            "simulated_malloc_count": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "cache_hit_rate": 0.0,
+            "reserved_bytes_final": 0,
+            "peak_reserved_bytes": 0,
+            "peak_active_bytes": 0,
+            "cached_bytes_final": 3932160,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 0,
+              "alloc_bytes": 0,
+              "free_count": 60,
+              "free_bytes": 3932160
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 0.0,
+            "alloc_bytes": 0.0,
+            "free_count": 2.0
+          }
+        }
+      },
+      "sub": {
+        "forward": {
+          "total_events": 180,
+          "alloc_size_distribution": {
+            "count": 90,
+            "total_bytes": 5898240,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 90,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 90,
+            "total_bytes": 5898240,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 90,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 90,
+            "still_live_count": 0,
+            "mean_seconds": 0.000614205557697763,
+            "median_seconds": 0.0003467000206001103,
+            "min_seconds": 0.0001105000264942646,
+            "max_seconds": 0.002098000026308,
+            "bucket_counts": {
+              "< 1 ms": 62,
+              "1-10 ms": 28,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 5898240,
+            "temporary_count": 90,
+            "total_alloc_bytes": 5898240,
+            "total_alloc_count": 90
+          },
+          "reuse_opportunity": {
+            "total_bytes": 5898240,
+            "total_count": 90,
+            "reusable_bytes": 5832704,
+            "reusable_count": 89,
+            "reusable_byte_fraction": 0.9888888888888889,
+            "reusable_count_fraction": 0.9888888888888889,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 196608,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 196608,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 90,
+              "alloc_bytes": 5898240,
+              "free_count": 90,
+              "free_bytes": 5898240
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 3.0,
+            "alloc_bytes": 196608.0,
+            "free_count": 3.0
+          }
+        },
+        "backward": {
+          "total_events": 120,
+          "alloc_size_distribution": {
+            "count": 30,
+            "total_bytes": 1966080,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 30,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 90,
+            "total_bytes": 5898240,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 90,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 30,
+            "still_live_count": 0,
+            "mean_seconds": 0.0001139433317196866,
+            "median_seconds": 0.00010659999679774046,
+            "min_seconds": 0.00010409997776150703,
+            "max_seconds": 0.00025019998429343104,
+            "bucket_counts": {
+              "< 1 ms": 30,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 1966080,
+            "temporary_count": 30,
+            "total_alloc_bytes": 1966080,
+            "total_alloc_count": 30
+          },
+          "reuse_opportunity": {
+            "total_bytes": 1966080,
+            "total_count": 30,
+            "reusable_bytes": 1900544,
+            "reusable_count": 29,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65536,
+            "peak_reserved_bytes": 65536,
+            "peak_active_bytes": 65536,
+            "cached_bytes_final": 3997696,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65536,
+            "peak_reserved_bytes": 65536,
+            "peak_active_bytes": 65536,
+            "cached_bytes_final": 3997696,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 30,
+              "alloc_bytes": 1966080,
+              "free_count": 90,
+              "free_bytes": 5898240
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 1.0,
+            "alloc_bytes": 65536.0,
+            "free_count": 3.0
+          }
+        }
+      },
+      "mul": {
+        "forward": {
+          "total_events": 180,
+          "alloc_size_distribution": {
+            "count": 90,
+            "total_bytes": 5898240,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 90,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 90,
+            "total_bytes": 5898240,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 90,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 90,
+            "still_live_count": 0,
+            "mean_seconds": 0.0005848133354447782,
+            "median_seconds": 0.0003265000123064965,
+            "min_seconds": 9.049999061971903e-05,
+            "max_seconds": 0.0020290000247769058,
+            "bucket_counts": {
+              "< 1 ms": 68,
+              "1-10 ms": 22,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 5898240,
+            "temporary_count": 90,
+            "total_alloc_bytes": 5898240,
+            "total_alloc_count": 90
+          },
+          "reuse_opportunity": {
+            "total_bytes": 5898240,
+            "total_count": 90,
+            "reusable_bytes": 5832704,
+            "reusable_count": 89,
+            "reusable_byte_fraction": 0.9888888888888889,
+            "reusable_count_fraction": 0.9888888888888889,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 196608,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 196608,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 90,
+              "alloc_bytes": 5898240,
+              "free_count": 90,
+              "free_bytes": 5898240
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 3.0,
+            "alloc_bytes": 196608.0,
+            "free_count": 3.0
+          }
+        },
+        "backward": {
+          "total_events": 180,
+          "alloc_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 120,
+            "total_bytes": 7864320,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 120
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 120,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 60,
+            "still_live_count": 0,
+            "mean_seconds": 0.00019954666495323182,
+            "median_seconds": 0.0001747499918565154,
+            "min_seconds": 8.880003588274121e-05,
+            "max_seconds": 0.00041849998524412513,
+            "bucket_counts": {
+              "< 1 ms": 60,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 3932160,
+            "temporary_count": 60,
+            "total_alloc_bytes": 3932160,
+            "total_alloc_count": 60
+          },
+          "reuse_opportunity": {
+            "total_bytes": 3932160,
+            "total_count": 60,
+            "reusable_bytes": 3866624,
+            "reusable_count": 59,
+            "reusable_byte_fraction": 0.9833333333333333,
+            "reusable_count_fraction": 0.9833333333333333,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 4063232,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 4063232,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 60,
+              "alloc_bytes": 3932160,
+              "free_count": 120,
+              "free_bytes": 7864320
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 2.0,
+            "alloc_bytes": 131072.0,
+            "free_count": 4.0
+          }
+        }
+      },
+      "matmul": {
+        "forward": {
+          "total_events": 180,
+          "alloc_size_distribution": {
+            "count": 90,
+            "total_bytes": 5898240,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 90,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 90,
+            "total_bytes": 5898240,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 90,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 90,
+            "still_live_count": 0,
+            "mean_seconds": 0.000517266666671882,
+            "median_seconds": 0.00029269998776726425,
+            "min_seconds": 0.00013370002852752805,
+            "max_seconds": 0.001968700031284243,
+            "bucket_counts": {
+              "< 1 ms": 75,
+              "1-10 ms": 15,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 5898240,
+            "temporary_count": 90,
+            "total_alloc_bytes": 5898240,
+            "total_alloc_count": 90
+          },
+          "reuse_opportunity": {
+            "total_bytes": 5898240,
+            "total_count": 90,
+            "reusable_bytes": 5832704,
+            "reusable_count": 89,
+            "reusable_byte_fraction": 0.9888888888888889,
+            "reusable_count_fraction": 0.9888888888888889,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 196608,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 196608,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 90,
+              "alloc_bytes": 5898240,
+              "free_count": 90,
+              "free_bytes": 5898240
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 3.0,
+            "alloc_bytes": 196608.0,
+            "free_count": 3.0
+          }
+        },
+        "backward": {
+          "total_events": 300,
+          "alloc_size_distribution": {
+            "count": 120,
+            "total_bytes": 7864320,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 120
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 120,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 180,
+            "total_bytes": 11796480,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 180
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 180,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 120,
+            "still_live_count": 0,
+            "mean_seconds": 0.00029410999898876375,
+            "median_seconds": 0.00023729997337795794,
+            "min_seconds": 0.00016090000281110406,
+            "max_seconds": 0.0006393999792635441,
+            "bucket_counts": {
+              "< 1 ms": 120,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 7864320,
+            "temporary_count": 120,
+            "total_alloc_bytes": 7864320,
+            "total_alloc_count": 120
+          },
+          "reuse_opportunity": {
+            "total_bytes": 7864320,
+            "total_count": 120,
+            "reusable_bytes": 7798784,
+            "reusable_count": 119,
+            "reusable_byte_fraction": 0.9916666666666667,
+            "reusable_count_fraction": 0.9916666666666667,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 120,
+            "simulated_malloc_count": 3,
+            "cache_hits": 117,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.975,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 4128768,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 120,
+            "simulated_malloc_count": 3,
+            "cache_hits": 117,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.975,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 4128768,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 120,
+              "alloc_bytes": 7864320,
+              "free_count": 180,
+              "free_bytes": 11796480
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 4.0,
+            "alloc_bytes": 262144.0,
+            "free_count": 6.0
+          }
+        }
+      },
+      "sum": {
+        "forward": {
+          "total_events": 120,
+          "alloc_size_distribution": {
+            "count": 60,
+            "total_bytes": 1966200,
+            "min_bytes": 4,
+            "max_bytes": 65536,
+            "mean_bytes": 32770,
+            "median_bytes": 32770.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 30
+              },
+              {
+                "nbytes": 4,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 30,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 30,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 1966200,
+            "min_bytes": 4,
+            "max_bytes": 65536,
+            "mean_bytes": 32770,
+            "median_bytes": 32770.0,
+            "common_sizes": [
+              {
+                "nbytes": 4,
+                "count": 30
+              },
+              {
+                "nbytes": 65536,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 30,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 30,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 60,
+            "still_live_count": 0,
+            "mean_seconds": 0.000464443337599126,
+            "median_seconds": 0.0005073999927844852,
+            "min_seconds": 0.0002115000388585031,
+            "max_seconds": 0.0009043999598361552,
+            "bucket_counts": {
+              "< 1 ms": 60,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 1966200,
+            "temporary_count": 60,
+            "total_alloc_bytes": 1966200,
+            "total_alloc_count": 60
+          },
+          "reuse_opportunity": {
+            "total_bytes": 1966200,
+            "total_count": 60,
+            "reusable_bytes": 1900660,
+            "reusable_count": 58,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 2
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65540,
+            "peak_reserved_bytes": 65540,
+            "peak_active_bytes": 65540,
+            "cached_bytes_final": 65540,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 66560,
+            "peak_reserved_bytes": 66560,
+            "peak_active_bytes": 66560,
+            "cached_bytes_final": 66560,
+            "internal_fragmentation_bytes": 30600
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 60,
+              "alloc_bytes": 1966200,
+              "free_count": 60,
+              "free_bytes": 1966200
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 2.0,
+            "alloc_bytes": 65540.0,
+            "free_count": 2.0
+          }
+        },
+        "backward": {
+          "total_events": 150,
+          "alloc_size_distribution": {
+            "count": 60,
+            "total_bytes": 1966200,
+            "min_bytes": 4,
+            "max_bytes": 65536,
+            "mean_bytes": 32770,
+            "median_bytes": 32770.0,
+            "common_sizes": [
+              {
+                "nbytes": 4,
+                "count": 30
+              },
+              {
+                "nbytes": 65536,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 30,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 30,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 90,
+            "total_bytes": 3932280,
+            "min_bytes": 4,
+            "max_bytes": 65536,
+            "mean_bytes": 43692,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              },
+              {
+                "nbytes": 4,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 30,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 60,
+            "still_live_count": 0,
+            "mean_seconds": 0.00020200833775258314,
+            "median_seconds": 0.00019464996876195073,
+            "min_seconds": 0.00011720001930370927,
+            "max_seconds": 0.0005097000394016504,
+            "bucket_counts": {
+              "< 1 ms": 60,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 1966200,
+            "temporary_count": 60,
+            "total_alloc_bytes": 1966200,
+            "total_alloc_count": 60
+          },
+          "reuse_opportunity": {
+            "total_bytes": 1966200,
+            "total_count": 60,
+            "reusable_bytes": 1900660,
+            "reusable_count": 58,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 2
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65540,
+            "peak_reserved_bytes": 65540,
+            "peak_active_bytes": 65540,
+            "cached_bytes_final": 2031620,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 66560,
+            "peak_reserved_bytes": 66560,
+            "peak_active_bytes": 66560,
+            "cached_bytes_final": 2032640,
+            "internal_fragmentation_bytes": 30600
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 60,
+              "alloc_bytes": 1966200,
+              "free_count": 90,
+              "free_bytes": 3932280
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 2.0,
+            "alloc_bytes": 65540.0,
+            "free_count": 3.0
+          }
+        }
+      },
+      "reshape": {
+        "forward": {
+          "total_events": 120,
+          "alloc_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 60,
+            "still_live_count": 0,
+            "mean_seconds": 0.0003655883338069543,
+            "median_seconds": 0.00036284999805502594,
+            "min_seconds": 0.00012580002658069134,
+            "max_seconds": 0.0007999000372365117,
+            "bucket_counts": {
+              "< 1 ms": 60,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 3932160,
+            "temporary_count": 60,
+            "total_alloc_bytes": 3932160,
+            "total_alloc_count": 60
+          },
+          "reuse_opportunity": {
+            "total_bytes": 3932160,
+            "total_count": 60,
+            "reusable_bytes": 3866624,
+            "reusable_count": 59,
+            "reusable_byte_fraction": 0.9833333333333333,
+            "reusable_count_fraction": 0.9833333333333333,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 131072,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 131072,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 60,
+              "alloc_bytes": 3932160,
+              "free_count": 60,
+              "free_bytes": 3932160
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 2.0,
+            "alloc_bytes": 131072.0,
+            "free_count": 2.0
+          }
+        },
+        "backward": {
+          "total_events": 90,
+          "alloc_size_distribution": {
+            "count": 30,
+            "total_bytes": 1966080,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 30,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 30,
+            "still_live_count": 0,
+            "mean_seconds": 9.144999591323236e-05,
+            "median_seconds": 8.499997784383595e-05,
+            "min_seconds": 8.03999719209969e-05,
+            "max_seconds": 0.0002060999977402389,
+            "bucket_counts": {
+              "< 1 ms": 30,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 1966080,
+            "temporary_count": 30,
+            "total_alloc_bytes": 1966080,
+            "total_alloc_count": 30
+          },
+          "reuse_opportunity": {
+            "total_bytes": 1966080,
+            "total_count": 30,
+            "reusable_bytes": 1900544,
+            "reusable_count": 29,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65536,
+            "peak_reserved_bytes": 65536,
+            "peak_active_bytes": 65536,
+            "cached_bytes_final": 2031616,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65536,
+            "peak_reserved_bytes": 65536,
+            "peak_active_bytes": 65536,
+            "cached_bytes_final": 2031616,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 30,
+              "alloc_bytes": 1966080,
+              "free_count": 60,
+              "free_bytes": 3932160
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 1.0,
+            "alloc_bytes": 65536.0,
+            "free_count": 2.0
+          }
+        }
+      },
+      "relu": {
+        "forward": {
+          "total_events": 120,
+          "alloc_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 60,
+            "still_live_count": 0,
+            "mean_seconds": 0.00040364000111973536,
+            "median_seconds": 0.0003873000096064061,
+            "min_seconds": 0.00015979999443516135,
+            "max_seconds": 0.0007887000101618469,
+            "bucket_counts": {
+              "< 1 ms": 60,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 3932160,
+            "temporary_count": 60,
+            "total_alloc_bytes": 3932160,
+            "total_alloc_count": 60
+          },
+          "reuse_opportunity": {
+            "total_bytes": 3932160,
+            "total_count": 60,
+            "reusable_bytes": 3866624,
+            "reusable_count": 59,
+            "reusable_byte_fraction": 0.9833333333333333,
+            "reusable_count_fraction": 0.9833333333333333,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 131072,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 131072,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 60,
+              "alloc_bytes": 3932160,
+              "free_count": 60,
+              "free_bytes": 3932160
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 2.0,
+            "alloc_bytes": 131072.0,
+            "free_count": 2.0
+          }
+        },
+        "backward": {
+          "total_events": 90,
+          "alloc_size_distribution": {
+            "count": 30,
+            "total_bytes": 1966080,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 30,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 30,
+            "still_live_count": 0,
+            "mean_seconds": 0.00010060000737818578,
+            "median_seconds": 9.554999996908009e-05,
+            "min_seconds": 8.690002141520381e-05,
+            "max_seconds": 0.0001832999987527728,
+            "bucket_counts": {
+              "< 1 ms": 30,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 1966080,
+            "temporary_count": 30,
+            "total_alloc_bytes": 1966080,
+            "total_alloc_count": 30
+          },
+          "reuse_opportunity": {
+            "total_bytes": 1966080,
+            "total_count": 30,
+            "reusable_bytes": 1900544,
+            "reusable_count": 29,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65536,
+            "peak_reserved_bytes": 65536,
+            "peak_active_bytes": 65536,
+            "cached_bytes_final": 2031616,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65536,
+            "peak_reserved_bytes": 65536,
+            "peak_active_bytes": 65536,
+            "cached_bytes_final": 2031616,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 30,
+              "alloc_bytes": 1966080,
+              "free_count": 60,
+              "free_bytes": 3932160
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 1.0,
+            "alloc_bytes": 65536.0,
+            "free_count": 2.0
+          }
+        }
+      },
+      "exp": {
+        "forward": {
+          "total_events": 120,
+          "alloc_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 60,
+            "still_live_count": 0,
+            "mean_seconds": 0.0003977983316872269,
+            "median_seconds": 0.0004068000125698745,
+            "min_seconds": 0.0001276000402867794,
+            "max_seconds": 0.0007965999539010227,
+            "bucket_counts": {
+              "< 1 ms": 60,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 3932160,
+            "temporary_count": 60,
+            "total_alloc_bytes": 3932160,
+            "total_alloc_count": 60
+          },
+          "reuse_opportunity": {
+            "total_bytes": 3932160,
+            "total_count": 60,
+            "reusable_bytes": 3866624,
+            "reusable_count": 59,
+            "reusable_byte_fraction": 0.9833333333333333,
+            "reusable_count_fraction": 0.9833333333333333,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 131072,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 131072,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 60,
+              "alloc_bytes": 3932160,
+              "free_count": 60,
+              "free_bytes": 3932160
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 2.0,
+            "alloc_bytes": 131072.0,
+            "free_count": 2.0
+          }
+        },
+        "backward": {
+          "total_events": 90,
+          "alloc_size_distribution": {
+            "count": 30,
+            "total_bytes": 1966080,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 30,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 30,
+            "still_live_count": 0,
+            "mean_seconds": 9.555667056702078e-05,
+            "median_seconds": 8.995001553557813e-05,
+            "min_seconds": 8.670001989230514e-05,
+            "max_seconds": 0.00020290003158152103,
+            "bucket_counts": {
+              "< 1 ms": 30,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 1966080,
+            "temporary_count": 30,
+            "total_alloc_bytes": 1966080,
+            "total_alloc_count": 30
+          },
+          "reuse_opportunity": {
+            "total_bytes": 1966080,
+            "total_count": 30,
+            "reusable_bytes": 1900544,
+            "reusable_count": 29,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65536,
+            "peak_reserved_bytes": 65536,
+            "peak_active_bytes": 65536,
+            "cached_bytes_final": 2031616,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65536,
+            "peak_reserved_bytes": 65536,
+            "peak_active_bytes": 65536,
+            "cached_bytes_final": 2031616,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 30,
+              "alloc_bytes": 1966080,
+              "free_count": 60,
+              "free_bytes": 3932160
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 1.0,
+            "alloc_bytes": 65536.0,
+            "free_count": 2.0
+          }
+        }
+      },
+      "log": {
+        "forward": {
+          "total_events": 120,
+          "alloc_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 60,
+            "still_live_count": 0,
+            "mean_seconds": 0.0004334583344946926,
+            "median_seconds": 0.000413900037528947,
+            "min_seconds": 0.00014049996389076114,
+            "max_seconds": 0.0010365000343881547,
+            "bucket_counts": {
+              "< 1 ms": 59,
+              "1-10 ms": 1,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 3932160,
+            "temporary_count": 60,
+            "total_alloc_bytes": 3932160,
+            "total_alloc_count": 60
+          },
+          "reuse_opportunity": {
+            "total_bytes": 3932160,
+            "total_count": 60,
+            "reusable_bytes": 3866624,
+            "reusable_count": 59,
+            "reusable_byte_fraction": 0.9833333333333333,
+            "reusable_count_fraction": 0.9833333333333333,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 131072,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 131072,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 60,
+              "alloc_bytes": 3932160,
+              "free_count": 60,
+              "free_bytes": 3932160
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 2.0,
+            "alloc_bytes": 131072.0,
+            "free_count": 2.0
+          }
+        },
+        "backward": {
+          "total_events": 90,
+          "alloc_size_distribution": {
+            "count": 30,
+            "total_bytes": 1966080,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 30,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 30,
+            "still_live_count": 0,
+            "mean_seconds": 0.00010226999681132536,
+            "median_seconds": 9.109999518841505e-05,
+            "min_seconds": 8.530000923201442e-05,
+            "max_seconds": 0.0002041999832727015,
+            "bucket_counts": {
+              "< 1 ms": 30,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 1966080,
+            "temporary_count": 30,
+            "total_alloc_bytes": 1966080,
+            "total_alloc_count": 30
+          },
+          "reuse_opportunity": {
+            "total_bytes": 1966080,
+            "total_count": 30,
+            "reusable_bytes": 1900544,
+            "reusable_count": 29,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65536,
+            "peak_reserved_bytes": 65536,
+            "peak_active_bytes": 65536,
+            "cached_bytes_final": 2031616,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 65536,
+            "peak_reserved_bytes": 65536,
+            "peak_active_bytes": 65536,
+            "cached_bytes_final": 2031616,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 30,
+              "alloc_bytes": 1966080,
+              "free_count": 60,
+              "free_bytes": 3932160
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 1.0,
+            "alloc_bytes": 65536.0,
+            "free_count": 2.0
+          }
+        }
+      },
+      "conv2d": {
+        "forward": {
+          "total_events": 240,
+          "alloc_size_distribution": {
+            "count": 120,
+            "total_bytes": 21828480,
+            "min_bytes": 64,
+            "max_bytes": 460800,
+            "mean_bytes": 181904,
+            "median_bytes": 133376.0,
+            "common_sizes": [
+              {
+                "nbytes": 262144,
+                "count": 30
+              },
+              {
+                "nbytes": 4608,
+                "count": 30
+              },
+              {
+                "nbytes": 64,
+                "count": 30
+              },
+              {
+                "nbytes": 460800,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 30,
+              "1-4 KB": 0,
+              "4-16 KB": 30,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 60,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 120,
+            "total_bytes": 21828480,
+            "min_bytes": 64,
+            "max_bytes": 460800,
+            "mean_bytes": 181904,
+            "median_bytes": 133376.0,
+            "common_sizes": [
+              {
+                "nbytes": 460800,
+                "count": 30
+              },
+              {
+                "nbytes": 64,
+                "count": 30
+              },
+              {
+                "nbytes": 4608,
+                "count": 30
+              },
+              {
+                "nbytes": 262144,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 30,
+              "1-4 KB": 0,
+              "4-16 KB": 30,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 60,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 120,
+            "still_live_count": 0,
+            "mean_seconds": 0.0014752566702857925,
+            "median_seconds": 0.0014495000068563968,
+            "min_seconds": 0.0010068000410683453,
+            "max_seconds": 0.002906800014898181,
+            "bucket_counts": {
+              "< 1 ms": 0,
+              "1-10 ms": 120,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 21828480,
+            "temporary_count": 120,
+            "total_alloc_bytes": 21828480,
+            "total_alloc_count": 120
+          },
+          "reuse_opportunity": {
+            "total_bytes": 21828480,
+            "total_count": 120,
+            "reusable_bytes": 21100864,
+            "reusable_count": 116,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 4
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 120,
+            "simulated_malloc_count": 4,
+            "cache_hits": 116,
+            "cache_misses": 4,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 727616,
+            "peak_reserved_bytes": 727616,
+            "peak_active_bytes": 727616,
+            "cached_bytes_final": 727616,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 120,
+            "simulated_malloc_count": 4,
+            "cache_hits": 116,
+            "cache_misses": 4,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 1328128,
+            "peak_reserved_bytes": 1328128,
+            "peak_active_bytes": 1328128,
+            "cached_bytes_final": 1328128,
+            "internal_fragmentation_bytes": 18015360
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 120,
+              "alloc_bytes": 21828480,
+              "free_count": 120,
+              "free_bytes": 21828480
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 4.0,
+            "alloc_bytes": 727616.0,
+            "free_count": 4.0
+          }
+        },
+        "backward": {
+          "total_events": 270,
+          "alloc_size_distribution": {
+            "count": 90,
+            "total_bytes": 8004480,
+            "min_bytes": 64,
+            "max_bytes": 262144,
+            "mean_bytes": 88938.66666666667,
+            "median_bytes": 4608.0,
+            "common_sizes": [
+              {
+                "nbytes": 262144,
+                "count": 30
+              },
+              {
+                "nbytes": 4608,
+                "count": 30
+              },
+              {
+                "nbytes": 64,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 30,
+              "1-4 KB": 0,
+              "4-16 KB": 30,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 30,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 180,
+            "total_bytes": 16008960,
+            "min_bytes": 64,
+            "max_bytes": 262144,
+            "mean_bytes": 88938.66666666667,
+            "median_bytes": 4608.0,
+            "common_sizes": [
+              {
+                "nbytes": 4608,
+                "count": 60
+              },
+              {
+                "nbytes": 262144,
+                "count": 60
+              },
+              {
+                "nbytes": 64,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 60,
+              "1-4 KB": 0,
+              "4-16 KB": 60,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 60,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 90,
+            "still_live_count": 0,
+            "mean_seconds": 0.0021516722206595456,
+            "median_seconds": 0.0016539499920327216,
+            "min_seconds": 0.00025969999842345715,
+            "max_seconds": 0.004826400021556765,
+            "bucket_counts": {
+              "< 1 ms": 30,
+              "1-10 ms": 60,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 8004480,
+            "temporary_count": 90,
+            "total_alloc_bytes": 8004480,
+            "total_alloc_count": 90
+          },
+          "reuse_opportunity": {
+            "total_bytes": 8004480,
+            "total_count": 90,
+            "reusable_bytes": 7737664,
+            "reusable_count": 87,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 3
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 266816,
+            "peak_reserved_bytes": 266816,
+            "peak_active_bytes": 266816,
+            "cached_bytes_final": 8271296,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 279552,
+            "peak_reserved_bytes": 279552,
+            "peak_active_bytes": 279552,
+            "cached_bytes_final": 8666112,
+            "internal_fragmentation_bytes": 382080
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 90,
+              "alloc_bytes": 8004480,
+              "free_count": 180,
+              "free_bytes": 16008960
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 3.0,
+            "alloc_bytes": 266816.0,
+            "free_count": 6.0
+          }
+        }
+      },
+      "max_pool2d": {
+        "forward": {
+          "total_events": 120,
+          "alloc_size_distribution": {
+            "count": 60,
+            "total_bytes": 17280000,
+            "min_bytes": 115200,
+            "max_bytes": 460800,
+            "mean_bytes": 288000,
+            "median_bytes": 288000.0,
+            "common_sizes": [
+              {
+                "nbytes": 460800,
+                "count": 30
+              },
+              {
+                "nbytes": 115200,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 30,
+              "256 KB-1 MB": 30,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 17280000,
+            "min_bytes": 115200,
+            "max_bytes": 460800,
+            "mean_bytes": 288000,
+            "median_bytes": 288000.0,
+            "common_sizes": [
+              {
+                "nbytes": 115200,
+                "count": 30
+              },
+              {
+                "nbytes": 460800,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 30,
+              "256 KB-1 MB": 30,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 60,
+            "still_live_count": 0,
+            "mean_seconds": 0.0009140166657743976,
+            "median_seconds": 0.0008858999935910106,
+            "min_seconds": 0.0005892000044696033,
+            "max_seconds": 0.0016025000368244946,
+            "bucket_counts": {
+              "< 1 ms": 31,
+              "1-10 ms": 29,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 17280000,
+            "temporary_count": 60,
+            "total_alloc_bytes": 17280000,
+            "total_alloc_count": 60
+          },
+          "reuse_opportunity": {
+            "total_bytes": 17280000,
+            "total_count": 60,
+            "reusable_bytes": 16704000,
+            "reusable_count": 58,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 2
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 576000,
+            "peak_reserved_bytes": 576000,
+            "peak_active_bytes": 576000,
+            "cached_bytes_final": 576000,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 1310720,
+            "peak_reserved_bytes": 1310720,
+            "peak_active_bytes": 1310720,
+            "cached_bytes_final": 1310720,
+            "internal_fragmentation_bytes": 22041600
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 60,
+              "alloc_bytes": 17280000,
+              "free_count": 60,
+              "free_bytes": 17280000
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 2.0,
+            "alloc_bytes": 576000.0,
+            "free_count": 2.0
+          }
+        },
+        "backward": {
+          "total_events": 90,
+          "alloc_size_distribution": {
+            "count": 30,
+            "total_bytes": 13824000,
+            "min_bytes": 460800,
+            "max_bytes": 460800,
+            "mean_bytes": 460800,
+            "median_bytes": 460800.0,
+            "common_sizes": [
+              {
+                "nbytes": 460800,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 30,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 60,
+            "total_bytes": 27648000,
+            "min_bytes": 460800,
+            "max_bytes": 460800,
+            "mean_bytes": 460800,
+            "median_bytes": 460800.0,
+            "common_sizes": [
+              {
+                "nbytes": 460800,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 60,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 30,
+            "still_live_count": 0,
+            "mean_seconds": 0.0002683866691465179,
+            "median_seconds": 0.00025795004330575466,
+            "min_seconds": 0.0001886999816633761,
+            "max_seconds": 0.0004851999692618847,
+            "bucket_counts": {
+              "< 1 ms": 30,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 13824000,
+            "temporary_count": 30,
+            "total_alloc_bytes": 13824000,
+            "total_alloc_count": 30
+          },
+          "reuse_opportunity": {
+            "total_bytes": 13824000,
+            "total_count": 30,
+            "reusable_bytes": 13363200,
+            "reusable_count": 29,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 460800,
+            "peak_reserved_bytes": 460800,
+            "peak_active_bytes": 460800,
+            "cached_bytes_final": 14284800,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 1048576,
+            "peak_reserved_bytes": 1048576,
+            "peak_active_bytes": 1048576,
+            "cached_bytes_final": 32505856,
+            "internal_fragmentation_bytes": 17633280
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 30,
+              "alloc_bytes": 13824000,
+              "free_count": 60,
+              "free_bytes": 27648000
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 1.0,
+            "alloc_bytes": 460800.0,
+            "free_count": 2.0
+          }
+        }
+      },
+      "dropout": {
+        "forward": {
+          "total_events": 180,
+          "alloc_size_distribution": {
+            "count": 90,
+            "total_bytes": 5898240,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 90,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 90,
+            "total_bytes": 5898240,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 90,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 90,
+            "still_live_count": 0,
+            "mean_seconds": 0.0004909744453875141,
+            "median_seconds": 0.00045190000673756003,
+            "min_seconds": 0.00011950003681704402,
+            "max_seconds": 0.001138599996920675,
+            "bucket_counts": {
+              "< 1 ms": 89,
+              "1-10 ms": 1,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 5898240,
+            "temporary_count": 90,
+            "total_alloc_bytes": 5898240,
+            "total_alloc_count": 90
+          },
+          "reuse_opportunity": {
+            "total_bytes": 5898240,
+            "total_count": 90,
+            "reusable_bytes": 5832704,
+            "reusable_count": 89,
+            "reusable_byte_fraction": 0.9888888888888889,
+            "reusable_count_fraction": 0.9888888888888889,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 196608,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 90,
+            "simulated_malloc_count": 3,
+            "cache_hits": 87,
+            "cache_misses": 3,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 196608,
+            "peak_reserved_bytes": 196608,
+            "peak_active_bytes": 196608,
+            "cached_bytes_final": 196608,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 90,
+              "alloc_bytes": 5898240,
+              "free_count": 90,
+              "free_bytes": 5898240
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 3.0,
+            "alloc_bytes": 196608.0,
+            "free_count": 3.0
+          }
+        },
+        "backward": {
+          "total_events": 180,
+          "alloc_size_distribution": {
+            "count": 60,
+            "total_bytes": 3932160,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 60
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 60,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 120,
+            "total_bytes": 7864320,
+            "min_bytes": 65536,
+            "max_bytes": 65536,
+            "mean_bytes": 65536,
+            "median_bytes": 65536.0,
+            "common_sizes": [
+              {
+                "nbytes": 65536,
+                "count": 120
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 120,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 60,
+            "still_live_count": 0,
+            "mean_seconds": 0.00019570999623586734,
+            "median_seconds": 0.00018415000522509217,
+            "min_seconds": 0.0001115999766625464,
+            "max_seconds": 0.000408399966545403,
+            "bucket_counts": {
+              "< 1 ms": 60,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 3932160,
+            "temporary_count": 60,
+            "total_alloc_bytes": 3932160,
+            "total_alloc_count": 60
+          },
+          "reuse_opportunity": {
+            "total_bytes": 3932160,
+            "total_count": 60,
+            "reusable_bytes": 3866624,
+            "reusable_count": 59,
+            "reusable_byte_fraction": 0.9833333333333333,
+            "reusable_count_fraction": 0.9833333333333333,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 4063232,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 60,
+            "simulated_malloc_count": 2,
+            "cache_hits": 58,
+            "cache_misses": 2,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 131072,
+            "peak_reserved_bytes": 131072,
+            "peak_active_bytes": 131072,
+            "cached_bytes_final": 4063232,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 60,
+              "alloc_bytes": 3932160,
+              "free_count": 120,
+              "free_bytes": 7864320
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 2.0,
+            "alloc_bytes": 131072.0,
+            "free_count": 4.0
+          }
+        }
+      },
+      "mse_loss": {
+        "forward": {
+          "total_events": 420,
+          "alloc_size_distribution": {
+            "count": 210,
+            "total_bytes": 307560,
+            "min_bytes": 4,
+            "max_bytes": 2560,
+            "mean_bytes": 1464.5714285714287,
+            "median_bytes": 2560.0,
+            "common_sizes": [
+              {
+                "nbytes": 2560,
+                "count": 120
+              },
+              {
+                "nbytes": 4,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 90,
+              "1-4 KB": 120,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 210,
+            "total_bytes": 307560,
+            "min_bytes": 4,
+            "max_bytes": 2560,
+            "mean_bytes": 1464.5714285714287,
+            "median_bytes": 2560.0,
+            "common_sizes": [
+              {
+                "nbytes": 2560,
+                "count": 120
+              },
+              {
+                "nbytes": 4,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 90,
+              "1-4 KB": 120,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 210,
+            "still_live_count": 0,
+            "mean_seconds": 0.00071061857216548,
+            "median_seconds": 0.0006216500187292695,
+            "min_seconds": 8.369999704882503e-05,
+            "max_seconds": 0.0018613999709486961,
+            "bucket_counts": {
+              "< 1 ms": 159,
+              "1-10 ms": 51,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 307560,
+            "temporary_count": 210,
+            "total_alloc_bytes": 307560,
+            "total_alloc_count": 210
+          },
+          "reuse_opportunity": {
+            "total_bytes": 307560,
+            "total_count": 210,
+            "reusable_bytes": 304996,
+            "reusable_count": 208,
+            "reusable_byte_fraction": 0.9916634152685655,
+            "reusable_count_fraction": 0.9904761904761905,
+            "distinct_sizes": 2
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 210,
+            "simulated_malloc_count": 7,
+            "cache_hits": 203,
+            "cache_misses": 7,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 10252,
+            "peak_reserved_bytes": 10252,
+            "peak_active_bytes": 10252,
+            "cached_bytes_final": 10252,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 210,
+            "simulated_malloc_count": 7,
+            "cache_hits": 203,
+            "cache_misses": 7,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 19456,
+            "peak_reserved_bytes": 19456,
+            "peak_active_bytes": 19456,
+            "cached_bytes_final": 19456,
+            "internal_fragmentation_bytes": 276120
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 210,
+              "alloc_bytes": 307560,
+              "free_count": 210,
+              "free_bytes": 307560
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 7.0,
+            "alloc_bytes": 10252.0,
+            "free_count": 7.0
+          }
+        },
+        "backward": {
+          "total_events": 660,
+          "alloc_size_distribution": {
+            "count": 240,
+            "total_bytes": 384360,
+            "min_bytes": 4,
+            "max_bytes": 2560,
+            "mean_bytes": 1601.5,
+            "median_bytes": 2560.0,
+            "common_sizes": [
+              {
+                "nbytes": 2560,
+                "count": 150
+              },
+              {
+                "nbytes": 4,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 90,
+              "1-4 KB": 150,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 420,
+            "total_bytes": 691800,
+            "min_bytes": 4,
+            "max_bytes": 2560,
+            "mean_bytes": 1647.142857142857,
+            "median_bytes": 2560.0,
+            "common_sizes": [
+              {
+                "nbytes": 2560,
+                "count": 270
+              },
+              {
+                "nbytes": 4,
+                "count": 150
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 150,
+              "1-4 KB": 270,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 240,
+            "still_live_count": 0,
+            "mean_seconds": 0.0003401370801536056,
+            "median_seconds": 0.00026539998361840844,
+            "min_seconds": 0.0001343999756500125,
+            "max_seconds": 0.001491100003477186,
+            "bucket_counts": {
+              "< 1 ms": 234,
+              "1-10 ms": 6,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 384360,
+            "temporary_count": 240,
+            "total_alloc_bytes": 384360,
+            "total_alloc_count": 240
+          },
+          "reuse_opportunity": {
+            "total_bytes": 384360,
+            "total_count": 240,
+            "reusable_bytes": 381796,
+            "reusable_count": 238,
+            "reusable_byte_fraction": 0.993329170569258,
+            "reusable_count_fraction": 0.9916666666666667,
+            "distinct_sizes": 2
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 240,
+            "simulated_malloc_count": 7,
+            "cache_hits": 233,
+            "cache_misses": 7,
+            "cache_hit_rate": 0.9708333333333333,
+            "reserved_bytes_final": 10252,
+            "peak_reserved_bytes": 10252,
+            "peak_active_bytes": 10244,
+            "cached_bytes_final": 317692,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 240,
+            "simulated_malloc_count": 7,
+            "cache_hits": 233,
+            "cache_misses": 7,
+            "cache_hit_rate": 0.9708333333333333,
+            "reserved_bytes_final": 19456,
+            "peak_reserved_bytes": 19456,
+            "peak_active_bytes": 17408,
+            "cached_bytes_final": 572416,
+            "internal_fragmentation_bytes": 322200
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 240,
+              "alloc_bytes": 384360,
+              "free_count": 420,
+              "free_bytes": 691800
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 8.0,
+            "alloc_bytes": 12812.0,
+            "free_count": 14.0
+          }
+        }
+      },
+      "cross_entropy_loss": {
+        "forward": {
+          "total_events": 780,
+          "alloc_size_distribution": {
+            "count": 390,
+            "total_bytes": 491880,
+            "min_bytes": 4,
+            "max_bytes": 2560,
+            "mean_bytes": 1261.2307692307693,
+            "median_bytes": 256.0,
+            "common_sizes": [
+              {
+                "nbytes": 2560,
+                "count": 180
+              },
+              {
+                "nbytes": 256,
+                "count": 120
+              },
+              {
+                "nbytes": 4,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 210,
+              "1-4 KB": 180,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 390,
+            "total_bytes": 491880,
+            "min_bytes": 4,
+            "max_bytes": 2560,
+            "mean_bytes": 1261.2307692307693,
+            "median_bytes": 256.0,
+            "common_sizes": [
+              {
+                "nbytes": 2560,
+                "count": 180
+              },
+              {
+                "nbytes": 256,
+                "count": 120
+              },
+              {
+                "nbytes": 4,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 210,
+              "1-4 KB": 180,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 390,
+            "still_live_count": 0,
+            "mean_seconds": 0.0009259082027710975,
+            "median_seconds": 0.000836499995784834,
+            "min_seconds": 7.860001642256975e-05,
+            "max_seconds": 0.0028699999675154686,
+            "bucket_counts": {
+              "< 1 ms": 236,
+              "1-10 ms": 154,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 491880,
+            "temporary_count": 390,
+            "total_alloc_bytes": 491880,
+            "total_alloc_count": 390
+          },
+          "reuse_opportunity": {
+            "total_bytes": 491880,
+            "total_count": 390,
+            "reusable_bytes": 489060,
+            "reusable_count": 387,
+            "reusable_byte_fraction": 0.9942668943644791,
+            "reusable_count_fraction": 0.9923076923076923,
+            "distinct_sizes": 3
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 390,
+            "simulated_malloc_count": 13,
+            "cache_hits": 377,
+            "cache_misses": 13,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 16396,
+            "peak_reserved_bytes": 16396,
+            "peak_active_bytes": 16396,
+            "cached_bytes_final": 16396,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 390,
+            "simulated_malloc_count": 13,
+            "cache_hits": 377,
+            "cache_misses": 13,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 31744,
+            "peak_reserved_bytes": 31744,
+            "peak_active_bytes": 31744,
+            "cached_bytes_final": 31744,
+            "internal_fragmentation_bytes": 460440
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 390,
+              "alloc_bytes": 491880,
+              "free_count": 390,
+              "free_bytes": 491880
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 13.0,
+            "alloc_bytes": 16396.0,
+            "free_count": 13.0
+          }
+        },
+        "backward": {
+          "total_events": 1380,
+          "alloc_size_distribution": {
+            "count": 510,
+            "total_bytes": 522600,
+            "min_bytes": 4,
+            "max_bytes": 2560,
+            "mean_bytes": 1024.7058823529412,
+            "median_bytes": 256.0,
+            "common_sizes": [
+              {
+                "nbytes": 256,
+                "count": 240
+              },
+              {
+                "nbytes": 2560,
+                "count": 180
+              },
+              {
+                "nbytes": 4,
+                "count": 90
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 330,
+              "1-4 KB": 180,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 870,
+            "total_bytes": 1014360,
+            "min_bytes": 4,
+            "max_bytes": 2560,
+            "mean_bytes": 1165.9310344827586,
+            "median_bytes": 256.0,
+            "common_sizes": [
+              {
+                "nbytes": 256,
+                "count": 360
+              },
+              {
+                "nbytes": 2560,
+                "count": 360
+              },
+              {
+                "nbytes": 4,
+                "count": 150
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 510,
+              "1-4 KB": 360,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 510,
+            "still_live_count": 0,
+            "mean_seconds": 0.00041697333343144435,
+            "median_seconds": 0.0002665499923750758,
+            "min_seconds": 0.00011830002767965198,
+            "max_seconds": 0.0032072000321932137,
+            "bucket_counts": {
+              "< 1 ms": 471,
+              "1-10 ms": 39,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 522600,
+            "temporary_count": 510,
+            "total_alloc_bytes": 522600,
+            "total_alloc_count": 510
+          },
+          "reuse_opportunity": {
+            "total_bytes": 522600,
+            "total_count": 510,
+            "reusable_bytes": 519780,
+            "reusable_count": 507,
+            "reusable_byte_fraction": 0.9946039035591274,
+            "reusable_count_fraction": 0.9941176470588236,
+            "distinct_sizes": 3
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 510,
+            "simulated_malloc_count": 9,
+            "cache_hits": 501,
+            "cache_misses": 9,
+            "cache_hit_rate": 0.9823529411764705,
+            "reserved_bytes_final": 10764,
+            "peak_reserved_bytes": 10764,
+            "peak_active_bytes": 10244,
+            "cached_bytes_final": 502524,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 510,
+            "simulated_malloc_count": 8,
+            "cache_hits": 502,
+            "cache_misses": 8,
+            "cache_hit_rate": 0.984313725490196,
+            "reserved_bytes_final": 20480,
+            "peak_reserved_bytes": 20480,
+            "peak_active_bytes": 17408,
+            "cached_bytes_final": 942080,
+            "internal_fragmentation_bytes": 552600
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 510,
+              "alloc_bytes": 522600,
+              "free_count": 870,
+              "free_bytes": 1014360
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 17.0,
+            "alloc_bytes": 17420.0,
+            "free_count": 29.0
+          }
+        }
+      },
+      "sgd_step": {
+        "total_events": 0,
+        "alloc_size_distribution": {
+          "count": 0,
+          "total_bytes": 0,
+          "min_bytes": 0,
+          "max_bytes": 0,
+          "mean_bytes": 0.0,
+          "median_bytes": 0.0,
+          "common_sizes": [],
+          "bucket_counts": {}
+        },
+        "free_size_distribution": {
+          "count": 0,
+          "total_bytes": 0,
+          "min_bytes": 0,
+          "max_bytes": 0,
+          "mean_bytes": 0.0,
+          "median_bytes": 0.0,
+          "common_sizes": [],
+          "bucket_counts": {}
+        },
+        "lifetime_distribution": {
+          "paired_count": 0,
+          "still_live_count": 0,
+          "mean_seconds": 0.0,
+          "median_seconds": 0.0,
+          "min_seconds": 0.0,
+          "max_seconds": 0.0,
+          "bucket_counts": {
+            "< 1 ms": 0,
+            "1-10 ms": 0,
+            "10-100 ms": 0,
+            "100 ms-1 s": 0,
+            "1-10 s": 0,
+            "> 10 s": 0
+          }
+        },
+        "persistent_vs_temporary": {
+          "persistent_bytes": 0,
+          "persistent_count": 0,
+          "temporary_bytes": 0,
+          "temporary_count": 0,
+          "total_alloc_bytes": 0,
+          "total_alloc_count": 0
+        },
+        "reuse_opportunity": {
+          "total_bytes": 0,
+          "total_count": 0,
+          "reusable_bytes": 0,
+          "reusable_count": 0,
+          "reusable_byte_fraction": 0.0,
+          "reusable_count_fraction": 0.0,
+          "distinct_sizes": 0
+        },
+        "cache_simulation_exact": {
+          "policy": "exact",
+          "total_alloc_requests": 0,
+          "simulated_malloc_count": 0,
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "cache_hit_rate": 0.0,
+          "reserved_bytes_final": 0,
+          "peak_reserved_bytes": 0,
+          "peak_active_bytes": 0,
+          "cached_bytes_final": 0,
+          "internal_fragmentation_bytes": 0
+        },
+        "cache_simulation_size_class": {
+          "policy": "size_class",
+          "total_alloc_requests": 0,
+          "simulated_malloc_count": 0,
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "cache_hit_rate": 0.0,
+          "reserved_bytes_final": 0,
+          "peak_reserved_bytes": 0,
+          "peak_active_bytes": 0,
+          "cached_bytes_final": 0,
+          "internal_fragmentation_bytes": 0
+        },
+        "by_category": {},
+        "per_iteration": {
+          "alloc_count": 0.0,
+          "alloc_bytes": 0.0,
+          "free_count": 0.0
+        }
+      },
+      "adam_step": {
+        "total_events": 0,
+        "alloc_size_distribution": {
+          "count": 0,
+          "total_bytes": 0,
+          "min_bytes": 0,
+          "max_bytes": 0,
+          "mean_bytes": 0.0,
+          "median_bytes": 0.0,
+          "common_sizes": [],
+          "bucket_counts": {}
+        },
+        "free_size_distribution": {
+          "count": 0,
+          "total_bytes": 0,
+          "min_bytes": 0,
+          "max_bytes": 0,
+          "mean_bytes": 0.0,
+          "median_bytes": 0.0,
+          "common_sizes": [],
+          "bucket_counts": {}
+        },
+        "lifetime_distribution": {
+          "paired_count": 0,
+          "still_live_count": 0,
+          "mean_seconds": 0.0,
+          "median_seconds": 0.0,
+          "min_seconds": 0.0,
+          "max_seconds": 0.0,
+          "bucket_counts": {
+            "< 1 ms": 0,
+            "1-10 ms": 0,
+            "10-100 ms": 0,
+            "100 ms-1 s": 0,
+            "1-10 s": 0,
+            "> 10 s": 0
+          }
+        },
+        "persistent_vs_temporary": {
+          "persistent_bytes": 0,
+          "persistent_count": 0,
+          "temporary_bytes": 0,
+          "temporary_count": 0,
+          "total_alloc_bytes": 0,
+          "total_alloc_count": 0
+        },
+        "reuse_opportunity": {
+          "total_bytes": 0,
+          "total_count": 0,
+          "reusable_bytes": 0,
+          "reusable_count": 0,
+          "reusable_byte_fraction": 0.0,
+          "reusable_count_fraction": 0.0,
+          "distinct_sizes": 0
+        },
+        "cache_simulation_exact": {
+          "policy": "exact",
+          "total_alloc_requests": 0,
+          "simulated_malloc_count": 0,
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "cache_hit_rate": 0.0,
+          "reserved_bytes_final": 0,
+          "peak_reserved_bytes": 0,
+          "peak_active_bytes": 0,
+          "cached_bytes_final": 0,
+          "internal_fragmentation_bytes": 0
+        },
+        "cache_simulation_size_class": {
+          "policy": "size_class",
+          "total_alloc_requests": 0,
+          "simulated_malloc_count": 0,
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "cache_hit_rate": 0.0,
+          "reserved_bytes_final": 0,
+          "peak_reserved_bytes": 0,
+          "peak_active_bytes": 0,
+          "cached_bytes_final": 0,
+          "internal_fragmentation_bytes": 0
+        },
+        "by_category": {},
+        "per_iteration": {
+          "alloc_count": 0.0,
+          "alloc_bytes": 0.0,
+          "free_count": 0.0
+        }
+      }
+    },
+    "transfers": {
+      "tiny": {
+        "nbytes": 4096,
+        "h2d": {
+          "total_events": 60,
+          "alloc_size_distribution": {
+            "count": 30,
+            "total_bytes": 122880,
+            "min_bytes": 4096,
+            "max_bytes": 4096,
+            "mean_bytes": 4096,
+            "median_bytes": 4096.0,
+            "common_sizes": [
+              {
+                "nbytes": 4096,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 30,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 30,
+            "total_bytes": 122880,
+            "min_bytes": 4096,
+            "max_bytes": 4096,
+            "mean_bytes": 4096,
+            "median_bytes": 4096.0,
+            "common_sizes": [
+              {
+                "nbytes": 4096,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 30,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 30,
+            "still_live_count": 0,
+            "mean_seconds": 0.00016441332991234958,
+            "median_seconds": 0.00016205001156777143,
+            "min_seconds": 0.00012399995466694236,
+            "max_seconds": 0.00028390000807121396,
+            "bucket_counts": {
+              "< 1 ms": 30,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 122880,
+            "temporary_count": 30,
+            "total_alloc_bytes": 122880,
+            "total_alloc_count": 30
+          },
+          "reuse_opportunity": {
+            "total_bytes": 122880,
+            "total_count": 30,
+            "reusable_bytes": 118784,
+            "reusable_count": 29,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 4096,
+            "peak_reserved_bytes": 4096,
+            "peak_active_bytes": 4096,
+            "cached_bytes_final": 4096,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 4096,
+            "peak_reserved_bytes": 4096,
+            "peak_active_bytes": 4096,
+            "cached_bytes_final": 4096,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 30,
+              "alloc_bytes": 122880,
+              "free_count": 30,
+              "free_bytes": 122880
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 1.0,
+            "alloc_bytes": 4096.0,
+            "free_count": 1.0
+          }
+        },
+        "d2h": {
+          "total_events": 0,
+          "alloc_size_distribution": {
+            "count": 0,
+            "total_bytes": 0,
+            "min_bytes": 0,
+            "max_bytes": 0,
+            "mean_bytes": 0.0,
+            "median_bytes": 0.0,
+            "common_sizes": [],
+            "bucket_counts": {}
+          },
+          "free_size_distribution": {
+            "count": 0,
+            "total_bytes": 0,
+            "min_bytes": 0,
+            "max_bytes": 0,
+            "mean_bytes": 0.0,
+            "median_bytes": 0.0,
+            "common_sizes": [],
+            "bucket_counts": {}
+          },
+          "lifetime_distribution": {
+            "paired_count": 0,
+            "still_live_count": 0,
+            "mean_seconds": 0.0,
+            "median_seconds": 0.0,
+            "min_seconds": 0.0,
+            "max_seconds": 0.0,
+            "bucket_counts": {
+              "< 1 ms": 0,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 0,
+            "temporary_count": 0,
+            "total_alloc_bytes": 0,
+            "total_alloc_count": 0
+          },
+          "reuse_opportunity": {
+            "total_bytes": 0,
+            "total_count": 0,
+            "reusable_bytes": 0,
+            "reusable_count": 0,
+            "reusable_byte_fraction": 0.0,
+            "reusable_count_fraction": 0.0,
+            "distinct_sizes": 0
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 0,
+            "simulated_malloc_count": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "cache_hit_rate": 0.0,
+            "reserved_bytes_final": 0,
+            "peak_reserved_bytes": 0,
+            "peak_active_bytes": 0,
+            "cached_bytes_final": 0,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 0,
+            "simulated_malloc_count": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "cache_hit_rate": 0.0,
+            "reserved_bytes_final": 0,
+            "peak_reserved_bytes": 0,
+            "peak_active_bytes": 0,
+            "cached_bytes_final": 0,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {},
+          "per_iteration": {
+            "alloc_count": 0.0,
+            "alloc_bytes": 0.0,
+            "free_count": 0.0
+          }
+        }
+      },
+      "small": {
+        "nbytes": 400000,
+        "h2d": {
+          "total_events": 60,
+          "alloc_size_distribution": {
+            "count": 30,
+            "total_bytes": 12000000,
+            "min_bytes": 400000,
+            "max_bytes": 400000,
+            "mean_bytes": 400000,
+            "median_bytes": 400000.0,
+            "common_sizes": [
+              {
+                "nbytes": 400000,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 30,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 30,
+            "total_bytes": 12000000,
+            "min_bytes": 400000,
+            "max_bytes": 400000,
+            "mean_bytes": 400000,
+            "median_bytes": 400000.0,
+            "common_sizes": [
+              {
+                "nbytes": 400000,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 30,
+              "1-4 MB": 0,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 30,
+            "still_live_count": 0,
+            "mean_seconds": 0.00045086999889463184,
+            "median_seconds": 0.0004354999982751906,
+            "min_seconds": 0.0003929000231437385,
+            "max_seconds": 0.000831599987577647,
+            "bucket_counts": {
+              "< 1 ms": 30,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 12000000,
+            "temporary_count": 30,
+            "total_alloc_bytes": 12000000,
+            "total_alloc_count": 30
+          },
+          "reuse_opportunity": {
+            "total_bytes": 12000000,
+            "total_count": 30,
+            "reusable_bytes": 11600000,
+            "reusable_count": 29,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 400000,
+            "peak_reserved_bytes": 400000,
+            "peak_active_bytes": 400000,
+            "cached_bytes_final": 400000,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 1048576,
+            "peak_reserved_bytes": 1048576,
+            "peak_active_bytes": 1048576,
+            "cached_bytes_final": 1048576,
+            "internal_fragmentation_bytes": 19457280
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 30,
+              "alloc_bytes": 12000000,
+              "free_count": 30,
+              "free_bytes": 12000000
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 1.0,
+            "alloc_bytes": 400000.0,
+            "free_count": 1.0
+          }
+        },
+        "d2h": {
+          "total_events": 0,
+          "alloc_size_distribution": {
+            "count": 0,
+            "total_bytes": 0,
+            "min_bytes": 0,
+            "max_bytes": 0,
+            "mean_bytes": 0.0,
+            "median_bytes": 0.0,
+            "common_sizes": [],
+            "bucket_counts": {}
+          },
+          "free_size_distribution": {
+            "count": 0,
+            "total_bytes": 0,
+            "min_bytes": 0,
+            "max_bytes": 0,
+            "mean_bytes": 0.0,
+            "median_bytes": 0.0,
+            "common_sizes": [],
+            "bucket_counts": {}
+          },
+          "lifetime_distribution": {
+            "paired_count": 0,
+            "still_live_count": 0,
+            "mean_seconds": 0.0,
+            "median_seconds": 0.0,
+            "min_seconds": 0.0,
+            "max_seconds": 0.0,
+            "bucket_counts": {
+              "< 1 ms": 0,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 0,
+            "temporary_count": 0,
+            "total_alloc_bytes": 0,
+            "total_alloc_count": 0
+          },
+          "reuse_opportunity": {
+            "total_bytes": 0,
+            "total_count": 0,
+            "reusable_bytes": 0,
+            "reusable_count": 0,
+            "reusable_byte_fraction": 0.0,
+            "reusable_count_fraction": 0.0,
+            "distinct_sizes": 0
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 0,
+            "simulated_malloc_count": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "cache_hit_rate": 0.0,
+            "reserved_bytes_final": 0,
+            "peak_reserved_bytes": 0,
+            "peak_active_bytes": 0,
+            "cached_bytes_final": 0,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 0,
+            "simulated_malloc_count": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "cache_hit_rate": 0.0,
+            "reserved_bytes_final": 0,
+            "peak_reserved_bytes": 0,
+            "peak_active_bytes": 0,
+            "cached_bytes_final": 0,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {},
+          "per_iteration": {
+            "alloc_count": 0.0,
+            "alloc_bytes": 0.0,
+            "free_count": 0.0
+          }
+        }
+      },
+      "medium": {
+        "nbytes": 4000000,
+        "h2d": {
+          "total_events": 60,
+          "alloc_size_distribution": {
+            "count": 30,
+            "total_bytes": 120000000,
+            "min_bytes": 4000000,
+            "max_bytes": 4000000,
+            "mean_bytes": 4000000,
+            "median_bytes": 4000000.0,
+            "common_sizes": [
+              {
+                "nbytes": 4000000,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 30,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "free_size_distribution": {
+            "count": 30,
+            "total_bytes": 120000000,
+            "min_bytes": 4000000,
+            "max_bytes": 4000000,
+            "mean_bytes": 4000000,
+            "median_bytes": 4000000.0,
+            "common_sizes": [
+              {
+                "nbytes": 4000000,
+                "count": 30
+              }
+            ],
+            "bucket_counts": {
+              "< 1 KB": 0,
+              "1-4 KB": 0,
+              "4-16 KB": 0,
+              "16-64 KB": 0,
+              "64-256 KB": 0,
+              "256 KB-1 MB": 0,
+              "1-4 MB": 30,
+              "4-16 MB": 0,
+              "16-64 MB": 0,
+              "64+ MB": 0
+            }
+          },
+          "lifetime_distribution": {
+            "paired_count": 30,
+            "still_live_count": 0,
+            "mean_seconds": 0.0041161833408599096,
+            "median_seconds": 0.004090150003321469,
+            "min_seconds": 0.003887199971359223,
+            "max_seconds": 0.00469240004895255,
+            "bucket_counts": {
+              "< 1 ms": 0,
+              "1-10 ms": 30,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 120000000,
+            "temporary_count": 30,
+            "total_alloc_bytes": 120000000,
+            "total_alloc_count": 30
+          },
+          "reuse_opportunity": {
+            "total_bytes": 120000000,
+            "total_count": 30,
+            "reusable_bytes": 116000000,
+            "reusable_count": 29,
+            "reusable_byte_fraction": 0.9666666666666667,
+            "reusable_count_fraction": 0.9666666666666667,
+            "distinct_sizes": 1
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 4000000,
+            "peak_reserved_bytes": 4000000,
+            "peak_active_bytes": 4000000,
+            "cached_bytes_final": 4000000,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 30,
+            "simulated_malloc_count": 1,
+            "cache_hits": 29,
+            "cache_misses": 1,
+            "cache_hit_rate": 0.9666666666666667,
+            "reserved_bytes_final": 4194304,
+            "peak_reserved_bytes": 4194304,
+            "peak_active_bytes": 4194304,
+            "cached_bytes_final": 4194304,
+            "internal_fragmentation_bytes": 5829120
+          },
+          "by_category": {
+            "(untagged)": {
+              "alloc_count": 30,
+              "alloc_bytes": 120000000,
+              "free_count": 30,
+              "free_bytes": 120000000
+            }
+          },
+          "per_iteration": {
+            "alloc_count": 1.0,
+            "alloc_bytes": 4000000.0,
+            "free_count": 1.0
+          }
+        },
+        "d2h": {
+          "total_events": 0,
+          "alloc_size_distribution": {
+            "count": 0,
+            "total_bytes": 0,
+            "min_bytes": 0,
+            "max_bytes": 0,
+            "mean_bytes": 0.0,
+            "median_bytes": 0.0,
+            "common_sizes": [],
+            "bucket_counts": {}
+          },
+          "free_size_distribution": {
+            "count": 0,
+            "total_bytes": 0,
+            "min_bytes": 0,
+            "max_bytes": 0,
+            "mean_bytes": 0.0,
+            "median_bytes": 0.0,
+            "common_sizes": [],
+            "bucket_counts": {}
+          },
+          "lifetime_distribution": {
+            "paired_count": 0,
+            "still_live_count": 0,
+            "mean_seconds": 0.0,
+            "median_seconds": 0.0,
+            "min_seconds": 0.0,
+            "max_seconds": 0.0,
+            "bucket_counts": {
+              "< 1 ms": 0,
+              "1-10 ms": 0,
+              "10-100 ms": 0,
+              "100 ms-1 s": 0,
+              "1-10 s": 0,
+              "> 10 s": 0
+            }
+          },
+          "persistent_vs_temporary": {
+            "persistent_bytes": 0,
+            "persistent_count": 0,
+            "temporary_bytes": 0,
+            "temporary_count": 0,
+            "total_alloc_bytes": 0,
+            "total_alloc_count": 0
+          },
+          "reuse_opportunity": {
+            "total_bytes": 0,
+            "total_count": 0,
+            "reusable_bytes": 0,
+            "reusable_count": 0,
+            "reusable_byte_fraction": 0.0,
+            "reusable_count_fraction": 0.0,
+            "distinct_sizes": 0
+          },
+          "cache_simulation_exact": {
+            "policy": "exact",
+            "total_alloc_requests": 0,
+            "simulated_malloc_count": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "cache_hit_rate": 0.0,
+            "reserved_bytes_final": 0,
+            "peak_reserved_bytes": 0,
+            "peak_active_bytes": 0,
+            "cached_bytes_final": 0,
+            "internal_fragmentation_bytes": 0
+          },
+          "cache_simulation_size_class": {
+            "policy": "size_class",
+            "total_alloc_requests": 0,
+            "simulated_malloc_count": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "cache_hit_rate": 0.0,
+            "reserved_bytes_final": 0,
+            "peak_reserved_bytes": 0,
+            "peak_active_bytes": 0,
+            "cached_bytes_final": 0,
+            "internal_fragmentation_bytes": 0
+          },
+          "by_category": {},
+          "per_iteration": {
+            "alloc_count": 0.0,
+            "alloc_bytes": 0.0,
+            "free_count": 0.0
+          }
+        }
+      }
+    },
+    "alloc_free_overhead": {
+      "tiny": {
+        "nbytes": 4096,
+        "mean_alloc_seconds": 0.00017728800099575892,
+        "median_alloc_seconds": 0.00016185001004487276,
+        "mean_free_seconds": 0.000245542997145094,
+        "median_free_seconds": 0.00023710000095888972,
+        "iterations": 200
+      },
+      "small": {
+        "nbytes": 65536,
+        "mean_alloc_seconds": 0.0002048135013319552,
+        "median_alloc_seconds": 0.0001963000395335257,
+        "mean_free_seconds": 0.00029481249774107707,
+        "median_free_seconds": 0.0003033500106539577,
+        "iterations": 200
+      },
+      "medium": {
+        "nbytes": 1048576,
+        "mean_alloc_seconds": 0.00017332950053969398,
+        "median_alloc_seconds": 0.0001598999951966107,
+        "mean_free_seconds": 0.00025597449974156916,
+        "median_free_seconds": 0.0002409500302746892,
+        "iterations": 200
+      }
+    }
+  }
+}

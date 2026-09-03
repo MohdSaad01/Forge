@@ -1,4 +1,4 @@
-# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10; CUDA `MSELoss` as of Milestone 12; CUDA `CrossEntropyLoss` as of Milestone 14; `Adam` as of Milestone 17; CUDA Conv2d-backward performance work in Milestone 21)
+# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10; CUDA `MSELoss` as of Milestone 12; CUDA `CrossEntropyLoss` as of Milestone 14; `Adam` as of Milestone 17; CUDA Conv2d-backward performance work in Milestone 21; allocation profiling in Milestone 24)
 
 ## Package layout
 ```
@@ -184,6 +184,19 @@ Conv2d backward: weight/bias optimization (Milestone 21)** section for that
 optimization's full writeup (the change lives entirely in
 `forge/backend/cuda/kernels.cu`, not in this document's `nn.optim`
 package).
+
+## Allocation behavior (Milestone 24)
+Milestone 24's allocation-profiling pass (`docs/architecture/cuda-memory-
+allocator.md`) confirms, from a real CUDA allocation trace rather than the
+timing-only observation above, that `Adam.step()`/`SGD.step()` allocate
+**zero** new CUDA memory once optimizer state exists: profiling 30 steady-
+state `adam_step`/`sgd_step` calls each (`benchmarks/alloc_profile.py`)
+recorded no "alloc" events in either category. This is the allocation-level
+counterpart to `tests/test_cuda_memory.py::
+test_adam_first_step_allocates_persistent_state_subsequent_steps_do_not_grow`
+(state is allocated once, lazily, on the first step with a real gradient,
+and reused in place forever after) -- Milestone 24 adds the confirmation
+that this holds for allocation *traffic*, not just net byte counts.
 
 ## Known limitations
 - `SGD` and `Adam` only (as of Milestone 17): no RMSProp, Adagrad, AdamW, learning-rate schedules, gradient clipping, parameter groups, mixed precision, or fused/multi-GPU optimizers -- all explicit Milestone 17 non-goals.

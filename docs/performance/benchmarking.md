@@ -712,3 +712,70 @@ normal CUDA execution" constraint:
    dominates and hides an effect this small -- reported here as a
    methodology finding in its own right, not papered over with a
    misleadingly precise cross-process percentage.
+
+## Milestone 24: CUDA allocation profiling and caching-allocator design
+
+### Purpose
+Not another optimization pass, and not another timing benchmark: Milestone
+24 asks whether Forge's direct `cudaMalloc`/`cudaFree`-per-`CUDAStorage`
+model is a real bottleneck, using a new optional allocation-*event* profiler
+(`forge.cuda.profiler`, distinct from Milestone 22's current/peak
+`memory_stats()`) layered on top of the existing timing methodology. See
+`docs/architecture/cuda-memory-allocator.md` for the full writeup this
+section summarizes.
+
+### New: `benchmarks/alloc_profile.py` / `benchmarks/alloc_analysis.py`
+`alloc_profile.py` is a diagnostic script (like `mnist_profile.py`,
+Milestone 21) -- not part of the stable `BenchmarkResult` JSON schema. It
+profiles: the real M20 MNIST workload (warmup vs. steady-state, phases
+tagged via `forge.cuda.profiler.tag()`), sixteen representative operations'
+forward and backward allocation traffic, CPU<->CUDA transfer allocation
+behavior, and direct `cudaMalloc`/`cudaFree` host-API timing.
+`alloc_analysis.py` holds the pure-function analysis this data feeds into:
+size/lifetime distributions, persistent-vs-temporary classification, a
+same-size reuse-opportunity statistic, and an **offline** caching-allocator
+simulation (never wired into Forge's real allocator).
+
+### Measured example (940MX, real hardware; batch=64, 30 steady-state iterations)
+
+| Metric | Value |
+|---|---:|
+| Mean full-iteration wall-clock time | 25.21 ms |
+| Allocations / frees per iteration | 64.0 / 64.0 |
+| True persistent CUDA memory (`memory_stats()`, flat before/after) | 440,992 bytes |
+| Peak allocated bytes (any instant) | 7,789,424 bytes |
+| Distinct allocation sizes across the whole trace | 14 |
+| Bytes that are an exact-size repeat of an earlier allocation | 99.1% |
+| Offline exact-size cache simulation: real `cudaMalloc` calls needed | 42 (vs. 1,920 today) |
+| Direct `cudaMalloc` / `cudaFree` cost (isolated, size-independent) | ~175-205 us / ~245-295 us |
+
+The last row is the headline finding: `cudaMalloc`/`cudaFree` are
+host-blocking CUDA Runtime API calls (no asynchronous queue to correct for,
+unlike a kernel launch), and on this machine's WDDM driver stack they cost
+roughly 175-300 microseconds *per call*, essentially independent of request
+size across 4 KB-1 MB. Multiplied by 64 allocations + 64 frees/iteration,
+that is the same order of magnitude as the entire ~25 ms measured training
+step -- explicitly reported as an order-of-magnitude estimate, not a
+precise attribution (isolated timing has no concurrent kernel traffic to
+overlap with, unlike the real workload), per this document's and the
+milestone brief's own caution against overclaiming allocation-latency
+numbers.
+
+### Decision
+`docs/architecture/cuda-memory-allocator.md`'s **Decision** section:
+**caching allocator JUSTIFIED** (evidence-backed recommendation for a
+future milestone; not implemented in Milestone 24). The combination of
+near-total same-size repetition, a trivial offline simulation collapsing
+1,920 real driver calls to 42, and this environment's unusually high
+per-call `cudaMalloc`/`cudaFree` cost together make a strong case -- but see
+that document's **Conditions under which caching should be implemented**
+and **Risks** sections before treating this as a mandate.
+
+### Performance overhead of the profiler itself
+Identical mechanism and identical conclusion to Milestone 22's own
+counters (see immediately above): `CUDAMemoryProfiler.record()`'s
+disabled-path cost is one `bool` check, and `memory_stats()`'s own numbers
+are unaffected by whether the profiler happens to be running
+(`tests/test_cuda_alloc_profiler.py::
+test_profiler_running_does_not_change_real_memory_stats`). No new
+synchronization was added at either instrumentation point.

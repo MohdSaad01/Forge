@@ -252,3 +252,27 @@ def test_cuda_memory_extra_reports_expected_keys_and_deltas():
         "cuda_allocation_count_delta": 7,
         "cuda_free_count_delta": 4,
     }
+
+
+# -- Milestone 24: CUDA allocation profiling ---------------------------------
+
+
+def test_alloc_profile_module_imports_and_exposes_its_entry_point():
+    """Structural only: importing `benchmarks.alloc_profile` (and the
+    `benchmarks.alloc_analysis` module it depends on) must never require a
+    working CUDA backend -- `main()` itself checks `is_cuda_available()` and
+    exits cleanly (see that module) rather than failing on a CPU-only
+    machine, matching every other CUDA-optional benchmark module."""
+    from benchmarks import alloc_analysis, alloc_profile
+
+    assert callable(alloc_profile.main)
+    assert callable(alloc_analysis.size_distribution)
+
+
+def test_alloc_profile_main_reports_and_exits_cleanly_without_cuda(monkeypatch, capsys):
+    monkeypatch.setattr("benchmarks.alloc_profile.is_cuda_available", lambda: False)
+    from benchmarks.alloc_profile import main
+
+    main([])
+    captured = capsys.readouterr()
+    assert "not available" in captured.out.lower()

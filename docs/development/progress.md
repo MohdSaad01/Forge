@@ -1036,3 +1036,87 @@ and 503.6us after -- no regression (the iterative traversal is marginally
 faster, avoiding recursive-call/closure-cell overhead). See
 `docs/architecture/autograd.md`'s **Graph teardown and object lifetime
 (Milestone 23)** section for full semantics.
+
+### M24 -- CUDA memory allocation profiling and caching-allocator design
+Answers whether Forge's direct `cudaMalloc`-per-`CUDAStorage`/`cudaFree`-at-
+destruction model (unchanged since Milestone 8, instrumented but not
+altered by Milestones 22-23) is a real bottleneck, and produces a
+measurement-backed design proposal for a future caching allocator --
+without implementing one. New `forge/backend/cuda/profiler.py`
+(`CUDAMemoryProfiler`, `AllocationEvent` -- a frozen dataclass of `kind`/
+`nbytes`/`timestamp`/`block_id`/`category`, three primitives plus an
+optional string, never a `CUDAStorage`/`Tensor` reference) and new
+`forge/cuda/profiler.py` (the public `forge.cuda.profiler.start()`/`.stop()`/
+`.reset()`/`.is_active()`/`.events()`/`.tag()`/`.profile()` API, mirroring
+`forge.cuda.memory_stats()`'s existing thin-wrapper/`CUDAError`-if-
+unavailable convention). Instrumented at the exact same two call sites
+Milestone 22 already uses (`CUDABackend._alloc()`, `CUDAStorage.__del__()`)
+-- each now also forwards the allocated pointer's raw integer value through
+`forge.backend.cuda.memory.record_alloc`/`record_free` to the profiler,
+which records nothing (a single `bool` check, no event construction, no
+`time.perf_counter()` call) unless explicitly started. Categorization is
+opt-in via `tag()` (a small stack pushed/popped around a code region)
+rather than instrumenting every one of `CUDABackend`'s ~40 methods
+individually.
+
+New `benchmarks/alloc_analysis.py` (pure functions over an
+`AllocationEvent` trace: size/lifetime distributions with fixed buckets,
+`pair_lifetimes`' FIFO-per-`block_id` alloc/free matching, persistent-vs-
+temporary classification, a same-size reuse-opportunity statistic, and an
+**offline** exact-size/size-class caching-allocator simulation -- never
+wired into Forge's real allocator) and `benchmarks/alloc_profile.py` (a
+diagnostic script, like `benchmarks/mnist_profile.py`: profiles the real
+M20 MNIST CNN workload phase-by-phase, sixteen representative operations'
+forward/backward allocation traffic, CPU<->CUDA transfer allocation
+behavior, and direct `cudaMalloc`/`cudaFree` host-API timing).
+
+**Measured on the 940MX** (CC 5.0, CUDA 12.6, driver 582.53; batch=64, 30
+steady-state iterations of the M20 CNN): 64 allocations and 64 frees per
+25.21ms iteration; true persistent CUDA memory (`memory_stats()`, flat
+before/after the window) is 440,992 bytes against a 7,789,424-byte peak;
+only 14 distinct allocation sizes occur across the whole trace, and 99.1%
+of allocated bytes are an exact-size repeat of one seen earlier. An offline
+exact-size cache simulation shows a trivial cache would have reduced 1,920
+real `cudaMalloc`/`cudaFree` pairs to 42 real driver calls for the entire
+run. Direct timing of `CUDABackend._alloc()`/`cf_free` (host-blocking CUDA
+Runtime API calls -- no asynchronous queue to correct for, unlike a kernel
+launch) shows ~175-300 microseconds per call, essentially size-independent
+across 4KB-1MB and, multiplied by this workload's per-iteration
+allocation/free count, the same order of magnitude as the entire measured
+training step -- explicitly reported as an order-of-magnitude estimate
+(isolated timing has no concurrent kernel traffic to overlap with, unlike
+the real workload), not a precise attribution.
+
+New `docs/architecture/cuda-memory-allocator.md` -- the milestone's primary
+deliverable: measured allocation behavior, size/lifetime distributions, the
+offline simulation, a comparison of four candidate allocator designs
+(exact-size / size-class / best-fit / split-coalesce) against the actual
+trace, a concrete recommended architecture (an exact-size cache, its
+ownership/reuse/failure/cleanup semantics, `CUDAStorage`/autograd/Adam
+invariants a future implementation must preserve, and why Forge's existing
+per-operation `cudaDeviceSynchronize()` already makes reuse-after-free safe
+without CUDA streams), and a memory-statistics API evaluation for a future
+allocator. **Decision: caching allocator JUSTIFIED** (evidence-backed
+recommendation for a future milestone -- not implemented here), with
+explicit conditions and risks documented rather than treated as an
+unconditional mandate. `docs/architecture/cuda-backend.md` and
+`docs/architecture/optimization.md` gain matching cross-reference sections;
+`docs/performance/benchmarking.md` gains the full methodology and
+measurement writeup.
+
+38 new tests: 15 hardware-gated profiler-lifecycle tests
+(`tests/test_cuda_alloc_profiler.py` -- disabled by default, start/stop/
+reset, alloc/free event correctness, block-id correlation, tagging
+including nested tags, does-not-retain-storage, repeated independent
+traces), 8 CPU-only availability tests
+(`tests/test_cuda_alloc_profiler_availability.py`, split out for the same
+module-level-`pytestmark` reason `test_cuda_memory_availability.py` is),
+13 CPU-only pure-logic tests (`tests/test_alloc_analysis.py` -- size/
+lifetime distribution math, block-id-reuse-safe lifetime pairing,
+persistent/temporary splitting, both simulation policies, reuse-opportunity
+math), and 2 benchmark-harness tests (`tests/test_benchmarks.py`) -- 983
+tests total (945 + 38; CUDA-hardware-gated count up from 310 to 325), all
+passing on the 940MX, and the full suite was also run with `PATH` stripped
+of the CUDA toolchain to confirm a clean skip (658 passed, 325 skipped, 0
+failed). No CUDA kernel changed, no caching allocator implemented, and
+every Milestone 1-23 behavior is unchanged.
