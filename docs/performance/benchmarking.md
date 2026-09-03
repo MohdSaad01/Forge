@@ -15,13 +15,19 @@ benchmarks/
     sizes.py             tiny/small/medium size configurations, warmup/iteration defaults
     environment.py       hardware/software environment capture
     results.py            BenchmarkResult, JSON output, human-readable table
-    ops_bench.py           forward Tensor op benchmarks (add/sub/mul/relu/sum/reshape/matmul)
-    backward_bench.py       backward-pass benchmarks
+    ops_bench.py           forward Tensor/layer/loss/optimizer op benchmarks
+    backward_bench.py       backward-pass benchmarks (incl. a full M20 CNN backward)
     transfer_bench.py       CPU<->CUDA transfer cost benchmarks
-    training_bench.py       end-to-end training-throughput benchmark
+    training_bench.py       end-to-end toy-model training-throughput benchmark
+    mnist_bench.py            end-to-end real M20 CNN training-throughput benchmark (Milestone 21)
+    mnist_profile.py           MNIST workload phase/per-op profiling script (Milestone 21; not a benchmark category)
     run.py                    CLI entry point
     __main__.py                `python -m benchmarks`
     results/latest.json         most recent full run's structured output (not test data)
+    results/m11_baseline.json    archived Milestone 11 baseline
+    results/m21_baseline.json    archived Milestone 21 pre-optimization baseline
+    results/mnist_profile_baseline.json    archived Milestone 21 pre-optimization MNIST profile
+    results/mnist_profile_optimized.json    Milestone 21 post-optimization MNIST profile
 ```
 `benchmarks/` lives outside the `forge` package and is never imported by it
 -- `import forge` never touches this code, matching the milestone brief's
@@ -38,6 +44,8 @@ into normal unit tests."
 python -m benchmarks                              # everything, prints a table, writes benchmarks/results/latest.json
 python -m benchmarks --categories forward transfer  # a subset
 python -m benchmarks --output my_run.json           # a different output path
+python -m benchmarks --categories mnist              # real M20 CNN training throughput only (Milestone 21)
+python -m benchmarks.mnist_profile                    # MNIST workload phase/per-op breakdown (Milestone 21; not a category)
 ```
 This is always an explicit, separate action from running `pytest` -- the
 correctness suite and the benchmark suite are different commands with
@@ -386,3 +394,229 @@ rather than as a separate architecture decision record.
   automatically compares a new run against `results/latest.json` or fails a
   build on regression -- explicitly out of scope (`docs/development/roadmap.md`
   Phase 5 is "Performance," not "Performance CI").
+
+## Milestone 21: expanded coverage, MNIST profiling, targeted CUDA optimization
+
+### New benchmark coverage
+Milestone 11 covered `add`/`sub`/`mul`/`relu`/`sum`/`reshape`/`matmul` and
+(Milestone 15) `conv2d`. Milestone 21 fills in the rest of Forge's current
+operation surface, using the exact same `time_cpu`/`time_cuda`/`time_calls`
+methodology (unchanged -- see **Timing methodology** above) and the exact
+same `tiny`/`small`/`medium` scale philosophy (new configs added to
+`benchmarks/sizes.py`: `LOSS_CONFIGS`, `ADAM_PARAM_SIZES`, plus reusing
+`CONV2D_CONFIGS`'/`ELEMENTWISE_SIZES`' existing scales for `max_pool2d`/
+`dropout`):
+- **Forward** (`benchmarks/ops_bench.py`): `exp`, `log` (now benchmarked --
+  they gained real CUDA kernels in Milestone 14 but were never added to this
+  suite), `max_pool2d`, `mse_loss`, `cross_entropy_loss`, `dropout`,
+  `adam_step` (an isolated optimizer-step call, not a training loop).
+- **Backward** (`benchmarks/backward_bench.py`): `exp`/`log` backward,
+  `max_pool2d` backward, `cross_entropy_loss` backward, and a complete
+  small-CNN backward pass (`mnist_cnn_full`) -- the real M20 architecture
+  (`examples.mnist.model.build_model()`), not a synthetic model.
+- **End-to-end MNIST training** (`benchmarks/mnist_bench.py`, new category
+  `"mnist"`): the real M20 CNN trained against a fixed synthetic
+  `(64, 1, 28, 28)` batch through `CrossEntropyLoss -> Adam` (the same
+  optimizer/loss combination `examples/mnist/train.py` uses, unlike the
+  pre-existing `training_bench.py`'s `Linear -> ReLU -> Linear` + `MSELoss`
+  + `SGD` toy model) -- reports samples/sec and an extrapolated epoch time,
+  directly comparable to a real `train.py` run.
+
+### MNIST workload profiling: `benchmarks/mnist_profile.py`
+A new, separate diagnostic script (not a `BenchmarkResult`-producing
+category -- `python -m benchmarks.mnist_profile`) that breaks one M20 CNN
+training step into `transfer -> forward -> loss -> backward -> optimizer`,
+and further into per-layer-type forward timing and per-op backward timing.
+See that module's docstring for exactly how each breakdown is obtained
+(manually unpacking `Sequential.forward()`'s loop for the forward
+breakdown; a small instrumented re-implementation of
+`forge.autograd.engine.run_backward`, timing each `node.backward_fn(...)`
+call by `node.name`, for the backward breakdown). This instrumented walker
+adds synchronization overhead between every single backward op on CUDA that
+a normal `backward()` call does not pay -- appropriate for a profiling tool
+needing per-op resolution, never used on Forge's actual training path.
+`tests/test_benchmarks.py::test_profiled_backward_matches_real_backward`
+verifies this instrumented walker computes identical gradients to the real
+`run_backward` on a small multi-op CPU graph, since a subtly wrong profiler
+would produce a misleading bottleneck analysis.
+
+### M21 baseline (before optimization)
+Captured with `python -m benchmarks --output benchmarks/results/m21_baseline.json`
+(archived; the M11-era baseline is separately preserved as
+`benchmarks/results/m11_baseline.json`) and
+`python -m benchmarks.mnist_profile --output benchmarks/results/mnist_profile_baseline.json`,
+both on the same verified 940MX/i5-7200U environment as the M11 baseline.
+
+MNIST workload profile (batch=64, 30 iterations, 5 warmup):
+
+| Phase | CPU mean | CPU % | CUDA mean | CUDA % |
+|---|---|---|---|---|
+| transfer | 0.05ms | 0.1% | 0.39ms | 1.1% |
+| forward | 19.82ms | 43.8% | 5.98ms | 17.3% |
+| loss | 0.22ms | 0.5% | 1.79ms | 5.2% |
+| backward | 24.82ms | 54.8% | 25.29ms | 73.4% |
+| optimizer | 0.36ms | 0.8% | 1.01ms | 2.9% |
+| **TOTAL** | **45.27ms** | | **34.46ms** | |
+
+CUDA forward, by layer type: `Conv2d` 2.51ms, `Linear` 1.35ms, `ReLU` 1.26ms,
+`MaxPool2d` 0.58ms, `Flatten` 0.15ms. CUDA backward, by op: **`conv2d`
+18.66ms** (73.8% of the entire backward phase), `max_pool2d` 1.34ms, `relu`
+1.34ms, `@` (matmul) 0.97ms, everything else under 0.6ms each.
+
+End-to-end MNIST training throughput (`mnist_bench.py`, batch=64):
+CPU ~1,060-1,392 samples/sec (56.6-43.1s/epoch extrapolated; this range
+reflects real run-to-run noise on this shared, non-dedicated development
+machine -- see **Known limitations** below), CUDA ~1,875 samples/sec
+(32.0s/epoch extrapolated) at the pre-optimization baseline.
+
+### Bottleneck identification
+The MNIST profile makes the dominant CUDA cost unambiguous: `conv2d`
+backward alone is 73.8% of the backward phase and 54.2% of the entire
+training step -- an order of magnitude larger than every other backward op
+combined. Isolating the three `conv2d_backward` sub-kernels
+(`cf_conv2d_backward_{input,weight,bias}`) at the CNN's own two layer
+shapes (conv1: N=64,Cin=1,Cout=8,H=28,W=28,K=3; conv2:
+N=64,Cin=8,Cout=16,H=13,W=13,K=3) narrowed this to the `weight`/`bias`
+kernels specifically -- see `docs/architecture/cuda-backend.md`'s **CUDA
+Conv2d backward: weight/bias optimization (Milestone 21)** section for the
+full per-kernel numbers and the underlying cause (a handful of CUDA threads
+each serially reducing tens of thousands of elements alone, while hundreds
+of the 940MX's cores sat idle). `MaxPool2d`, elementwise ops, and `Adam`
+were also measured and found *not* to justify optimization at this
+workload's scale -- see below.
+
+### Optimizations applied
+**`conv2d_backward`'s weight/bias kernels** (see the cuda-backend.md section
+above for the complete writeup): rewritten as a block-per-output-element
+shared-memory tree reduction, with the weight kernel additionally
+dispatching between that reduction kernel and the original Milestone 15
+one-thread-per-element kernel based on a measured element-count threshold
+(a single strategy was *not* uniformly better across both MNIST layer
+shapes -- re-measuring after the first attempt is what caught this).
+
+**Everything else measured but not optimized, with the measurement that justified leaving it alone:**
+- **`MaxPool2d`.** CPU forward/backward are the single largest CPU-side
+  cost in the whole profile (12.23ms forward, 10.42ms backward -- more than
+  `Conv2d`'s own CPU cost) but CUDA `max_pool2d` backward is already cheap
+  (1.34ms, 5.3% of CUDA backward) -- the milestone's own optimization
+  target is CUDA, and CUDA MaxPool2d was not the bottleneck there.
+  `CPUBackend.max_pool2d`'s relative CPU cost is a real, measured
+  observation (see `docs/architecture/cuda-backend.md`'s **CUDA Conv2d /
+  MaxPool2d** section for the underlying im2col/strided-view CPU
+  implementation) but optimizing *CPU* MaxPool2d is outside the CUDA
+  optimization this milestone's brief scopes -- recorded here as an
+  observed fact, not acted on.
+- **Elementwise CUDA ops** (`relu`, `exp`, `log`, `+`, `*`, `-`, `sum`,
+  `reshape` in the backward-by-op breakdown) collectively account for well
+  under 15% of CUDA backward time even before the conv2d fix (and a smaller
+  share after it, since `conv2d` shrank and they did not). No repeated-
+  kernel-launch fusion was implemented -- the brief explicitly forbids a
+  general fusion/graph-compiler system, and nothing here measured large
+  enough to justify even a small targeted one.
+- **`Adam`.** An isolated CUDA `adam_step` call is sub-millisecond even at
+  262,144 parameters (`benchmarks/ops_bench.py`'s new `adam_step` forward
+  entries), and the MNIST profile's `optimizer` phase is 2.9% (baseline) of
+  total CUDA training-step time. Left completely unchanged, per the
+  brief's explicit "if Adam is negligible, leave it alone."
+- **Memory transfers.** The MNIST profile's `transfer` phase is 1.1% of the
+  CUDA training step (0.39ms out of 34.46ms) at batch=64 -- not remotely
+  large enough to justify pinned memory, async prefetching, or a GPU
+  DataLoader, all of which the brief explicitly rules out unless transfer
+  overhead *dominates*. It does not, here.
+
+### M21 optimized results (after optimization)
+Captured with `python -m benchmarks --output benchmarks/results/m21_optimized.json`
+(now also `benchmarks/results/latest.json`, per Section 16 of the milestone
+brief) and `python -m benchmarks.mnist_profile --output benchmarks/results/mnist_profile_optimized.json`,
+same environment, same fixed configuration, no other code changed.
+
+MNIST workload profile (batch=64, 30 iterations, 5 warmup) -- CUDA only
+changed (CPU code untouched):
+
+| Phase | CUDA mean (before) | CUDA mean (after) |
+|---|---|---|
+| transfer | 0.39ms | 0.42ms |
+| forward | 5.98ms | 6.37ms |
+| loss | 1.79ms | 1.73ms |
+| backward | 25.29ms | **16.10ms** |
+| optimizer | 1.01ms | 0.91ms |
+| **TOTAL** | **34.46ms** | **25.53ms** |
+
+CUDA backward, `conv2d` specifically: 18.66ms -> **9.58ms** (~1.95x). Every
+other backward op's own time is within normal run-to-run noise of its
+baseline value (none were touched).
+
+Isolated `conv2d_backward` kernel timing (direct `ctypes` calls, bypassing
+Tensor/autograd dispatch overhead -- the cleanest before/after comparison
+since it isolates exactly the changed code):
+
+| Layer shape | Before | After | Speedup |
+|---|---|---|---|
+| conv1 (weight_elems=72) | 12.62ms | 3.64-3.73ms | ~3.4-3.5x |
+| conv2 (weight_elems=1,152) | 7.20ms | 6.71-10.34ms | ~1.0-1.1x (bias-only gain at this shape; see hybrid dispatch above) |
+
+End-to-end MNIST training throughput (`mnist_bench.py`, batch=64): CUDA
+~1,875 -> **~2,569 samples/sec** (~1.37x), extrapolated epoch time
+~32.0s -> ~23.4s. Two repeat `mnist` benchmark runs after the optimization
+were consistent (CUDA ~23.2-24.9ms/step, CPU ~46.0-47.3ms/step), confirming
+the baseline run's noisier CPU number (60.37ms, stdev 33.7ms -- likely
+transient background load on this shared development machine, not a code
+effect) was the outlier, not the post-optimization numbers.
+
+### Summary table (Section 14 format)
+```text
+CPU:
+  samples/sec:  ~1,060-1,392 (baseline) / ~1,392-1,517 (post-optimization runs)
+                (CPU code unchanged throughout; range reflects measured
+                 run-to-run system noise, not a code effect -- see below)
+  epoch time:   ~43-57s (extrapolated from measured per-batch rate)
+
+CUDA before:
+  samples/sec:  ~1,875
+  epoch time:   ~32.0s (extrapolated)
+
+CUDA after:
+  samples/sec:  ~2,569
+  epoch time:   ~23.4s (extrapolated)
+```
+The primary success metric -- improved end-to-end CUDA throughput -- moved
+by ~1.37x from a single, measurement-justified kernel change. CUDA training
+remains slower than CPU is capable of at full efficiency on this small
+architecture/batch size (consistent with `docs/architecture/cuda-backend.md`'s
+long-standing "no performance claims" position for small workloads on this
+GPU), but the CUDA-vs-CPU comparison was never this optimization's target;
+the CUDA-vs-CUDA-before improvement is.
+
+### Known limitations (Milestone 21 additions)
+- **CPU throughput numbers show real run-to-run variance on this
+  development machine** (a shared laptop, not a dedicated benchmark host)
+  independent of any code change -- the baseline run's CPU MNIST-training
+  number (60.37ms/step, stdev 33.7ms) was materially noisier than three
+  later measurements of the *same, unmodified* CPU code path (45.96ms,
+  46.50ms, 47.34ms/step). This is reported honestly rather than smoothed
+  over: the CUDA-side numbers (which this milestone's optimization actually
+  touched) were comparatively stable throughout (stdev 4-6ms on a ~25-34ms
+  mean), and the isolated `ctypes`-level kernel measurements (least exposed
+  to system noise, since they bypass the most Python-level dispatch) are
+  the most trustworthy single before/after comparison in this section.
+- **The weight-kernel dispatch threshold (256 weight elements) was chosen
+  from two measured data points** (72 and 1,152), not a sweep across many
+  layer shapes -- it is a reasonable, conservative midpoint for the
+  architectures Forge's current scope targets (small CNNs, few-to-moderate
+  channel counts), not a tuned/autotuned constant. A future Conv2d layer
+  shape near that boundary might not realize the full measured speedup, or
+  might pick the less-optimal kernel; this is documented as a known
+  approximation, not hidden.
+- **No further Conv2d optimization was attempted beyond weight/bias.** The
+  `input` kernel (already one thread per input pixel at every measured
+  shape) was left unchanged since it was not the measured bottleneck --
+  see `docs/architecture/cuda-backend.md`'s writeup for the reasoning.
+  Shared-memory input/weight tiling, im2col, and cuDNN remain explicitly
+  out of scope per the milestone brief.
+- **`benchmarks/mnist_profile.py`'s instrumented backward walker adds
+  synchronization overhead** between every backward op that a normal
+  `backward()` call does not pay (see that module's docstring) -- its
+  absolute per-op numbers are therefore not directly comparable to
+  `backward_bench.py`'s `time_calls`-based numbers for the same op in
+  isolation; both are internally consistent for their own before/after
+  comparisons, which is what this milestone's analysis relies on.

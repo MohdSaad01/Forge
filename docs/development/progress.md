@@ -851,3 +851,73 @@ the full suite (`python -m pytest`) passes with `0 failed` -- no existing test w
 framework code changed (the milestone required none). `examples/mnist/data/` and
 `examples/mnist/artifacts*/` (downloaded data, generated run outputs) are `.gitignore`d as
 machine-local and reproducible. See `examples/mnist/README.md` for the full reproduction guide.
+
+### M21 — Performance profiling and targeted CUDA optimization
+Extends the M11 benchmark subsystem to cover Forge's full current operation
+set and applies one measurement-justified CUDA optimization, following M11's
+exact "measure first, optimize only what measurement justifies" discipline.
+New forward/backward benchmark coverage (`benchmarks/ops_bench.py`,
+`benchmarks/backward_bench.py`): `exp`/`log` (real CUDA kernels since M14
+but never benchmarked), `max_pool2d`, `mse_loss`, `cross_entropy_loss`,
+`dropout`, an isolated `adam_step`, and a complete small-CNN backward pass
+using the real M20 architecture. Two new files: `benchmarks/mnist_bench.py`
+(a new `"mnist"` category -- real M20 CNN + `CrossEntropyLoss` + `Adam`
+trained against a fixed synthetic MNIST-shaped batch, reporting samples/sec
+directly comparable to `examples/mnist/train.py`) and
+`benchmarks/mnist_profile.py` (a diagnostic script, not a `BenchmarkResult`
+category, breaking one training step into
+`transfer -> forward -> loss -> backward -> optimizer`, with forward broken
+down per layer type and backward per op via a small instrumented
+re-implementation of `forge.autograd.engine.run_backward` -- verified
+against the real engine by
+`tests/test_benchmarks.py::test_profiled_backward_matches_real_backward`).
+
+**Bottleneck found:** the MNIST profile (940MX, batch=64) showed CUDA
+`conv2d` backward at 73.8% of the entire backward phase and 54.2% of the
+whole training step -- an order of magnitude larger than every other
+backward op. Isolating the three `conv2d_backward` sub-kernels at the CNN's
+own two layer shapes narrowed this to `k_conv2d_backward_weight`/
+`k_conv2d_backward_bias` (`forge/backend/cuda/kernels.cu`, Milestone 15):
+at the first conv layer (72 weight elements, 8 bias channels), each of
+those few threads serially summed a 43,264-iteration reduction alone while
+most of the GPU sat idle. `MaxPool2d`, elementwise ops, `Adam`, and memory
+transfers were all measured and found *not* to justify optimization at this
+workload's scale (`Adam` in particular: sub-millisecond even at 262k
+parameters, ~3% of total CUDA step time) -- left unchanged, per the
+milestone's explicit "optimize only what measurement justifies."
+
+**Optimization:** both kernels were rewritten as a block-per-output-element
+shared-memory tree reduction (structurally identical to the existing
+`k_sum`); the bias kernel always uses this (bias-channel counts stay small
+for any CNN Forge targets), while the weight kernel dispatches per-call
+between the new reduction kernel and the original Milestone 15
+one-thread-per-weight kernel based on a measured element-count threshold --
+a single strategy was *not* uniformly better across both MNIST layer shapes
+(1,152 weight elements already had enough native parallelism that the
+reduction kernel's block/sync overhead made it *slower*), caught only by
+re-measuring both shapes after the first attempt. Both exported kernel
+symbols/signatures are unchanged, so no Python-side code changed. All 906
+tests pass unchanged against the recompiled kernels, including CPU/CUDA
+`conv2d` backward-agreement and finite-difference checks; no CPU code was
+touched. See `docs/architecture/cuda-backend.md`'s **CUDA Conv2d backward:
+weight/bias optimization (Milestone 21)** section for the full kernel-level
+writeup and `docs/performance/benchmarking.md`'s **Milestone 21** section
+for complete before/after numbers.
+
+**Measured result** (940MX, real hardware, `batch=64`): isolated
+`conv2d_backward` at the first conv layer dropped from 12.62ms to
+3.64-3.73ms (~3.4-3.5x); the CUDA MNIST training step's `backward` phase
+dropped from 25.29ms to 16.10ms, and total CUDA step time from 34.46ms to
+25.53ms (~1.35x). End-to-end CUDA MNIST training throughput
+(`benchmarks/mnist_bench.py`) moved from ~1,875 to ~2,569 samples/sec
+(~1.37x) -- the milestone's primary success metric (end-to-end CUDA
+throughput), backed by measurement at every step from isolated kernel to
+full training loop. CPU throughput was unaffected (code unmodified);
+CPU-side run-to-run timing on this shared development machine showed more
+variance than the CUDA optimization's own gain, documented explicitly
+rather than smoothed over. Benchmark results: `benchmarks/results/latest.json`
+now holds the M21 post-optimization run; `m11_baseline.json`,
+`m21_baseline.json`, `mnist_profile_baseline.json`, and
+`mnist_profile_optimized.json` are preserved separately as historical
+records. See `docs/performance/benchmarking.md` for full methodology,
+baseline, bottleneck analysis, and optimization writeup.

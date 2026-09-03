@@ -822,7 +822,49 @@ __global__ void k_conv2d_backward_input(
 CONV2D_BACKWARD_INPUT_LAUNCHER(float, f32)
 CONV2D_BACKWARD_INPUT_LAUNCHER(double, f64)
 
-// -- Conv2d backward: weight (gather over the batch/spatial positions a weight touches) --
+// -- Conv2d backward: weight and bias (Milestone 21: block-per-output-element,
+//    shared-memory tree reduction) ------------------------------------------
+//
+// Milestone 21 profiling (`docs/architecture/optimization.md`'s **CUDA
+// Conv2d backward: weight/bias** section) measured these two kernels'
+// original one-thread-per-output-element scheme as the dominant cost of the
+// M20 CNN's CUDA backward pass -- specifically at its first conv layer
+// (Cout=8, Cin=1, K=3: only 72 weight elements and 8 output channels, i.e.
+// 72 and 8 *threads total*), where each of those few threads serially
+// summed a 64-batch x 26x26-output reduction (43,264 iterations) entirely
+// alone -- the 940MX's other ~300+ cores sat idle the whole time. Weight and
+// bias gradients are exactly a "one reduction per output element" shape, so
+// this is a textbook parallel-reduction fix: one thread *block* now owns
+// each output element (a `(co, ci, kh, kw)` weight, or a `co` bias channel),
+// its threads split the N*Hout*Wout reduction via a grid-stride loop, and a
+// standard shared-memory tree reduction (identical in structure to
+// `k_sum`'s, above) combines their partial sums before one thread writes the
+// final value -- no atomics needed, since exactly one block ever writes a
+// given output element.
+//
+// Measurement also showed this reduction kernel is *not* universally better:
+// at the M20 CNN's second conv layer (Cout=16, Cin=8, K=3 -> 1,152 weight
+// elements), the original one-thread-per-weight kernel already had enough
+// threads to occupy the 940MX well, and paying 1,152 blocks' worth of
+// `__syncthreads()`/shared-memory-reduction overhead for a much shorter
+// (7,744-iteration) per-thread reduction made it *slower* (1.37ms -> 5.48ms
+// measured). So `cf_conv2d_backward_weight_*` dispatches between the two
+// kernels at launch time based on `total` weight-element count -- below
+// `CONV2D_WEIGHT_REDUCE_THRESHOLD`, one block per weight element (few
+// threads, long serial reduction: use the block reduction); at or above it,
+// one thread per weight element (already enough threads: use the original
+// kernel). The threshold (256) sits between the two measured cases (72 vs.
+// 1,152) -- see the optimization doc for the full before/after numbers at
+// both layer shapes. Bias gradients have no such crossover in any shape this
+// milestone measured (`Cout` stays small -- 8, 16 -- for any CNN Forge's
+// scope targets), so `cf_conv2d_backward_bias_*` always uses the block
+// reduction. `k_conv2d_backward_input` (above) was left unchanged: it
+// already launches one thread per *input* element (tens of thousands for
+// every layer this milestone measured), so it was not the measured
+// bottleneck.
+
+constexpr int CONV2D_REDUCE_THREADS = 256;
+constexpr long long CONV2D_WEIGHT_REDUCE_THRESHOLD = 256;
 
 template <typename T>
 __global__ void k_conv2d_backward_weight(
@@ -860,16 +902,68 @@ __global__ void k_conv2d_backward_weight(
     grad_w[idx] = acc;
 }
 
+template <typename T>
+__global__ void k_conv2d_backward_weight_reduce(
+    const T* grad_out, const T* x, T* grad_w,
+    int N, int Cin, int H, int W,
+    int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout)
+{
+    extern __shared__ unsigned char smem_raw[];
+    T* smem = reinterpret_cast<T*>(smem_raw);
+
+    long long widx = blockIdx.x;  // one block per (co, ci, kh, kw) weight element
+    int kw_ = static_cast<int>(widx % KW);
+    long long t1 = widx / KW;
+    int kh = static_cast<int>(t1 % KH);
+    long long t2 = t1 / KH;
+    int ci = static_cast<int>(t2 % Cin);
+    int co = static_cast<int>(t2 / Cin);
+
+    long long reduce_total = static_cast<long long>(N) * Hout * Wout;
+    T acc = static_cast<T>(0);
+    for (long long r = threadIdx.x; r < reduce_total; r += blockDim.x) {
+        int wo = static_cast<int>(r % Wout);
+        long long r1 = r / Wout;
+        int ho = static_cast<int>(r1 % Hout);
+        int n = static_cast<int>(r1 / Hout);
+
+        int hi = ho * SH - PH + kh;
+        int wi = wo * SW - PW + kw_;
+        if (hi < 0 || hi >= H || wi < 0 || wi >= W) continue;
+
+        long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+        long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+        acc += grad_out[g_idx] * x[x_idx];
+    }
+
+    smem[threadIdx.x] = acc;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) grad_w[widx] = smem[0];
+}
+
 #define CONV2D_BACKWARD_WEIGHT_LAUNCHER(TYPE, SUFFIX)                                     \
     extern "C" __declspec(dllexport) int cf_conv2d_backward_weight_##SUFFIX(              \
         const TYPE* grad_out, const TYPE* x, TYPE* grad_w,                                \
         int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
         int SH, int SW, int PH, int PW, int Hout, int Wout) {                             \
         long long total = static_cast<long long>(Cout) * Cin * KH * KW;                   \
-        int blocks, threads;                                                              \
-        launch_config(total, blocks, threads);                                            \
-        k_conv2d_backward_weight<TYPE><<<blocks, threads>>>(                              \
-            grad_out, x, grad_w, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout);  \
+        if (total < CONV2D_WEIGHT_REDUCE_THRESHOLD) {                                     \
+            int blocks = total < 1 ? 1 : static_cast<int>(total);                         \
+            k_conv2d_backward_weight_reduce<TYPE>                                         \
+                <<<blocks, CONV2D_REDUCE_THREADS, CONV2D_REDUCE_THREADS * sizeof(TYPE)>>>( \
+                    grad_out, x, grad_w, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout); \
+        } else {                                                                          \
+            int blocks, threads;                                                          \
+            launch_config(total, blocks, threads);                                        \
+            k_conv2d_backward_weight<TYPE><<<blocks, threads>>>(                          \
+                grad_out, x, grad_w, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout); \
+        }                                                                                  \
         return static_cast<int>(cudaGetLastError());                                      \
     }
 
@@ -879,27 +973,38 @@ CONV2D_BACKWARD_WEIGHT_LAUNCHER(double, f64)
 // -- Conv2d backward: bias (sum grad_output over batch and spatial dims) --
 
 template <typename T>
-__global__ void k_conv2d_backward_bias(const T* grad_out, T* grad_b, int N, int Cout, int Hout, int Wout) {
-    long long co = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
-    if (co >= Cout) return;
+__global__ void k_conv2d_backward_bias_reduce(const T* grad_out, T* grad_b, int N, int Cout, int Hout, int Wout) {
+    extern __shared__ unsigned char smem_raw[];
+    T* smem = reinterpret_cast<T*>(smem_raw);
+
+    int co = blockIdx.x;  // one block per output channel
+    long long reduce_total = static_cast<long long>(N) * Hout * Wout;
     T acc = static_cast<T>(0);
-    for (int n = 0; n < N; ++n) {
-        for (int ho = 0; ho < Hout; ++ho) {
-            for (int wo = 0; wo < Wout; ++wo) {
-                long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
-                acc += grad_out[g_idx];
-            }
-        }
+    for (long long r = threadIdx.x; r < reduce_total; r += blockDim.x) {
+        int wo = static_cast<int>(r % Wout);
+        long long r1 = r / Wout;
+        int ho = static_cast<int>(r1 % Hout);
+        int n = static_cast<int>(r1 / Hout);
+        long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+        acc += grad_out[g_idx];
     }
-    grad_b[co] = acc;
+
+    smem[threadIdx.x] = acc;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) grad_b[co] = smem[0];
 }
 
 #define CONV2D_BACKWARD_BIAS_LAUNCHER(TYPE, SUFFIX)                                       \
     extern "C" __declspec(dllexport) int cf_conv2d_backward_bias_##SUFFIX(                \
         const TYPE* grad_out, TYPE* grad_b, int N, int Cout, int Hout, int Wout) {        \
-        int blocks, threads;                                                              \
-        launch_config(Cout, blocks, threads);                                             \
-        k_conv2d_backward_bias<TYPE><<<blocks, threads>>>(grad_out, grad_b, N, Cout, Hout, Wout); \
+        int blocks = Cout < 1 ? 1 : Cout;                                                 \
+        k_conv2d_backward_bias_reduce<TYPE>                                               \
+            <<<blocks, CONV2D_REDUCE_THREADS, CONV2D_REDUCE_THREADS * sizeof(TYPE)>>>(    \
+                grad_out, grad_b, N, Cout, Hout, Wout);                                   \
         return static_cast<int>(cudaGetLastError());                                      \
     }
 

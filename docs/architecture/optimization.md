@@ -1,4 +1,4 @@
-# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10; CUDA `MSELoss` as of Milestone 12; CUDA `CrossEntropyLoss` as of Milestone 14; `Adam` as of Milestone 17)
+# Losses and Optimization (Milestone 4; CUDA-aware `SGD` as of Milestone 10; CUDA `MSELoss` as of Milestone 12; CUDA `CrossEntropyLoss` as of Milestone 14; `Adam` as of Milestone 17; CUDA Conv2d-backward performance work in Milestone 21)
 
 ## Package layout
 ```
@@ -167,6 +167,23 @@ loss.backward()         # accumulates gradients into leaf Parameters
 optimizer.step()        # in-place parameter update from .grad; no new graph
 ```
 `zero_grad()` must run before `backward()` in a given step (not merely before `step()`), because gradients *accumulate* (`docs/architecture/autograd.md`) -- skipping it would silently sum the new step's gradient onto the previous step's.
+
+## Performance optimization (Milestone 21)
+Milestone 21 profiled the actual M20 CNN's CUDA training step (see
+`docs/performance/benchmarking.md`'s **Milestone 21** section for the full
+methodology and numbers) and found `Adam.step()` itself was never a
+meaningful contributor: an isolated CUDA `Adam.step()` call is well under a
+millisecond even at 262,144 parameters (`benchmarks/ops_bench.py`'s
+`adam_step` entries), and the MNIST workload profile attributes only
+~3-4% of total CUDA training-step time to the `optimizer` phase. **`Adam`
+itself was left unchanged** -- no optimization was justified here, matching
+the milestone's "if Adam is negligible, leave it alone" instruction. The
+dominant CUDA cost was `Conv2d`'s *backward* kernels (`conv2d_backward`),
+not the optimizer -- see `docs/architecture/cuda-backend.md`'s **CUDA
+Conv2d backward: weight/bias optimization (Milestone 21)** section for that
+optimization's full writeup (the change lives entirely in
+`forge/backend/cuda/kernels.cu`, not in this document's `nn.optim`
+package).
 
 ## Known limitations
 - `SGD` and `Adam` only (as of Milestone 17): no RMSProp, Adagrad, AdamW, learning-rate schedules, gradient clipping, parameter groups, mixed precision, or fused/multi-GPU optimizers -- all explicit Milestone 17 non-goals.

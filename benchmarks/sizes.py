@@ -68,3 +68,53 @@ CONV2D_CONFIGS: "dict[str, dict[str, int]]" = {
 # stable mean/stdev on this hardware without making the full suite slow).
 DEFAULT_WARMUP = 5
 DEFAULT_ITERATIONS = 20
+
+# -- Milestone 21 additions ---------------------------------------------------
+#
+# MaxPool2d reuses CONV2D_CONFIGS' spatial dimensions directly (pooling a
+# (N, Cout, H, W)-shaped activation is exactly what follows a Conv2d in the
+# M20 CNN), pooled with a fixed 2x2/stride-2 window -- the same window the
+# M20 architecture uses at both pooling stages.
+POOL2D_KERNEL = 2
+
+# CrossEntropyLoss/MSELoss forward+backward configs: (batch, features/classes)
+# at three scales, staying consistent with ELEMENTWISE_SIZES' element-count
+# philosophy (loss inputs are small (batch, classes) tensors, not big enough
+# to need a fourth scale of their own).
+LOSS_CONFIGS: "dict[str, dict[str, int]]" = {
+    "tiny": {"batch": 8, "classes": 10},
+    "small": {"batch": 64, "classes": 10},
+    "medium": {"batch": 256, "classes": 10},
+}
+
+# Dropout forward/backward reuses ELEMENTWISE_SIZES directly -- it is an
+# elementwise mask-multiply, the same shape family as add/sub/mul/relu.
+DROPOUT_P = 0.5
+
+# Adam step benchmark: parameter-tensor element counts at three scales,
+# matching a small Linear layer's weight matrix up to a Conv2d-sized one.
+ADAM_PARAM_SIZES: "dict[str, int]" = {
+    "tiny": 1_024,
+    "small": 16_384,
+    "medium": 262_144,
+}
+
+# End-to-end MNIST training-throughput benchmark (Section 14): the real M20
+# CNN (`examples.mnist.model.build_model()`), a synthetic MNIST-shaped batch
+# (no dataset download needed, matching `tests/test_mnist_example_integration.py`'s
+# own synthetic-data convention), run for a fixed number of steps. Kept small
+# enough to complete quickly on both the i5-7200U and the 940MX.
+MNIST_TRAINING_CONFIG: "dict[str, int]" = {
+    "batch_size": 64,
+    "iterations": 30,
+    "warmup_iterations": 5,
+}
+
+# MNIST workload profiling (Section 4): more iterations than the throughput
+# benchmark above since per-phase/per-layer breakdowns are noisier
+# individually and benefit from a larger sample.
+MNIST_PROFILE_CONFIG: "dict[str, int]" = {
+    "batch_size": 64,
+    "iterations": 30,
+    "warmup_iterations": 5,
+}

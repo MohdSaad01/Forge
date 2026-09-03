@@ -1,4 +1,4 @@
-# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16)
+# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21)
 
 ## Summary
 Forge has a real CUDA execution backend for a small operation set: tensor
@@ -229,7 +229,7 @@ adding a parallel mechanism.
 | `reshape_backward` | (reuses forward `reshape`, `cf_memcpy_d2d`) | Reshaping the upstream gradient back to the original shape is exactly the forward `reshape` op run again |
 | `relu_backward` | `cf_relu_backward_{f32,f64}` | `out[i] = input[i] > 0 ? grad_output[i] : 0` -- one kernel, no separate mask kernel, input never copied to CPU |
 | `exp_backward`/`log_backward` (Milestone 14) | `cf_exp_backward_{f32,f64}`, `cf_log_backward_{f32,f64}` | `exp`: `out[i] = grad_output[i] * result[i]` (reuses exp's own saved forward output). `log`: `out[i] = grad_output[i] / input[i]` (reads the saved forward input). Each a small dedicated two-array kernel, matching `relu_backward`'s shape, rather than a generic elementwise-divide primitive nothing else needs |
-| `conv2d_backward` (Milestone 15) | `cf_conv2d_backward_{input,weight,bias}_{f32,f64}` | Three separate kernels (one thread per gradient-target element each: input pixels, weight elements, output channels), no atomics -- see **CUDA Conv2d / MaxPool2d** below |
+| `conv2d_backward` (Milestone 15; weight/bias re-optimized in Milestone 21) | `cf_conv2d_backward_{input,weight,bias}_{f32,f64}` | `input`: one thread per input pixel (unchanged since Milestone 15). `bias`: always a block-per-channel shared-memory reduction (Milestone 21). `weight`: dispatches per-call between a block-per-weight-element reduction (few weight elements) and the original one-thread-per-weight-element kernel (many), based on a measured threshold -- see **CUDA Conv2d backward: weight/bias optimization (Milestone 21)** below. No atomics in any of the three |
 | `max_pool2d_backward` (Milestone 15) | `cf_maxpool2d_backward_{f32,f64}` | One thread per *output* element, recomputing that window's argmax from the saved input and `atomicAdd`-ing into the (zeroed) input gradient -- see **CUDA Conv2d / MaxPool2d** below |
 
 Every backward kernel launch is followed by the same explicit
@@ -684,6 +684,117 @@ section) is exercised on real hardware in
 parameter with CPU-resident `m`/`v`) and
 `::test_adam_state_cleared_after_move_reinitializes_on_new_device` (clearing
 the stale entry lets `step()` lazily allocate fresh, CUDA-resident state).
+
+## CUDA Conv2d backward: weight/bias optimization (Milestone 21)
+Milestone 21's purpose was measurement-driven optimization, not speculative
+kernel rewrites: `benchmarks/mnist_profile.py` (new this milestone -- see
+`docs/performance/benchmarking.md`'s **Milestone 21** section) broke the
+real M20 CNN's CUDA training step into per-phase and per-op timings and
+found `conv2d`'s *backward* pass was the single largest contributor --
+73% of total backward time and 54% of the entire training step, on the
+940MX, at the fixed `batch=64` MNIST configuration. Isolating the three
+`conv2d_backward` kernels individually (`cf_conv2d_backward_{input,weight,bias}_*`)
+at the CNN's own two layer shapes narrowed this further:
+
+| Layer | Shape | `input` | `weight` (before) | `bias` (before) | Full `conv2d_backward` (before) |
+|---|---|---|---|---|---|
+| conv1 | N=64,Cin=1,Cout=8,H=28,W=28,K=3 | 1.08ms | 7.61ms | 3.32ms | 12.62ms |
+| conv2 | N=64,Cin=8,Cout=16,H=13,W=13,K=3 | 3.50ms | 1.37ms | 0.56ms | 7.20ms |
+
+**Hypothesis.** `k_conv2d_backward_weight`/`k_conv2d_backward_bias`
+(Milestone 15) launched one CUDA *thread* per output element (one thread
+per `(co, ci, kh, kw)` weight, one thread per `co` bias channel), each
+thread serially summing the *entire* `N * Hout * Wout` reduction alone. At
+conv1's shape that is only 72 weight threads and 8 bias threads -- each
+doing a 64 x 26 x 26 = 43,264-iteration serial loop -- while the 940MX's
+other ~300+ CUDA cores sat idle for the whole kernel. This is a classic
+under-parallelized-reduction pattern, not a memory-access or algorithmic
+problem, so a standard block-per-output-element, shared-memory
+tree-reduction restructuring (the same reduction shape `k_sum`, above,
+already uses) was the natural fix -- not im2col, not cuDNN, per the
+milestone's explicit non-goals.
+
+**Change.** `forge/backend/cuda/kernels.cu` gained
+`k_conv2d_backward_weight_reduce`/`k_conv2d_backward_bias_reduce`: one
+256-thread block per output element (a weight, or a bias channel), each
+thread striding through a slice of the `N * Hout * Wout` reduction via a
+grid-stride loop, combined by a shared-memory tree reduction (structurally
+identical to `k_sum`), with the single output value written by thread 0 --
+no atomics needed, since exactly one block ever owns a given output
+element. `cf_conv2d_backward_bias_{f32,f64}` always dispatches to the new
+reduction kernel: every measured/plausible bias-channel count for a Forge
+CNN (8, 16, ...) is small enough that the reduction kernel wins.
+
+**Weight gradients needed a second measurement, not just the first.**
+Re-measuring after switching *both* kernels unconditionally to the
+reduction strategy showed conv1's `weight` kernel improved sharply
+(7.61ms -> 1.89ms) but conv2's got *worse* (1.37ms -> 5.48ms): at 1,152
+weight elements, the original one-thread-per-weight kernel already had
+enough threads to occupy the GPU well, and paying 1,152 blocks' worth of
+`__syncthreads()`/shared-memory-reduction overhead for an already-short
+(7,744-iteration) per-thread reduction lost to the simpler kernel. So
+`cf_conv2d_backward_weight_{f32,f64}` **dispatches between the two
+kernels** at launch time, based on the weight-element count (`total =
+Cout * Cin * KH * KW`) against a fixed threshold (256, chosen to sit
+between the two measured cases: 72 and 1,152) -- below it, the new block
+reduction; at or above it, the original Milestone 15 one-thread-per-weight
+kernel (kept, unchanged, in `kernels.cu`, not deleted). This hybrid
+dispatch is itself a measured decision, not a guess: a single strategy
+that looked correct for one MNIST layer was measurably wrong for the
+other, and only re-measuring both shapes after the first attempt caught
+it. `cf_conv2d_backward_input_*` (`k_conv2d_backward_input`) was left
+completely unchanged: it already launches one thread per *input* pixel
+(tens of thousands at every shape this milestone measured), so it was
+never the measured bottleneck.
+
+Both exported symbol names and signatures
+(`cf_conv2d_backward_{weight,bias}_{f32,f64}`) are unchanged -- this is
+purely an internal kernel-algorithm change behind the existing
+`CUDABackend.conv2d_backward` boundary (`forge/backend/cuda/backend.py`
+required no Python-side changes), matching the precedent Milestone 11's
+matmul re-tiling and Milestone 15's own Conv2d/MaxPool2d kernels set.
+
+**Correctness.** All 906 tests pass unchanged after the kernel rewrite and
+recompile, including `tests/test_cuda_conv.py`'s CPU/CUDA `conv2d`
+backward-agreement and finite-difference checks (both MNIST-scale and the
+three `CONV2D_CONFIGS` scales, none of which happen to sit exactly at the
+72/1,152-element boundary but which exercise both branches of the hybrid
+dispatch across `tiny`/`small`/`medium`) and `tests/test_cuda_persistence.py`/
+`tests/test_mnist_example_cuda_integration.py`'s real trained-model
+round trips. No CPU code changed; `CPUBackend.conv2d_backward` is
+byte-for-byte unmodified.
+
+**Measured result (940MX, real hardware).** Full `conv2d_backward` call
+(input + weight + bias together, matching what a real backward pass
+invokes):
+
+| Layer | Before | After | Speedup |
+|---|---|---|---|
+| conv1 (N=64,Cin=1,Cout=8,H=28,W=28,K=3) | 12.62ms | 3.64-3.73ms | ~3.4-3.5x |
+| conv2 (N=64,Cin=8,Cout=16,H=13,W=13,K=3) | 7.20ms | 6.71-10.34ms (run-to-run noise; consistently <= before) | ~1.0-1.1x (bias-reduction gain only; weight kernel unchanged at this shape) |
+
+End-to-end (`benchmarks/mnist_profile.py`, batch=64, 30 iterations, 5
+warmup; see `docs/performance/benchmarking.md` for the full table): the
+CUDA training step's `backward` phase dropped from 25.29ms to 16.10ms
+mean, and `conv2d`'s share of that dropped from 18.66ms to 9.58ms --
+roughly halved. Total CUDA training-step time dropped from 34.46ms to
+25.53ms (~1.35x), and the real end-to-end MNIST throughput benchmark
+(`benchmarks/mnist_bench.py`) moved from ~1,875 to ~2,569 samples/sec on
+CUDA (~1.37x) at this fixed configuration -- the same order of speedup,
+confirming the isolated-kernel gain actually reaches end-to-end training
+throughput rather than being absorbed elsewhere. CPU throughput was not
+touched by this change (`CPUBackend.conv2d_backward` unmodified); its own
+run-to-run measurement varied by more than this optimization's CUDA gain
+on this shared, non-dedicated development machine, so CPU numbers are
+reported as an unrelated baseline, not a comparison point for this specific
+optimization -- see `docs/performance/benchmarking.md` for the full
+before/after tables and that caveat's full reasoning.
+
+**Why no ADR.** Same reasoning as Milestone 11's matmul re-tiling and
+Milestone 15's Conv2d/MaxPool2d kernels: this changes kernel internals
+behind an unchanged `Backend`/`CUDABackend` boundary and an unchanged
+exported C symbol/signature -- no public API, abstraction boundary, or
+cross-cutting architectural decision was touched.
 
 ## CUDA model persistence (Milestone 13)
 `save_model()`/`load_model()` (`forge/serialization/model.py`) now support

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .backward_bench import run_backward_benchmarks
 from .environment import collect_environment
+from .mnist_bench import run_mnist_training_benchmarks
 from .ops_bench import run_forward_benchmarks
 from .results import render_table, save_json
 from .training_bench import run_training_benchmarks
@@ -27,6 +28,7 @@ _CATEGORY_RUNNERS = {
     "backward": run_backward_benchmarks,
     "transfer": run_transfer_benchmarks,
     "training": run_training_benchmarks,
+    "mnist": run_mnist_training_benchmarks,
 }
 
 

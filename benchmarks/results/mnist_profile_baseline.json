@@ -1,0 +1,87 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "4d1733ab760d12fd321e330e9badcbd79b4d29b5",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profiles": [
+    {
+      "device": "cpu",
+      "batch_size": 64,
+      "iterations": 30,
+      "warmup_iterations": 5,
+      "phase_mean_seconds": {
+        "transfer": 4.578333852502207e-05,
+        "forward": 0.01982381333170148,
+        "loss": 0.00022300999650421243,
+        "backward": 0.02481681666492174,
+        "optimizer": 0.0003590233391150832
+      },
+      "forward_by_layer_mean_seconds": {
+        "Conv2d": 0.006563643335054318,
+        "ReLU": 0.000633236668848743,
+        "MaxPool2d": 0.012231149995932356,
+        "Flatten": 2.6889997146402798e-05,
+        "Linear": 0.0003339266579132527
+      },
+      "backward_by_op_mean_seconds": {
+        "*": 2.5520008057355882e-05,
+        "sum": 6.979331568193933e-05,
+        "-": 2.9096680615718167e-05,
+        "log": 3.083325767268737e-06,
+        "exp": 3.963340229044358e-06,
+        "+": 2.04233278054744e-05,
+        "@": 0.0003887900073702137,
+        "relu": 0.0011409799995211263,
+        "reshape": 3.6799969772497814e-06,
+        "max_pool2d": 0.010419449999850864,
+        "conv2d": 0.012050246668513865
+      }
+    },
+    {
+      "device": "cuda",
+      "batch_size": 64,
+      "iterations": 30,
+      "warmup_iterations": 5,
+      "phase_mean_seconds": {
+        "transfer": 0.00039114666869863866,
+        "forward": 0.005977966669403637,
+        "loss": 0.001792346666722248,
+        "backward": 0.025290613328494752,
+        "optimizer": 0.0010051000029003868
+      },
+      "forward_by_layer_mean_seconds": {
+        "Conv2d": 0.0025123466756970933,
+        "ReLU": 0.0012622800073586403,
+        "MaxPool2d": 0.0005821600071309756,
+        "Flatten": 0.00014683333768819769,
+        "Linear": 0.0013511000007080535
+      },
+      "backward_by_op_mean_seconds": {
+        "*": 0.00033717334154061975,
+        "sum": 0.0003066733304876834,
+        "-": 0.0005353500038230171,
+        "log": 8.713999607910713e-05,
+        "exp": 9.370666230097413e-05,
+        "+": 0.0001928599978176256,
+        "@": 0.0009660600063701471,
+        "relu": 0.001338839998546367,
+        "reshape": 9.197666659019888e-05,
+        "max_pool2d": 0.0013395833453008284,
+        "conv2d": 0.01865682000643574
+      }
+    }
+  ]
+}

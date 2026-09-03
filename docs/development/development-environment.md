@@ -45,4 +45,4 @@ the primary development machine.
 ## Development Constraint
 Development workloads should remain appropriate for 8 GB RAM and
 2 GB VRAM. Forge is not expected to train large modern models on
-this machine.
+this machine but only what this machine can handle.

@@ -25,7 +25,15 @@ import forge.nn as nn
 from forge.backend.cuda.backend import is_cuda_available
 
 from .results import BenchmarkResult
-from .sizes import CONV2D_CONFIGS, DEFAULT_ITERATIONS, DEFAULT_WARMUP, ELEMENTWISE_SIZES, MATMUL_DIMS
+from .sizes import (
+    CONV2D_CONFIGS,
+    DEFAULT_ITERATIONS,
+    DEFAULT_WARMUP,
+    ELEMENTWISE_SIZES,
+    LOSS_CONFIGS,
+    MATMUL_DIMS,
+    POOL2D_KERNEL,
+)
 from .timing import time_calls
 
 
@@ -41,6 +49,11 @@ def _leaf_vector(n: int, device: str, seed: int) -> forge.Tensor:
 def _leaf_matrix(dim: int, device: str, seed: int) -> forge.Tensor:
     rng = np.random.default_rng(seed)
     return forge.Tensor(rng.standard_normal((dim, dim)).astype(np.float32), device=device, requires_grad=True)
+
+
+def _leaf_positive_vector(n: int, device: str, seed: int) -> forge.Tensor:
+    rng = np.random.default_rng(seed)
+    return forge.Tensor((rng.random(n).astype(np.float32) + 0.1), device=device, requires_grad=True)
 
 
 def _build_calls(build_one, count: int) -> "list":
@@ -92,6 +105,34 @@ def _bench_elementwise_backward(device: str, results: "list[BenchmarkResult]") -
         results.append(
             BenchmarkResult.from_timing(
                 category="backward", operation="sum", device=device, scale=scale,
+                shape=f"({n},)", dtype="float32", timing=timing,
+            )
+        )
+
+        def make_exp_call():
+            a = _leaf_positive_vector(n, device, seed=6)
+            y = a.exp()
+            return lambda y=y: y.backward(grad)
+
+        calls = _build_calls(make_exp_call, count)
+        timing = time_calls(calls, warmup=DEFAULT_WARMUP, iterations=DEFAULT_ITERATIONS, device=device)
+        results.append(
+            BenchmarkResult.from_timing(
+                category="backward", operation="exp", device=device, scale=scale,
+                shape=f"({n},)", dtype="float32", timing=timing,
+            )
+        )
+
+        def make_log_call():
+            a = _leaf_positive_vector(n, device, seed=6)
+            y = a.log()
+            return lambda y=y: y.backward(grad)
+
+        calls = _build_calls(make_log_call, count)
+        timing = time_calls(calls, warmup=DEFAULT_WARMUP, iterations=DEFAULT_ITERATIONS, device=device)
+        results.append(
+            BenchmarkResult.from_timing(
+                category="backward", operation="log", device=device, scale=scale,
                 shape=f"({n},)", dtype="float32", timing=timing,
             )
         )
@@ -194,6 +235,93 @@ def _bench_conv2d_backward(device: str, results: "list[BenchmarkResult]") -> Non
         )
 
 
+def _bench_maxpool2d_backward(device: str, results: "list[BenchmarkResult]") -> None:
+    count = DEFAULT_WARMUP + DEFAULT_ITERATIONS
+    for scale, cfg in CONV2D_CONFIGS.items():
+        h_out, w_out = cfg["H"] - cfg["K"] + 1, cfg["W"] - cfg["K"] + 1
+        rng = np.random.default_rng(7)
+        x_data = rng.standard_normal((cfg["N"], cfg["Cout"], h_out, w_out)).astype(np.float32)
+        pool_h, pool_w = h_out // POOL2D_KERNEL, w_out // POOL2D_KERNEL
+        grad = _ones_grad((cfg["N"], cfg["Cout"], pool_h, pool_w), device)
+
+        def make_call(x_data=x_data):
+            x = forge.Tensor(x_data.copy(), device=device, requires_grad=True)
+            pool = nn.MaxPool2d(POOL2D_KERNEL)
+            y = pool(x)
+            return lambda y=y: y.backward(grad)
+
+        calls = _build_calls(make_call, count)
+        timing = time_calls(calls, warmup=DEFAULT_WARMUP, iterations=DEFAULT_ITERATIONS, device=device)
+        results.append(
+            BenchmarkResult.from_timing(
+                category="backward", operation="max_pool2d", device=device, scale=scale,
+                shape=f"N={cfg['N']},C={cfg['Cout']},HxW={h_out}x{w_out},k={POOL2D_KERNEL}",
+                dtype="float32", timing=timing,
+            )
+        )
+
+
+def _bench_cross_entropy_backward(device: str, results: "list[BenchmarkResult]") -> None:
+    count = DEFAULT_WARMUP + DEFAULT_ITERATIONS
+    for scale, cfg in LOSS_CONFIGS.items():
+        batch, classes = cfg["batch"], cfg["classes"]
+        rng = np.random.default_rng(8)
+        logits_data = rng.standard_normal((batch, classes)).astype(np.float32)
+        target = rng.integers(0, classes, size=(batch,)).astype(np.int64)
+        ce = nn.CrossEntropyLoss()
+
+        def make_call(logits_data=logits_data, target=target):
+            logits = forge.Tensor(logits_data.copy(), device=device, requires_grad=True)
+            y = ce(logits, target)
+            return lambda y=y: y.backward()
+
+        calls = _build_calls(make_call, count)
+        timing = time_calls(calls, warmup=DEFAULT_WARMUP, iterations=DEFAULT_ITERATIONS, device=device)
+        results.append(
+            BenchmarkResult.from_timing(
+                category="backward", operation="cross_entropy_loss", device=device, scale=scale,
+                shape=f"batch={batch},classes={classes}", dtype="float32", timing=timing,
+            )
+        )
+
+
+def _bench_full_cnn_backward(device: str, results: "list[BenchmarkResult]") -> None:
+    """A complete small-CNN backward pass -- the real M20 MNIST architecture.
+
+    `examples.mnist.model.build_model()` -> `CrossEntropyLoss` -> `.backward()`,
+    one fixed synthetic `(N, 1, 28, 28)` batch, matching Section 1's
+    "complete small CNN" backward-workload requirement.
+    """
+    from examples.mnist.model import build_model
+
+    count = DEFAULT_WARMUP + DEFAULT_ITERATIONS
+    batch = 64
+    rng = np.random.default_rng(11)
+    x_data = rng.standard_normal((batch, 1, 28, 28)).astype(np.float32)
+    target = rng.integers(0, 10, size=(batch,)).astype(np.int64)
+    loss_fn = nn.CrossEntropyLoss()
+
+    forge.random.seed(0)
+    model = build_model()
+    if device == "cuda":
+        model.to("cuda")
+
+    def make_call():
+        x = forge.Tensor(x_data.copy(), device=device)
+        y = loss_fn(model(x), target)
+        return lambda y=y: y.backward()
+
+    calls = _build_calls(make_call, count)
+    timing = time_calls(calls, warmup=DEFAULT_WARMUP, iterations=DEFAULT_ITERATIONS, device=device)
+    results.append(
+        BenchmarkResult.from_timing(
+            category="backward", operation="mnist_cnn_full", device=device, scale="fixed",
+            shape=f"batch={batch} (Conv2d/ReLU/MaxPool2d x2 -> Flatten -> Linear/ReLU/Linear)",
+            dtype="float32", timing=timing,
+        )
+    )
+
+
 def run_backward_benchmarks() -> "list[BenchmarkResult]":
     results: "list[BenchmarkResult]" = []
     for device in (["cpu", "cuda"] if is_cuda_available() else ["cpu"]):
@@ -201,4 +329,7 @@ def run_backward_benchmarks() -> "list[BenchmarkResult]":
         _bench_matmul_backward(device, results)
         _bench_multilayer_backward(device, results)
         _bench_conv2d_backward(device, results)
+        _bench_maxpool2d_backward(device, results)
+        _bench_cross_entropy_backward(device, results)
+        _bench_full_cnn_backward(device, results)
     return results

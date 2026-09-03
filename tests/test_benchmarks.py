@@ -17,7 +17,17 @@ import json
 import pytest
 
 from benchmarks.results import BenchmarkResult, render_table, save_json
-from benchmarks.sizes import DEFAULT_ITERATIONS, DEFAULT_WARMUP, ELEMENTWISE_SIZES, MATMUL_DIMS, TRANSFER_SIZES
+from benchmarks.sizes import (
+    ADAM_PARAM_SIZES,
+    DEFAULT_ITERATIONS,
+    DEFAULT_WARMUP,
+    ELEMENTWISE_SIZES,
+    LOSS_CONFIGS,
+    MATMUL_DIMS,
+    MNIST_PROFILE_CONFIG,
+    MNIST_TRAINING_CONFIG,
+    TRANSFER_SIZES,
+)
 from benchmarks.timing import Timing, time_calls, time_cpu, time_cuda
 
 
@@ -143,6 +153,74 @@ def test_elementwise_sizes_are_matmul_dims_squared():
 def test_default_warmup_and_iterations_are_sane():
     assert DEFAULT_WARMUP > 0
     assert DEFAULT_ITERATIONS > 0
+
+
+# -- Milestone 21: new size configs -----------------------------------------
+
+
+def test_loss_configs_are_positive_and_ordered():
+    for field in ("batch", "classes"):
+        values = [cfg[field] for cfg in LOSS_CONFIGS.values()]
+        assert all(v > 0 for v in values)
+    batches = [cfg["batch"] for cfg in LOSS_CONFIGS.values()]
+    assert batches == sorted(batches)
+
+
+def test_adam_param_sizes_are_positive_and_ordered():
+    values = list(ADAM_PARAM_SIZES.values())
+    assert all(v > 0 for v in values)
+    assert values == sorted(values)
+
+
+def test_mnist_training_and_profile_configs_are_sane():
+    for cfg in (MNIST_TRAINING_CONFIG, MNIST_PROFILE_CONFIG):
+        assert cfg["batch_size"] > 0
+        assert cfg["iterations"] > 0
+        assert cfg["warmup_iterations"] > 0
+
+
+# -- Milestone 21: instrumented backward walker (mnist_profile.py) ----------
+#
+# `_profiled_run_backward` re-implements `forge.autograd.engine.run_backward`'s
+# algorithm to add per-op timing (see `benchmarks/mnist_profile.py`'s module
+# docstring for why). This test proves that re-implementation actually
+# computes the same gradients as the real engine, on a small CPU graph
+# exercising several op types (matmul, relu, add, sum) -- if the profiling
+# breakdown's own walker were subtly wrong, the bottleneck analysis it
+# produces would be misleading, so this is a correctness check on the
+# profiling tool itself, not a benchmark.
+
+
+def test_profiled_backward_matches_real_backward():
+    import numpy as np
+
+    import forge
+    from benchmarks.mnist_profile import _profiled_run_backward
+    from forge.backend import get_backend
+
+    def build_graph():
+        forge.random.seed(0)
+        rng = np.random.default_rng(1)
+        a = forge.Tensor(rng.standard_normal((4, 3)).astype(np.float32), requires_grad=True)
+        b = forge.Tensor(rng.standard_normal((3, 5)).astype(np.float32), requires_grad=True)
+        bias = forge.Tensor(rng.standard_normal(5).astype(np.float32), requires_grad=True)
+        y = (a @ b + bias).relu().sum()
+        return a, b, bias, y
+
+    a1, b1, bias1, y1 = build_graph()
+    y1.backward()
+
+    a2, b2, bias2, y2 = build_graph()
+    op_times: "dict[str, float]" = {}
+    grad_seed = get_backend(y2.device).from_array(np.ones((), dtype=y2._data.dtype), y2._data.dtype)
+    _profiled_run_backward(y2, grad_seed, "cpu", op_times)
+
+    np.testing.assert_allclose(a1.grad.numpy(), a2.grad.numpy())
+    np.testing.assert_allclose(b1.grad.numpy(), b2.grad.numpy())
+    np.testing.assert_allclose(bias1.grad.numpy(), bias2.grad.numpy())
+    # Every op on the graph's path (matmul "@", row-broadcast add "+", relu, sum) was timed.
+    assert set(op_times.keys()) == {"@", "+", "relu", "sum"}
+    assert all(t >= 0 for t in op_times.values())
 
 
 # -- Import boundary -----------------------------------------------------
