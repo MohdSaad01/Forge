@@ -21,6 +21,7 @@ benchmarks/
     training_bench.py       end-to-end toy-model training-throughput benchmark
     mnist_bench.py            end-to-end real M20 CNN training-throughput benchmark (Milestone 21)
     mnist_profile.py           MNIST workload phase/per-op profiling script (Milestone 21; not a benchmark category)
+    memory.py                   cuda_memory_extra() -- CUDA memory-stats reporting for BenchmarkResult.extra (Milestone 22)
     run.py                    CLI entry point
     __main__.py                `python -m benchmarks`
     results/latest.json         most recent full run's structured output (not test data)
@@ -620,3 +621,94 @@ the CUDA-vs-CUDA-before improvement is.
   `backward_bench.py`'s `time_calls`-based numbers for the same op in
   isolation; both are internally consistent for their own before/after
   comparisons, which is what this milestone's analysis relies on.
+
+## Milestone 22: CUDA memory-stats reporting
+
+### Purpose
+Milestone 22 is not another optimization pass -- it adds CUDA memory
+observability (`forge.cuda.memory_stats()`, see
+`docs/architecture/cuda-backend.md`'s **CUDA Memory Statistics** section)
+and extends the existing benchmark subsystem to report it *alongside* the
+established timing methodology, never in place of it.
+
+### New: `benchmarks/memory.py`
+One pure function, `cuda_memory_extra(before, after)`, turning a
+before/after pair of `CUDAMemoryStats` snapshots into a plain dict:
+`cuda_allocated_before_bytes`, `cuda_peak_allocated_bytes`,
+`cuda_allocated_after_bytes`, `cuda_allocation_count_delta`,
+`cuda_free_count_delta`. Merged into `BenchmarkResult.extra` (Milestone 11's
+existing free-form field) for CUDA-device results only -- a CPU
+`BenchmarkResult`'s `extra` is completely unaffected, and existing JSON
+consumers that only read the established `BenchmarkResult` fields see no
+schema change. `tests/test_benchmarks.py::
+test_cuda_memory_extra_reports_expected_keys_and_deltas` is the harness-
+mechanics test, per this project's "no timing thresholds in the normal
+test suite" rule -- it checks the dict-building math with synthetic
+`CUDAMemoryStats` values, never a real CUDA workload.
+
+### Wired into `training_bench.py` and `mnist_bench.py`
+Both call, once, immediately before and after their existing timed loop
+(never inside it, so per-iteration timing is unaffected by the two extra
+calls):
+```python
+gc.collect()
+forge.cuda.reset_peak_memory_stats()
+mem_before = forge.cuda.memory_stats()
+# ... existing timed loop, unchanged ...
+gc.collect()
+extra.update(cuda_memory_extra(mem_before, forge.cuda.memory_stats()))
+```
+The `gc.collect()` calls are not decorative: see
+`docs/architecture/cuda-backend.md`'s **Known limitations** -- Forge's
+Tensor/autograd/Module/Optimizer object graph for a full training step
+contains genuine Python reference cycles, so an `allocated_bytes` snapshot
+taken without an intervening `gc.collect()` can substantially overstate
+true live CUDA memory (confirmed by first wiring this up *without* the
+`gc.collect()` calls: the small-MLP `training_bench.py` case reported a
+misleading ~2.7MB apparent growth over 50 SGD iterations, which a single
+`gc.collect()` before each snapshot reduced to a few KB of residual --
+itself smaller than one training batch's own tensor footprint).
+
+### Measured example (940MX, real hardware)
+`python -m benchmarks --categories training mnist`, one representative run:
+
+| Operation | `cuda_allocated_before_bytes` | `cuda_peak_allocated_bytes` | `cuda_allocated_after_bytes` | alloc/free count delta |
+|---|---|---|---|---|
+| `zero_grad_forward_loss_backward_step` (small MLP, SGD) | 95,824 | 3,420,048 | 98,388 | 1450 / 1448 |
+| `mnist_cnn_zero_grad_forward_loss_backward_step` (M20 CNN, Adam) | 440,992 | 69,014,688 | 440,992 | 1920 / 1920 |
+
+Both cases return to (near-)their starting `allocated_bytes` after their
+timed loop -- the small residual in the first row (2,564 bytes, ~2.6% of
+the steady-state footprint) reflects the same GC-timing sensitivity
+documented above (a `gc.collect()` catches the large majority but is not
+guaranteed to reclaim every cyclic object in a single pass), not a growing
+leak; `mnist_cnn_...`'s exact-zero delta on the same measurement machinery
+shows the effect is bounded, not systematic. `cuda_peak_allocated_bytes`
+correctly captures the much larger transient footprint mid-training (e.g.
+69MB for the CNN, vs. 441KB before/after) that the before/after numbers
+alone would miss entirely -- exactly the gap `reset_peak_memory_stats()`
+plus peak tracking exists to close.
+
+### Performance overhead
+Measured two ways, per the milestone's "must not materially slow down
+normal CUDA execution" constraint:
+1. **Isolated accounting cost**: `timeit`-measuring 200,000
+   `record_alloc()`+`record_free()` call pairs directly gives ~2.45us per
+   pair (~1.2us per call) -- almost entirely Python `threading.Lock`
+   acquisition overhead, not the counter arithmetic itself.
+2. **Same-process instrumented-vs-no-op A/B**: monkeypatching
+   `record_alloc`/`record_free` to no-ops and timing a warmed-up, 500-
+   iteration tight loop of CUDA `add` (~118us/op on this hardware,
+   including WDDM driver call and kernel-launch overhead) against the same
+   loop with real accounting active showed **no measurable difference**
+   (the instrumented case was fractionally *faster*, within run-to-run
+   noise, on repeated trials) -- consistent with (1): ~1.2us against a
+   ~118us baseline is below this measurement's noise floor. A naive
+   cross-process comparison (run the full benchmark suite once with
+   instrumentation code physically removed via `git stash`, once with it
+   present) was attempted first and discarded: successive full-process CUDA
+   benchmark runs on this laptop GPU (940MX, WDDM) showed 2-10x swings
+   attributable to GPU clock/thermal warm-up state alone, which completely
+   dominates and hides an effect this small -- reported here as a
+   methodology finding in its own right, not papered over with a
+   misleadingly precise cross-process percentage.

@@ -1,4 +1,4 @@
-# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21)
+# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21; CUDA memory statistics and allocation lifecycle in Milestone 22)
 
 ## Summary
 Forge has a real CUDA execution backend for a small operation set: tensor
@@ -36,7 +36,9 @@ forge/
             kernels.cu        CUDA C++ kernel source (compiled by build.py)
             build.py           Locates nvcc/MSVC, compiles kernels.cu -> a DLL
             backend.py         CUDAStorage, CUDABackend, get_cuda_backend(), is_cuda_available()
+            memory.py            CUDAMemoryStats, allocation/free counters (M22)
             __init__.py        Re-exports the above
+    cuda/__init__.py           forge.cuda: memory_stats(), reset_peak_memory_stats() (M22)
     tensor/tensor.py         Tensor.to(device); Tensor._move_storage_() (M9); backward() (device-generic as of M10)
     autograd/engine.py        run_backward -- backend-dispatched gradient accumulation (M10)
     nn/module.py              Module.to(device), Module.device (new in M9)
@@ -796,6 +798,176 @@ behind an unchanged `Backend`/`CUDABackend` boundary and an unchanged
 exported C symbol/signature -- no public API, abstraction boundary, or
 cross-cutting architectural decision was touched.
 
+## CUDA Memory Statistics (Milestone 22)
+Milestone 22 is observability, not optimization: it instruments the
+`cudaMalloc`/`cudaFree` boundary that already existed (`CUDABackend._alloc`,
+`CUDAStorage.__del__`, above) so Forge can answer "how much CUDA memory is
+live," "what was the peak," and "did this workload leak" -- without
+introducing a caching allocator, memory pool, or any change to the
+allocate-on-every-op model described at the top of this document.
+
+### Public API
+```python
+forge.cuda.memory_stats()             # -> CUDAMemoryStats(allocated_bytes, peak_allocated_bytes, allocation_count, free_count)
+forge.cuda.reset_peak_memory_stats()  # resets peak only; live allocations untouched
+```
+`forge.cuda` (`forge/cuda/__init__.py`) is a thin public package fronting
+`forge.backend.cuda.memory` (the actual counters), mirroring how
+`forge.optim`/`forge.serialization` front `forge.backend`-internal pieces.
+Both functions raise `forge.CUDAError` if CUDA is unavailable on this
+machine -- the same convention every other CUDA-specific entry point in
+Forge already follows (e.g. `Tensor(..., device="cuda")` on a machine with
+no GPU) -- rather than returning a misleading all-zero snapshot. Importing
+`forge.cuda` itself never requires CUDA: `forge.backend.cuda.memory` is pure
+Python (`threading`, `dataclasses`, no `ctypes`/`nvcc`/device probe), so
+`import forge` remains CUDA-optional, unchanged from every earlier
+milestone.
+
+### Instrumentation point
+`CUDAMemoryStats` is a frozen dataclass; `forge/backend/cuda/memory.py`
+holds one `threading.Lock`-guarded `_MemoryTracker` (a process-wide
+singleton) with `record_alloc(nbytes)`/`record_free(nbytes)`. Exactly two
+call sites use it:
+- `CUDABackend._alloc()` calls `record_alloc(nbytes)` immediately after
+  `cf_malloc` returns success -- never before, and never on the `raise`
+  path for a failed allocation (see **Allocation failure semantics** below).
+- `CUDAStorage.__del__()` calls `record_free(self.nbytes)` immediately after
+  `cf_free` returns success.
+
+No other code path touches these counters. In particular, `CUDAStorage.
+__init__` and `Tensor` construction are never involved -- the milestone
+brief's "instrument the real boundary, not Tensor construction" requirement
+-- so the counters describe actual device allocations, not how many Tensor
+objects happen to exist.
+
+The tracker holds only integers, never a `CUDAStorage` reference: keeping
+one would keep that allocation alive forever (the exact leak the milestone
+brief warns a naive "registry" design could introduce), and would be a
+reference cycle Forge's own `__del__`-based free depends on being absent.
+
+### Statistics semantics
+- **`allocated_bytes`**: sum of `CUDAStorage.nbytes` (`size * dtype.itemsize`)
+  across every currently live `CUDAStorage` -- not the raw `cudaMalloc`
+  request size, which `CUDABackend._alloc` clamps to a minimum of 1 byte for
+  a zero-element tensor. A zero-element CUDA tensor therefore contributes 0
+  to `allocated_bytes` but still advances `allocation_count`/`free_count` by
+  one each, since a real (1-byte) `cudaMalloc`/`cudaFree` pair still occurs.
+- **`peak_allocated_bytes`**: the historical maximum of `allocated_bytes`
+  since process start or the most recent `reset_peak_memory_stats()` --
+  updated inside the same locked region as `record_alloc`, so it can never
+  observe a stale `allocated_bytes` value.
+- **`allocation_count`/`free_count`**: count of successful `cudaMalloc`/
+  `cudaFree` calls made through `CUDABackend`/`CUDAStorage`. A failed
+  `cudaMalloc` is never counted (see below); a failed `cudaFree` is never
+  counted as a free either (see below).
+- **`reset_peak_memory_stats()`**: sets `peak_allocated_bytes` to the
+  *current* `allocated_bytes` -- it does not free anything, and does not
+  touch `allocated_bytes`, `allocation_count`, or `free_count`.
+
+### Allocation failure semantics
+`CUDABackend._alloc()` calls `record_alloc()` only after `cf_malloc` returns
+success; the existing `raise CUDAError(...)` path for a nonzero return code
+returns before that call, so a failed allocation leaves every counter
+byte-for-byte unchanged. Verified on real hardware
+(`tests/test_cuda_memory.py::test_failed_allocation_does_not_corrupt_statistics`)
+by requesting 2**34 bytes (16 GiB) on the 940MX's 2 GiB card and asserting
+`memory_stats()` is identical before and after.
+
+`CUDAStorage.__del__` mirrors this for frees: `record_free()` runs only if
+`cf_free` returns 0. A nonzero return instead emits a `RuntimeWarning`
+naming the CUDA error -- not a silent no-op, per the milestone's "do not
+silently swallow allocation/free failures" requirement -- but does not raise,
+since raising inside `__del__` is a Python anti-pattern (CPython prints
+"Exception ignored in..." and continues regardless; a raised exception here
+cannot be caught by any caller). `self.ptr` is always set to `None` after
+the `cf_free` call (success or failure) so a second `__del__` invocation
+(not expected in normal operation, but structurally guarded against) can
+never double-free or double-decrement.
+
+### Known limitations
+Two genuine hardware/architecture findings surfaced while testing this
+milestone. Neither is a Forge accounting bug, and fixing either is out of
+M22's instrumentation-only scope -- both are documented here instead.
+
+**1. A sufficiently large failed `cudaMalloc` poisons kernel launches for the
+rest of the process, on this hardware/driver combination.** Empirically, on
+the 940MX (driver 582.53, CUDA 12.6), requesting an allocation far beyond
+the card's 2 GiB VRAM (e.g. 2\*\*34 bytes) fails cleanly and leaves
+`cudaMalloc`/`cudaMemcpy` themselves still working -- but every subsequent
+*kernel launch* (`add`, `relu`, `matmul`, anything) in that same process then
+fails with the same `cudaErrorMemoryAllocation` (code 2), even for a
+trivial, few-byte operation. This is a real CUDA-context-level driver
+behavior, not something Forge's accounting causes or could paper over.
+Because of this, `test_failed_allocation_does_not_corrupt_statistics` runs
+its provoking allocation inside an isolated **subprocess**
+(`subprocess.run([sys.executable, "-c", ...])`) rather than in the main
+`pytest` process -- provoking it directly in-process would silently corrupt
+every CUDA test that runs afterward, in this file and any other, for the
+rest of that `pytest` invocation.
+
+**2. Forge's Tensor/autograd/Module/Optimizer object graph contains genuine
+Python reference cycles, so CUDA memory release depends on Python's cyclic
+garbage collector, not refcounting alone.** `run_backward`
+(`forge/autograd/engine.py`) already clears `tensor._grad_fn = None` for
+every node it consumes, and no `backward_fn` closure captures an output
+`Tensor` (each captures raw backend storage instead -- see
+`docs/architecture/autograd.md`) -- so the *intended* design has no cycles.
+Empirically, though, running `gc.disable()` then a normal
+`zero_grad -> forward -> loss -> backward -> step` loop for 10 iterations,
+followed by one manual `gc.collect()`, reclaims several hundred otherwise-
+unreachable `Tensor`/`CUDAStorage`/closure (`function`/`cell`) objects that
+plain refcounting left live -- proof of a real cycle somewhere in the
+object graph a full training step builds (not yet root-caused to a specific
+line; suspected to involve `Module`/`Parameter`/closure state rather than
+the `Node` graph itself, based on the collected object types). The
+practical consequence: **an `allocated_bytes` snapshot taken without an
+intervening `gc.collect()` can substantially overstate true live CUDA
+memory** -- measured on this hardware, 50 SGD iterations of a small MLP
+inflated `allocated_bytes` from a ~1.2MB steady state to ~3.1MB before any
+`gc.collect()`, dropping back to ~96KB (the model's true persistent
+footprint) after one. Every lifecycle test in
+`tests/test_cuda_memory.py`, and the benchmark integration below, call
+`gc.collect()` immediately before each snapshot for exactly this reason --
+this is also why the milestone brief's own test guidance says to "force
+Python garbage collection where necessary" rather than trusting refcounting
+alone (see **Tensor Lifecycle Tests**/**Autograd lifecycle** in the
+milestone brief).
+
+### Thread safety
+`_MemoryTracker` guards its four counters with one `threading.Lock`,
+acquired once per `record_alloc`/`record_free`/`stats`/`reset_peak` call --
+the smallest mechanism that keeps concurrent callers from corrupting the
+counters. Forge is single-threaded everywhere else, so this is not a
+general concurrency subsystem, just cheap insurance.
+
+### No synchronization added
+Recording an allocation/free is pure Python bookkeeping around an already-
+completed `cf_malloc`/`cf_free` call -- no new `cudaDeviceSynchronize()` was
+added anywhere. Every kernel-launching operation already synchronizes
+internally before trusting its own result (see **Operation set** above);
+memory accounting adds no additional synchronization point.
+
+### Benchmark integration
+`benchmarks/memory.py`'s `cuda_memory_extra(before, after)` turns a
+before/after `CUDAMemoryStats` pair into a dict (`cuda_allocated_before_bytes`,
+`cuda_peak_allocated_bytes`, `cuda_allocated_after_bytes`,
+`cuda_allocation_count_delta`, `cuda_free_count_delta`) merged into a
+`BenchmarkResult.extra` (Milestone 11's existing extension point) for
+CUDA-device results only -- `training_bench.py` and `mnist_bench.py` call
+`forge.cuda.reset_peak_memory_stats()` plus a `gc.collect()` immediately
+before and after their timed loop (see **Known limitations** above for why
+the `gc.collect()` calls are there). CPU results are unaffected; existing
+benchmark JSON consumers that only read the established `BenchmarkResult`
+fields see no change. See `docs/performance/benchmarking.md`'s **Milestone
+22** section for full methodology and measured numbers.
+
+### No caching allocator
+Explicitly not introduced: no memory pool, block cache, best-fit/slab
+allocator, or CUDA memory pool. Every `CUDAStorage` is still one
+`cudaMalloc` at construction and one `cudaFree` at garbage collection,
+exactly as every earlier milestone's diagram at the top of this document
+describes -- Milestone 22 only counts those events, it does not change them.
+
 ## CUDA model persistence (Milestone 13)
 `save_model()`/`load_model()` (`forge/serialization/model.py`) now support
 models whose `Parameter`s live on CUDA -- see
@@ -852,6 +1024,9 @@ autograd.md`'s **Device consistency in `backward()`**). `Module.to(device)`
 device string, and `ModuleError` if `Module.device` finds Parameters on more
 than one device (see `docs/architecture/modules.md`). See
 `forge/exceptions.py::CUDAError`'s docstring for the exact split.
+`forge.cuda.memory_stats()`/`reset_peak_memory_stats()` (Milestone 22) also
+raise `CUDAError` if CUDA is unavailable, matching this convention -- see
+**CUDA Memory Statistics** above.
 
 ## Detecting a fake CUDA backend
 `tests/test_cuda_backend.py::test_backend_dispatch_is_structurally_distinct_from_cpu`
@@ -1020,6 +1195,29 @@ driver 582.53, CUDA Toolkit 12.6):
   suite (269 CUDA tests total, up from 258; 825 tests overall) was again run
   with `PATH` stripped of the CUDA toolchain to confirm all 269 CUDA tests
   skip cleanly (`556 passed, 269 skipped`, `0 failed`).
+- **Milestone 22 (CUDA memory statistics and allocation lifecycle)**: the
+  new `tests/test_cuda_memory.py` (21 real-hardware tests, plus 2
+  CUDA-unavailable error-path tests in a separate
+  `tests/test_cuda_memory_availability.py` that run regardless of hardware
+  -- 930 tests overall) passes directly on the 940MX, exercising:
+  basic/multiple allocation byte
+  accounting, deallocation, peak tracking and its persistence after a
+  temporary is freed, `reset_peak_memory_stats()` isolation from live
+  allocations, CPU/CUDA statistic isolation, CPU<->CUDA transfer accounting
+  (including the same-device `.to()` no-op allocating nothing), repeated
+  autograd forward/backward without an optimizer, a full `Linear -> ReLU ->
+  Linear` + `Adam` training/eval lifecycle, a `Dropout`-containing model's
+  repeated training and eval cycles, Adam's persistent `m`/`v` state
+  correctly distinguished from temporaries (including its release once
+  `optimizer.state.clear()` drops the last reference), checkpoint
+  save/load lifecycle (save adds no persistent CUDA growth; load allocates
+  a second model+optimizer's worth, released on deletion), a real
+  allocation failure (16 GiB request) leaving statistics untouched --
+  provoked in an isolated subprocess for the reason documented in **CUDA
+  Memory Statistics**'s "Known limitations" above -- and a 100-iteration
+  bounded-growth leak regression. Every lifecycle assertion in this suite
+  calls `gc.collect()` plus `CUDABackend.synchronize()` before reading
+  `memory_stats()`, per that same "Known limitations" discussion.
 
 ## Limitations
 - **Operation set is intentionally small**: `add`/`mul` (exact-shape, plus
@@ -1062,6 +1260,10 @@ driver 582.53, CUDA Toolkit 12.6):
 - **No custom GPU memory allocator**: every operation's output is a fresh
   `cudaMalloc`, freed via `cudaFree` on garbage collection. Reasonable for
   the small models this milestone targets; not tuned for throughput.
+  Milestone 22 added observability into this model (`forge.cuda.
+  memory_stats()`) but deliberately did not change it -- no pooling/caching,
+  per that milestone's explicit non-goal; see **CUDA Memory Statistics**
+  above.
 - **Matmul is a single fixed 16x16-tile shared-memory GEMM** (re-tiled in
   Milestone 11 from Milestone 8's naive one-thread-per-output-element
   kernel, after benchmarking measured the naive kernel as a real bottleneck

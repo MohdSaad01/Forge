@@ -30,6 +30,7 @@ axis=1 on a 2D tensor as of Milestone 14), `relu`, and, as of Milestone 14,
 from __future__ import annotations
 
 import ctypes
+import warnings
 from typing import Any
 
 import numpy as np
@@ -37,6 +38,7 @@ import numpy as np
 from ...exceptions import CUDAError
 from ..base import Backend
 from . import build as _build
+from . import memory as _memory
 
 _COMPUTE_DTYPES = (np.dtype(np.float32), np.dtype(np.float64))
 _SUFFIX = {np.dtype(np.float32): "f32", np.dtype(np.float64): "f64"}
@@ -251,11 +253,25 @@ class CUDAStorage:
         return f"CUDAStorage(shape={self.shape}, dtype={self.dtype})"
 
     def __del__(self) -> None:
+        ptr = self.ptr
+        if not ptr:
+            return
         try:
-            if self.ptr:
-                self._lib.cf_free(self.ptr)
+            code = self._lib.cf_free(ptr)
         except Exception:
-            pass  # interpreter shutdown may have already torn down the library handle
+            return  # interpreter shutdown may have already torn down the library handle
+        self.ptr = None  # guard against a second `__del__` call ever double-freeing/double-decrementing
+        if code == 0:
+            _memory.record_free(self.nbytes)
+        else:
+            message = self._lib.cf_error_string(code)
+            message = message.decode() if message is not None else "<no message>"
+            warnings.warn(
+                f"cudaFree failed while releasing a CUDAStorage (code {code}: {message}); "
+                "CUDA memory statistics were not decremented for this allocation.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 class CUDABackend(Backend):
@@ -289,6 +305,9 @@ class CUDABackend(Backend):
             message = self._lib.cf_error_string(code)
             message = message.decode() if message is not None else "<no message>"
             raise CUDAError(f"CUDA memory allocation of {nbytes} bytes failed: {message} (code {code}).")
+        # Recorded only on this success path -- a failed `cudaMalloc` above already
+        # returned via `raise` and never reaches here, so statistics never see it.
+        _memory.record_alloc(nbytes)
         return ptr
 
     # -- transfer ------------------------------------------------------------

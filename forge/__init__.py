@@ -19,10 +19,12 @@ parameter state after the training process has exited -- see
 backend (`forge.backend.cuda`) for a small forward-only operation set
 (tensor transfer, `add`/`sub`/`mul`, `matmul`, `sum`), `Tensor.to(device)`
 for explicit CPU<->CUDA transfer, and `CUDAError` for CUDA-specific
-failures -- see `docs/architecture/cuda-backend.md`.
+failures -- see `docs/architecture/cuda-backend.md`. Milestone 22 adds the
+`forge.cuda` package (`memory_stats()`, `reset_peak_memory_stats()`) for
+observing CUDA allocation/free lifecycle and peak memory usage.
 """
 
-from . import backend, data, nn, optim, random, serialization, training
+from . import backend, cuda, data, nn, optim, random, serialization, training
 from .autograd import no_grad
 from .backend.device import Device
 from .exceptions import (
@@ -69,6 +71,7 @@ __all__ = [
     "training",
     "serialization",
     "backend",
+    "cuda",
     "save_model",
     "load_model",
     "save_checkpoint",

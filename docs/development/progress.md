@@ -921,3 +921,57 @@ now holds the M21 post-optimization run; `m11_baseline.json`,
 `mnist_profile_optimized.json` are preserved separately as historical
 records. See `docs/performance/benchmarking.md` for full methodology,
 baseline, bottleneck analysis, and optimization writeup.
+
+### M22 — CUDA memory statistics and allocation lifecycle
+Establishes a correct, observable CUDA memory model -- not another
+performance milestone, and explicitly not a caching allocator. New
+`forge/backend/cuda/memory.py` (`CUDAMemoryStats`, a `threading.Lock`-guarded
+counter of `allocated_bytes`/`peak_allocated_bytes`/`allocation_count`/
+`free_count`) instruments the real `cudaMalloc`/`cudaFree` boundary already
+in `CUDABackend._alloc`/`CUDAStorage.__del__` (`forge/backend/cuda/backend.py`)
+-- one line at each site, no new kernels, no pooling. New top-level
+`forge.cuda` package (`memory_stats()`, `reset_peak_memory_stats()`) is the
+public entry point, raising `CUDAError` if CUDA is unavailable, matching
+every other CUDA-specific Forge API; `import forge` remains CUDA-optional
+(`forge.backend.cuda.memory` is pure Python, no `ctypes`/`nvcc`/device probe).
+
+A failed `cudaMalloc` never touches the counters (checked on real hardware
+by deliberately requesting 16 GiB on the 940MX's 2 GiB card, in an isolated
+subprocess -- see below). A failed `cudaFree` warns (`RuntimeWarning`)
+rather than corrupting the free count.
+
+**Two genuine hardware/architecture findings surfaced during testing** (both
+documented in `docs/architecture/cuda-backend.md`'s **CUDA Memory
+Statistics** "Known limitations", not fixed -- out of M22's instrumentation-
+only scope):
+1. On this 940MX/driver 582.53/CUDA 12.6 combination, a sufficiently large
+   failed `cudaMalloc` (e.g. 16 GiB) leaves the CUDA context unable to
+   launch *any* further kernel for the rest of that process, even though
+   `cudaMalloc`/`cudaMemcpy` themselves keep working -- a real driver
+   quirk, not a Forge bug. `tests/test_cuda_memory.py`'s allocation-failure
+   test runs in an isolated subprocess specifically because of this, so it
+   can't poison the rest of the CUDA test suite.
+2. Forge's Tensor/autograd/Module/Optimizer object graph for a full
+   training step contains genuine Python reference cycles (confirmed via
+   `gc.disable()` + `gc.collect()` reclaiming thousands of objects per
+   iteration that plain refcounting left live) -- so `CUDAStorage` release
+   is not purely deterministic-refcounting; an explicit `gc.collect()` is
+   necessary before a CUDA memory snapshot means "true live allocation."
+   Every lifecycle test and the benchmark integration (`benchmarks/memory.py`,
+   wired into `mnist_bench.py`/`training_bench.py`) account for this.
+
+24 new tests: 21 real-hardware lifecycle tests (`tests/test_cuda_memory.py`),
+2 CUDA-unavailable error-path tests requiring no hardware
+(`tests/test_cuda_memory_availability.py`, split into their own file since a
+module-level `pytestmark` skip applies to every test in its module
+regardless of definition order), plus one harness test
+(`test_benchmarks.py::test_cuda_memory_extra_reports_expected_keys_and_deltas`)
+-- 930 tests total (906 + 24), all passing on the 940MX (625 pass with CUDA
+unavailable, 305 skipped, confirming clean skip behavior). Measured overhead:
+the accounting primitives cost ~1.2us/call in isolation (`timeit`), and a
+same-process instrumented-vs-no-op A/B on a tight `add` loop showed no
+measurable difference against a ~118us/op CUDA baseline -- immaterial per
+the milestone's performance constraint. See `docs/architecture/cuda-
+backend.md`'s **CUDA Memory Statistics (Milestone 22)** section for full
+semantics, and `docs/performance/benchmarking.md`'s **Milestone 22** section
+for the benchmark-integration writeup.

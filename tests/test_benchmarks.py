@@ -232,3 +232,23 @@ def test_forge_does_not_expose_or_depend_on_benchmarks():
 
     assert not hasattr(forge, "benchmarks")
     assert "benchmarks" not in forge.__all__
+
+
+# -- Milestone 22: CUDA memory-stats reporting -------------------------------
+
+
+def test_cuda_memory_extra_reports_expected_keys_and_deltas():
+    from benchmarks.memory import cuda_memory_extra
+    from forge.backend.cuda.memory import CUDAMemoryStats
+
+    before = CUDAMemoryStats(allocated_bytes=100, peak_allocated_bytes=100, allocation_count=5, free_count=3)
+    after = CUDAMemoryStats(allocated_bytes=120, peak_allocated_bytes=500, allocation_count=12, free_count=7)
+
+    extra = cuda_memory_extra(before, after)
+    assert extra == {
+        "cuda_allocated_before_bytes": 100,
+        "cuda_peak_allocated_bytes": 500,
+        "cuda_allocated_after_bytes": 120,
+        "cuda_allocation_count_delta": 7,
+        "cuda_free_count_delta": 4,
+    }

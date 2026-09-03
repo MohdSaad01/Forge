@@ -16,6 +16,7 @@ only wall-clock throughput of the standard
 
 from __future__ import annotations
 
+import gc
 import time
 
 import numpy as np
@@ -25,6 +26,7 @@ import forge.nn as nn
 import forge.optim as optim
 from forge.backend.cuda.backend import is_cuda_available
 
+from .memory import cuda_memory_extra
 from .results import BenchmarkResult
 from .sizes import MNIST_TRAINING_CONFIG
 from .timing import Timing
@@ -75,6 +77,17 @@ def _run_mnist_training(device: str, results: "list[BenchmarkResult]") -> None:
         step()
     _sync(device)
 
+    if device == "cuda":
+        # See `training_bench.py`'s matching comment: Forge's Tensor/autograd/
+        # Module object graph for a full training step contains reference
+        # cycles (`docs/architecture/cuda-backend.md`'s **CUDA Memory
+        # Statistics** "Known limitations"), so an explicit `gc.collect()`
+        # before each snapshot keeps the reported delta a property of the
+        # workload rather than of the cyclic collector's own schedule.
+        gc.collect()
+        forge.cuda.reset_peak_memory_stats()
+        mem_before = forge.cuda.memory_stats()
+
     durations = []
     for _ in range(cfg["iterations"]):
         _sync(device)
@@ -89,6 +102,16 @@ def _run_mnist_training(device: str, results: "list[BenchmarkResult]") -> None:
     samples_per_sec = batches_per_sec * batch_size
     epoch_seconds = _EPOCH_SAMPLE_COUNT / samples_per_sec if samples_per_sec > 0 else float("inf")
 
+    extra = {
+        "batches_per_sec": batches_per_sec,
+        "samples_per_sec": samples_per_sec,
+        "extrapolated_epoch_seconds": epoch_seconds,
+        "epoch_sample_count_used_for_extrapolation": _EPOCH_SAMPLE_COUNT,
+    }
+    if device == "cuda":
+        gc.collect()  # see the matching comment above the "before" snapshot
+        extra.update(cuda_memory_extra(mem_before, forge.cuda.memory_stats()))
+
     timing = Timing(tuple(durations), cfg["warmup_iterations"], cfg["iterations"])
     results.append(
         BenchmarkResult.from_timing(
@@ -99,12 +122,7 @@ def _run_mnist_training(device: str, results: "list[BenchmarkResult]") -> None:
             shape=f"batch={batch_size} (M20 CNN: Conv2d/ReLU/MaxPool2d x2 -> Flatten -> Linear/ReLU/Linear)",
             dtype="float32",
             timing=timing,
-            extra={
-                "batches_per_sec": batches_per_sec,
-                "samples_per_sec": samples_per_sec,
-                "extrapolated_epoch_seconds": epoch_seconds,
-                "epoch_sample_count_used_for_extrapolation": _EPOCH_SAMPLE_COUNT,
-            },
+            extra=extra,
         )
     )
 

@@ -17,6 +17,7 @@ comparing `Trainer` overhead against a hand-written loop.
 
 from __future__ import annotations
 
+import gc
 import time
 
 import numpy as np
@@ -26,6 +27,7 @@ import forge.nn as nn
 import forge.optim as optim
 from forge.backend.cuda.backend import is_cuda_available
 
+from .memory import cuda_memory_extra
 from .results import BenchmarkResult
 from .sizes import TRAINING_CONFIG
 from .timing import Timing
@@ -77,6 +79,19 @@ def _run_training(device: str, results: "list[BenchmarkResult]") -> None:
         step()
     _sync(device)
 
+    if device == "cuda":
+        # `gc.collect()` before the "before" snapshot, not just the "after" one:
+        # Forge's Tensor/autograd/Module object graph for a full training step
+        # contains reference cycles (see `docs/architecture/cuda-backend.md`'s
+        # **CUDA Memory Statistics** "Known limitations"), so CUDAStorage release
+        # depends on Python's cyclic collector, not refcounting alone -- without
+        # this, both snapshots (and therefore the reported delta) would be
+        # sensitive to whatever the collector's generational schedule happened
+        # to do during warmup, not the workload itself.
+        gc.collect()
+        forge.cuda.reset_peak_memory_stats()
+        mem_before = forge.cuda.memory_stats()
+
     total_durations, forward_durations, backward_durations, optim_durations = [], [], [], []
     for _ in range(cfg["iterations"]):
         _sync(device)
@@ -106,6 +121,17 @@ def _run_training(device: str, results: "list[BenchmarkResult]") -> None:
     batches_per_sec = cfg["iterations"] / total_time if total_time > 0 else float("inf")
     samples_per_sec = batches_per_sec * batch_size
 
+    extra = {
+        "batches_per_sec": batches_per_sec,
+        "samples_per_sec": samples_per_sec,
+        "mean_forward_seconds": sum(forward_durations) / len(forward_durations),
+        "mean_backward_seconds": sum(backward_durations) / len(backward_durations),
+        "mean_optimizer_seconds": sum(optim_durations) / len(optim_durations),
+    }
+    if device == "cuda":
+        gc.collect()  # see the matching comment above the "before" snapshot
+        extra.update(cuda_memory_extra(mem_before, forge.cuda.memory_stats()))
+
     timing = Timing(tuple(total_durations), cfg["warmup_iterations"], cfg["iterations"])
     results.append(
         BenchmarkResult.from_timing(
@@ -119,13 +145,7 @@ def _run_training(device: str, results: "list[BenchmarkResult]") -> None:
             ),
             dtype="float32",
             timing=timing,
-            extra={
-                "batches_per_sec": batches_per_sec,
-                "samples_per_sec": samples_per_sec,
-                "mean_forward_seconds": sum(forward_durations) / len(forward_durations),
-                "mean_backward_seconds": sum(backward_durations) / len(backward_durations),
-                "mean_optimizer_seconds": sum(optim_durations) / len(optim_durations),
-            },
+            extra=extra,
         )
     )
 
