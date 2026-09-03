@@ -1,4 +1,4 @@
-# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21; CUDA memory statistics and allocation lifecycle in Milestone 22; CUDA allocation profiling and caching-allocator design in Milestone 24; exact-size CUDA caching allocator implemented in Milestone 25)
+# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21; CUDA memory statistics and allocation lifecycle in Milestone 22; CUDA allocation profiling and caching-allocator design in Milestone 24; exact-size CUDA caching allocator implemented in Milestone 25; CUDA execution and synchronization semantics formalized, `forge.cuda.synchronize()` added, in Milestone 26)
 
 ## Summary
 Forge has a real CUDA execution backend for a small operation set: tensor
@@ -1251,6 +1251,404 @@ uncached driver cost rather than being silently answered by the cache. See
 `docs/performance/benchmarking.md` and `docs/architecture/cuda-memory-
 allocator.md` for measured results.
 
+## CUDA Execution and Synchronization Semantics (Milestone 26)
+
+M25 built a caching allocator on top of an *assumed* synchronous execution
+model ("every op already synchronizes before returning"), stated but never
+formally audited end-to-end. This milestone is that audit: it inspects every
+CUDA-touching code path in Forge, states precisely which are host-synchronous
+vs. host-asynchronous vs. explicitly synchronized, and adds a public
+synchronization primitive. **No CUDA streams, events, asynchronous Tensor
+ops, or stream-aware allocator were introduced** -- this section documents
+today's already-synchronous model, it does not change it.
+
+### Stream model
+
+Forge creates no CUDA streams. `kernels.cu` never calls `cudaStreamCreate`,
+never constructs a `cudaStream_t`, and passes no stream argument to any
+kernel launch (`kernel<<<blocks, threads>>>(...)`, never
+`kernel<<<blocks, threads, 0, stream>>>(...)`) or to any `cudaMemcpy*` call.
+Every kernel launch, `cudaMemcpy`, and `cudaDeviceSynchronize()` call in
+Forge therefore runs on **CUDA's default (null) stream** -- the one stream
+that exists automatically for a process that creates none of its own:
+
+```text
+Forge CUDA operations (kernels + cudaMemcpy)
+        |
+CUDA default stream (the only stream Forge uses)
+        |
+device execution, in launch order
+```
+
+Work issued to one stream executes in the order it was issued (CUDA's
+per-stream ordering guarantee) -- combined with Forge issuing everything on
+the single default stream, and every operation already synchronizing before
+returning (see **Kernel Launch Semantics** below), there is at most one
+piece of Forge CUDA work in flight at any moment as far as Python is
+concerned.
+
+### Host / device synchronization semantics
+
+Classifying every CUDA-touching call in Forge:
+
+- **Host-synchronous (blocks until the copy completes, and drains the
+  default stream first)**: `cf_memcpy_h2d`/`cf_memcpy_d2h`/`cf_memcpy_d2d`
+  (`kernels.cu`) all call plain `cudaMemcpy` -- never `cudaMemcpyAsync`. Per
+  the CUDA runtime's documented behavior, a `cudaMemcpy` on the default
+  stream with these direction flags blocks the calling host thread until the
+  transfer itself completes *and* is ordered after every previously issued
+  default-stream operation. `cf_malloc`/`cf_free` (`cudaMalloc`/`cudaFree`)
+  are likewise synchronous CUDA runtime calls that only return once the
+  driver has completed the request.
+- **Host-asynchronous at the CUDA-API level, but never observed as such by
+  Forge**: every kernel launch (`kernel<<<...>>>(...)`) itself returns to
+  the host as soon as the launch is *queued* -- this is CUDA's fundamental
+  asynchrony. But no Forge caller ever reads a kernel's result before an
+  explicit synchronization point immediately follows it (see next item), so
+  this asynchrony is real at the hardware level and invisible at the Forge
+  API level.
+- **Explicitly synchronized**: every single `CUDABackend` method that
+  launches a kernel (`add`, `matmul`, `relu`, `conv2d`, `adam_step`, ... --
+  every one, see **Kernel Launch Semantics** below) calls
+  `self._synchronize(...)` -> `cf_synchronize()` -> `cudaDeviceSynchronize()`
+  before returning its result. There is no exception anywhere in
+  `backend.py`.
+
+**Net effect**: Forge's CUDA execution model is host-synchronous *per
+operation* today, even though the underlying CUDA API calls it makes are
+individually asynchronous. By the time any `CUDABackend` method, `Tensor`
+operation, `Module` forward/backward, `Optimizer.step()`, or `Trainer` batch
+returns control to Python, every piece of CUDA work it issued (and,
+transitively, everything issued before it on the same default stream) has
+already completed on the device.
+
+### Kernel launch semantics
+
+`kernels.cu` reports two structurally different kinds of error, and Forge's
+existing per-op pattern already surfaces both by the time control returns to
+Python -- distinct from simply "adding synchronization after every kernel
+for the sake of this milestone":
+
+```text
+kernel launch
+    -> cudaGetLastError()          [step 1: every *_LAUNCHER macro in kernels.cu]
+    -> returned as this call's int result
+    -> CUDABackend._check() raises CUDAError if nonzero   [step 2, backend.py]
+    -> CUDABackend._synchronize() -> cudaDeviceSynchronize()   [step 3]
+    -> CUDABackend._check() raises CUDAError if nonzero   [step 4]
+```
+
+- **`cudaGetLastError()`** (step 1, called immediately after every kernel
+  launch in every `*_LAUNCHER` macro in `kernels.cu`) reports only
+  **launch-configuration errors** -- an invalid grid/block size, too much
+  requested shared memory, an invalid device function pointer. It is itself
+  a fast, non-blocking host-side check; it cannot see an error that happens
+  *during* kernel execution (e.g. an out-of-bounds memory access), because
+  the kernel has not necessarily finished running yet when it is called.
+- **`cudaDeviceSynchronize()`** (step 3, called once per operation from
+  `CUDABackend._synchronize()`) blocks until the kernel has actually
+  finished, and its return code additionally reports **asynchronous
+  execution errors** that occurred *during* the kernel -- these are only
+  ever observable at a synchronization point, never at launch time.
+
+Because every `CUDABackend` method performs both checks before returning
+(step 2 for launch errors, step 4 for execution errors), **a caller who gets
+a result back from any Forge CUDA operation has already had both error
+classes surfaced** -- there is no window where a Forge Python caller holds a
+`Tensor` whose value could still be invalidated by a not-yet-detected
+execution error. This is an accurate description of the *existing* pattern,
+not a new one added by this milestone: no kernel or launcher code changed to
+produce it (see **No Kernel Changes** below).
+
+### Memory copy semantics
+
+All four data-movement primitives (`cf_memcpy_h2d`, `cf_memcpy_d2h`,
+`cf_memcpy_d2d`, used by `CUDABackend.from_array()`/`to_numpy()`) use plain
+synchronous `cudaMemcpy`, never `cudaMemcpyAsync`, and no CUDA stream is ever
+passed. `Tensor.to("cuda")` and `Tensor.to("cpu")` (`forge/tensor/tensor.py`)
+are therefore always **host-blocking from the caller's perspective**: the
+call does not return until the copy has actually completed. `Tensor.to()`
+follows value semantics -- it always constructs a fresh `Tensor` backed by
+fresh storage (`target_backend.from_array(...)`) on the target device
+(`CUDABackend.from_array()` allocates via the M25 caching allocator, same as
+every other CUDA allocation); the source `Tensor`/storage is untouched and
+independently owned. No transfer in Forge is nonblocking; this milestone
+introduces none.
+
+### Public synchronization API
+
+```python
+forge.cuda.synchronize()   # forge/cuda/__init__.py, Milestone 26
+```
+
+A thin wrapper dispatching to `CUDABackend.synchronize()` (`forge/backend/
+cuda/backend.py`, added in Milestone 11 for `benchmarks/timing.py`'s
+synchronize-bracketed timing methodology; unchanged by this milestone except
+for now being reachable through the public `forge.cuda` package). Both
+layers do exactly one thing: call `cf_synchronize()` -> `cudaDeviceSynchronize()`
+and raise `forge.CUDAError` on a nonzero return code. No dummy kernel, no
+sleep/poll loop, no device argument (Forge supports exactly one CUDA
+device). Raises `forge.CUDAError` if CUDA is unavailable, via the same
+`_require_cuda()` gate `memory_stats()`/`reset_peak_memory_stats()`/
+`empty_cache()` already use.
+
+**It is never required for correctness inside Forge.** Every CUDA-backed
+operation already synchronizes internally (see **Kernel Launch Semantics**
+above), so no Forge-internal caller needs to call it. It exists for external
+callers that want their own explicit host-side barrier -- bracketing a
+benchmark measurement (`benchmarks/timing.py`, updated this milestone to
+call `forge.cuda.synchronize()` instead of reaching into
+`get_cuda_backend()` directly) or simply wanting a device-idle checkpoint.
+Calling it repeatedly, or with no CUDA work outstanding, is always safe --
+verified directly by `tests/test_cuda_synchronize.py`.
+
+**Backend interface decision.** `Backend` (`forge/backend/base.py`) does not
+declare an abstract `synchronize()` method, and `CPUBackend` gains no
+`synchronize()` of this milestone. Nothing in Forge calls
+`get_backend(device).synchronize()` polymorphically today -- every existing
+caller (benchmarks, and now `forge.cuda.synchronize()`) already knows it
+wants CUDA specifically and reaches `CUDABackend.synchronize()` directly (or
+through the public wrapper). Adding an abstract method to `Backend` for a
+CPU implementation that would only ever be a no-op, with no current caller
+that needs backend-agnostic dispatch, is exactly the unnecessary
+architectural coupling the milestone brief warns against -- the smallest
+correct design keeps synchronization CUDA-specific. This can be revisited if
+a future backend-agnostic caller actually needs it.
+
+### Error semantics
+
+Restating **Kernel Launch Semantics** in visibility terms: a *launch
+configuration* error (bad grid/block dims, too much shared memory) is
+visible immediately after the launch, via `cudaGetLastError()`. An
+*execution* error (illegal memory access, misaligned access, an assertion
+failure inside a kernel) is only ever visible at the next synchronization
+point -- for Forge, that next point is always the very next line, inside the
+same `CUDABackend` method call, via `cudaDeviceSynchronize()`. Both classes
+are therefore surfaced, as `forge.CUDAError`, before any `CUDABackend`
+method returns -- this milestone did not add any new synchronization to
+achieve that; it was already true of every operation `backend.py` defines.
+`forge.cuda.synchronize()` itself can also raise `forge.CUDAError` if a
+prior kernel's execution error had, hypothetically, gone unobserved -- in
+practice this cannot happen in current Forge, since every operation already
+synchronizes before returning, so no caller can reach `forge.cuda.
+synchronize()` with a genuinely *new* error to report; it is documented here
+because the underlying `cudaDeviceSynchronize()` call is capable of it.
+
+### Allocator / memory-reuse safety: the M26 contract
+
+Formalizing what `forge/backend/cuda/allocator.py`'s module docstring and
+`docs/architecture/cuda-memory-allocator.md` Section 13 already state
+informally, verified against the actual CUDA API semantics above:
+
+> **Forge issues all CUDA work -- every kernel launch and every memory copy
+> -- on the CUDA default stream, in program order, and every `CUDABackend`
+> operation calls `cudaDeviceSynchronize()` before returning its result. A
+> `CUDAStorage` therefore never becomes unreachable (triggering
+> `__del__` -> `CUDACachingAllocator.release()` -> the pointer entering the
+> exact-size free list) while any kernel that reads or writes its memory is
+> still in flight: the operation that produced or last used that memory
+> already synchronized before control returned to Python, and every
+> subsequent Forge CUDA operation is issued only after that point. It is
+> therefore safe for `CUDACachingAllocator.allocate()` to hand a cached
+> block to a brand-new `CUDAStorage` (a cache hit) with no additional
+> synchronization -- the block's previous owner's last use of it has
+> already completed by construction.**
+
+This is proved directly by `tests/test_cuda_synchronize.py::
+test_allocator_reuse_does_not_corrupt_data` (and the accompanying
+many-cycles test): a block is allocated, used, and released; a same-size
+block is then allocated (confirmed, via `cache_hit_count`, to actually reuse
+the freed block) and written with different values; its readback is exactly
+correct, with no explicit `forge.cuda.synchronize()` call between the
+release and the reuse.
+
+This contract depends specifically on **single-stream, per-operation
+synchronization** -- see **Future Stream-Aware Design** below for exactly
+what would need to change if that assumption is ever relaxed.
+
+### `empty_cache()` semantics
+
+`forge.cuda.empty_cache()` (M25) walks the allocator's free list and calls
+real `cudaFree` on every cached (never active) block. Per the contract
+above, a block only ever enters that free list *after* the operation that
+last used it has already synchronized -- so nothing `empty_cache()` could
+ever `cudaFree` is still potentially in use by an outstanding kernel, and
+`empty_cache()` performs no synchronization of its own before or during its
+`cudaFree` calls. It is safe to call at any point, including immediately
+after CUDA work with no preceding `forge.cuda.synchronize()` -- verified by
+`tests/test_cuda_synchronize.py::
+test_empty_cache_after_recent_work_is_safe_and_preserves_correctness`. Live
+`CUDAStorage` (anything still referenced by a `Tensor`/`Parameter`/Adam
+`m`/`v` buffer) is never touched, by construction (`empty_cache()` only ever
+iterates `_free_blocks`, never active allocations).
+
+### Memory-statistics semantics
+
+`forge.cuda.memory_stats()` (M22/M25) describes **allocator bookkeeping
+state**, not GPU execution state -- a distinction worth stating explicitly
+now that this milestone has audited execution semantics directly:
+`allocated_bytes`/`reserved_bytes`/`cached_bytes`/`cache_hit_count`/etc. are
+pure Python counters updated synchronously inside `CUDACachingAllocator`
+(`allocate()`/`release()`/`empty_cache()`), guarded by its own lock -- they
+say nothing about whether a kernel is *currently executing* on the device at
+the moment `memory_stats()` is called. In practice, because every Forge
+operation synchronizes before returning, the device is always idle by the
+time any Python code (including a `memory_stats()` call) runs -- but that is
+a consequence of Forge's execution model, not something `memory_stats()`
+itself observes or depends on. `forge.cuda.synchronize()` never allocates,
+frees, or reclassifies any block -- it is a pure execution barrier -- so
+calling it changes none of `memory_stats()`'s fields, verified by
+`tests/test_cuda_synchronize.py::test_synchronize_does_not_change_allocation_accounting`.
+
+### Autograd semantics
+
+`Tensor.backward()` (`forge/tensor/tensor.py`) drives
+`forge.autograd.engine.run_backward()`, which is itself backend-agnostic: it
+calls each `Node.backward_fn` (a closure over `CUDABackend.*_backward`
+methods for a CUDA graph) and combines results via `get_backend(device).add()`
+when needed. Every one of those `*_backward` calls is an ordinary
+`CUDABackend` method and therefore already synchronizes before returning
+(see **Kernel Launch Semantics**), so `Tensor.backward()` is guaranteed to
+have completed all of its device work -- forward-saved-tensor reads,
+gradient kernel launches, and gradient accumulation -- by the time it
+returns to Python. No synchronization was added to the autograd engine
+itself; none was needed. Verified directly by
+`tests/test_cuda_synchronize.py::test_synchronize_after_backward`.
+
+### Optimizer semantics
+
+`SGD.step()`/`Adam.step()` (`forge/optim/sgd.py`, `adam.py`) call
+`CUDABackend.sgd_step()`/`adam_step()` directly -- ordinary `CUDABackend`
+methods, so `step()` returns only after the parameter update kernel has
+actually completed on-device. This means: a forward pass issued immediately
+after `step()` reads the fully-updated parameter values (no possibility of
+racing the update); a `Parameter` can be safely destroyed or checkpointed
+immediately after `step()` returns, with no risk of releasing memory an
+in-flight update kernel still touches; `save_checkpoint()` immediately after
+`step()` reads correct, fully-updated values. No synchronization was added
+to either optimizer; both already had it. Verified directly by
+`tests/test_cuda_synchronize.py::test_synchronize_after_optimizer_step`.
+
+### Trainer semantics
+
+**Contract**: `Trainer.fit()`/`Trainer.evaluate()` return only after all
+Forge CUDA work issued during that call has completed -- true today for two
+independent, compounding reasons, neither of which is new to this
+milestone:
+
+1. Every `Module`/`Loss`/`Optimizer` call inside `_run_training_epoch()`/
+   `evaluate()` already synchronizes internally (forward, backward,
+   `optimizer.step()` -- see the sections above).
+2. Every training/eval batch additionally calls
+   `loss.to("cpu").numpy()` (`trainer.py`'s `total_loss += float(loss.
+   to("cpu").numpy()) * batch_size`, for the returned `EpochResult`/
+   `EvaluationResult`) -- a synchronous `cudaMemcpy` device-to-host
+   transfer, at every single batch boundary, purely as a side effect of
+   accumulating the loss for reporting.
+
+Reason 2 means `Trainer` already imposes an explicit, unavoidable
+synchronization point once per batch, independent of reason 1. Neither
+mechanism was added for this milestone; both already existed. No change was
+made to `Trainer` -- the existing behavior already meets the stated
+contract, so no new synchronization call was needed there.
+
+### Persistence / checkpoint semantics
+
+`save_model()`/`save_checkpoint()` (`forge/serialization/model.py`,
+`checkpoint.py`) copy every `Parameter`/optimizer-state array to host memory
+via `Backend.to_numpy()` (`CUDABackend.to_numpy()` -> synchronous
+`cf_memcpy_d2h` -> `cudaMemcpy`) before any archive bytes are written. Since
+that copy is itself host-blocking and only returns once the transferred
+data has actually landed in the host buffer, the array is fully materialized
+and correct by the time it is written to the archive -- no caller-side
+`forge.cuda.synchronize()` is required before calling `save_model()`/
+`save_checkpoint()`, and none was added. `load_model()`/`load_checkpoint()`
+construct fresh `CUDAStorage` via `Backend.from_array()` (a synchronous
+`cudaMemcpy` H2D through the caching allocator, same as any other CUDA
+tensor construction) -- ordinary CUDA allocation, nothing checkpoint-specific
+about its synchronization. No changes were made to either module for this
+milestone; the existing `tests/test_cuda_persistence.py`/
+`test_cuda_checkpoint.py` suites (unmodified) continue to pass, confirming
+correctness was never contingent on caller-side synchronization the old code
+happened to be missing.
+
+### Benchmark semantics
+
+`benchmarks/timing.py`'s Milestone 11 synchronize-bracketed methodology
+(`synchronize() -> start timer -> workload -> synchronize() -> stop timer`)
+is unchanged in structure; its `_cuda_synchronize()` helper (and the
+equivalent `_sync()`/`_sync(device)` helpers in `benchmarks/alloc_profile.py`,
+`mnist_bench.py`, `mnist_profile.py`, `training_bench.py`) now call the
+public `forge.cuda.synchronize()` instead of reaching into
+`get_cuda_backend().synchronize()` directly -- a pure call-site
+simplification (per this milestone brief's Section 16), not a methodology
+change. `benchmarks/alloc_profile.py::_measure_alloc_free_overhead()`'s
+direct, uncached `allocator.raw_malloc`/`raw_free` timing is deliberately
+left unbracketed by any synchronize call, exactly as before -- these are
+synchronous driver calls that block on their own, and adding a synchronize
+bracket around them would only add unrelated overhead to what is meant to
+be an isolated driver-call measurement.
+
+### No kernel changes
+
+No file under `forge/backend/cuda/kernels.cu` changed for this milestone.
+Every launch/error/synchronization behavior described above (the
+`cudaGetLastError()`-then-`cudaDeviceSynchronize()` pattern, the
+synchronous `cudaMemcpy` calls, the absence of any stream) was already
+exactly this shape; this milestone only inspected and documented it.
+
+### Performance impact
+
+`forge.cuda.synchronize()` adds one Python-level function call plus one
+`ctypes` call into an already-idle default stream when called with no
+pending work -- negligible, and it is never called by any Forge-internal
+code path, so no existing hot path (a `Tensor` op, `Module` forward/backward,
+optimizer step, or `Trainer` batch) changed at all. Re-running
+`benchmarks/mnist_bench.py`'s MNIST training-step benchmark (batch=64, 5
+warmup + 30 steady-state iterations) on the 940MX after this milestone's
+changes reproduces M25's mean iteration time within ordinary run-to-run
+variance -- consistent with the fact that no operation's kernel, launch
+wrapper, or per-op synchronization changed. See `docs/performance/
+benchmarking.md`'s **Milestone 26** section for the measured comparison.
+
+### Future stream-aware design
+
+Explicitly out of scope for this milestone, and *not* something today's
+design accidentally already supports -- listed here so a future milestone
+does not have to rediscover it:
+
+- **Stream ownership**: today, "the CUDA default stream" is implicit and
+  global; a stream-aware Forge would need each `CUDAStorage` (or each
+  `Tensor`) to record which stream last wrote to it.
+- **Cross-stream synchronization**: if two streams could be in flight at
+  once, an operation consuming a tensor produced on a different stream would
+  need an explicit `cudaStreamWaitEvent`/`cudaEventRecord` dependency before
+  it could safely read that tensor -- Forge has no such mechanism, and needs
+  none today because there is only ever one stream.
+- **CUDA events replacing `cudaDeviceSynchronize()`**: today's per-op
+  `cudaDeviceSynchronize()` is a coarse, whole-device barrier -- correct but
+  conservative. A stream-aware design would instead record a `cudaEvent_t`
+  per operation and query/wait on specific events, avoiding unnecessary
+  cross-stream stalls.
+- **Deferred / stream-ordered reuse in the allocator**: `CUDACachingAllocator.
+  release()` today unconditionally makes a block reusable the instant
+  `CUDAStorage.__del__()` runs, because the M26 contract above guarantees no
+  kernel can still be touching it. Under multiple streams, a block's last
+  use might be on a *different* stream than the one about to reuse it --
+  reuse would need to wait on (or record a dependency on) that block's
+  last-use event before it could be safely handed to a new allocation
+  (`cudaStreamAddCallback`/event-based deferred free, the standard technique
+  PyTorch's own caching allocator uses for exactly this reason).
+- **Nonblocking `Tensor.to()`**: today's `.to()` is fully host-blocking by
+  construction (plain `cudaMemcpy`); an async version would need pinned
+  host memory, `cudaMemcpyAsync`, and a story for when the destination
+  tensor's data is actually guaranteed ready.
+
+None of this is implemented now. This milestone's deliverable is the
+*current*, single-stream, per-op-synchronized contract, stated precisely
+enough that a future milestone introducing streams knows exactly which
+assumptions it is replacing.
+
 ## CUDA model persistence (Milestone 13)
 `save_model()`/`load_model()` (`forge/serialization/model.py`) now support
 models whose `Parameter`s live on CUDA -- see
@@ -1501,6 +1899,31 @@ driver 582.53, CUDA Toolkit 12.6):
   bounded-growth leak regression. Every lifecycle assertion in this suite
   calls `gc.collect()` plus `CUDABackend.synchronize()` before reading
   `memory_stats()`, per that same "Known limitations" discussion.
+- **Milestone 26 (CUDA execution and synchronization semantics)**: the new
+  `tests/test_cuda_synchronize.py` (13 real-hardware tests) and
+  `tests/test_cuda_synchronize_availability.py` (2 CUDA-unavailable
+  error-path tests that run regardless of hardware -- 1,014 tests overall,
+  348 CUDA-hardware-gated) pass directly on the 940MX, exercising:
+  `forge.cuda.synchronize()` returning successfully after a real CUDA op,
+  with no prior work outstanding, and called repeatedly back-to-back;
+  synchronization after a real forward pass, backward pass, and optimizer
+  step; a full forward -> loss -> backward -> `optimizer.step()` ->
+  `synchronize()` cycle whose resulting loss and parameters match an
+  identical CPU run within float32 tolerance; the allocator memory-reuse
+  safety property from **Allocator / Memory-Reuse Safety** above --
+  allocating, using, and releasing a block, then allocating a same-size
+  block (confirmed via `cache_hit_count` to actually reuse it) and reading
+  back exactly correct values, with no intervening `synchronize()` call;
+  the same property under 50 repeated allocate/release cycles;
+  `empty_cache()` called immediately after real CUDA work with no prior
+  `synchronize()`, preserving correctness of both the freed and the newly
+  allocated data; and `memory_stats()`'s allocation/reservation/cache
+  counters being exactly unchanged by one or more `synchronize()` calls.
+  Every pre-existing CUDA test (335 tests, unmodified) continues to pass,
+  confirming no regression from this milestone's changes (the new public
+  API, and the benchmark call-site simplification in **Benchmark
+  Semantics** above). No kernel, launcher, or per-op synchronization
+  behavior changed -- see **No Kernel Changes** above.
 
 ## Limitations
 - **Operation set is intentionally small**: `add`/`mul` (exact-shape, plus
@@ -1583,3 +2006,12 @@ driver 582.53, CUDA Toolkit 12.6):
   fact that small workloads, and even the "medium" 512x512 matmul, run
   slower on this CUDA backend than on CPU) is in
   `docs/performance/benchmarking.md` (Milestone 11), not repeated here.
+- **Single stream, no asynchronous execution (Milestone 26)**: Forge issues
+  every kernel launch and memory copy on CUDA's default stream and
+  synchronizes after every operation -- see **CUDA Execution and
+  Synchronization Semantics** above for the full audit. No user-visible CUDA
+  streams, multiple/concurrent stream execution, CUDA events as a public
+  API, asynchronous/nonblocking `Tensor` operations, stream-aware allocator
+  reuse, or CUDA Graphs exist or were introduced by this milestone -- see
+  that section's **Future Stream-Aware Design** for exactly what each of
+  these would require if ever added.

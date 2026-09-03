@@ -975,14 +975,18 @@ class CUDABackend(Backend):
         self._synchronize("adam_step")
         return data, m, v
 
-    # -- public synchronization (Milestone 11) ----------------------------
+    # -- public synchronization (Milestone 11; exposed as forge.cuda.synchronize() in Milestone 26) --
     #
     # Every operation above already synchronizes internally before trusting
     # its own result, so `synchronize()` is never required for correctness.
-    # It exists for external callers -- specifically `benchmarks/timing.py`
-    # -- that need to bracket a *sequence* of CUDA calls (or the boundary
-    # around one) with an explicit synchronization point of their own,
-    # without reaching into the private `_synchronize`/`_lib` internals.
+    # It exists for external callers -- `benchmarks/timing.py`'s
+    # synchronize-bracketed timing methodology, and, as of Milestone 26, the
+    # public `forge.cuda.synchronize()` -- that need to bracket a *sequence*
+    # of CUDA calls (or the boundary around one) with an explicit
+    # synchronization point of their own, without reaching into the private
+    # `_synchronize`/`_lib` internals. See `docs/architecture/cuda-backend.
+    # md`'s **CUDA Execution and Synchronization Semantics (Milestone 26)**
+    # section for the full contract this dispatches into.
 
     def synchronize(self) -> None:
         """Block until all previously issued CUDA work on this device completes."""

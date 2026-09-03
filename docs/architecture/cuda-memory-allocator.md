@@ -698,3 +698,61 @@ by caching, as designed -- only `reserved_bytes`/`cached_bytes` grow, and
 cuda-backend.md` for the full API/statistics/ownership writeup and `docs/
 performance/benchmarking.md` for the benchmark-harness-level methodology
 notes.
+
+## Milestone 26: Synchronization Contract (Formalized)
+
+Section 13 above (**CUDA asynchrony implications**) stated the reuse-safety
+assumption this allocator depends on informally, as a condition for the
+M25 implementation to lean on. Milestone 26 audited every CUDA-touching code
+path in Forge end-to-end (kernel launches, memory copies, autograd,
+optimizers, `Trainer`, persistence) specifically to confirm that assumption
+against the actual CUDA API semantics rather than restating it, and adds
+`forge.cuda.synchronize()` as Forge's public synchronization primitive. The
+full audit lives in `docs/architecture/cuda-backend.md`'s **CUDA Execution
+and Synchronization Semantics (Milestone 26)** section; this is the
+allocator-specific consequence, stated as a formal contract:
+
+> **Current M26 contract.** Forge issues all CUDA work -- every kernel
+> launch (`kernels.cu` creates no stream, so every launch runs on CUDA's
+> default stream) and every memory copy (`cf_memcpy_h2d`/`_d2h`/`_d2d`, all
+> plain synchronous `cudaMemcpy`, never `cudaMemcpyAsync`) -- in program
+> order on that one stream. Every `CUDABackend` operation calls
+> `cudaDeviceSynchronize()` (`CUDABackend._synchronize`) before returning its
+> result to Python. Consequently, a `CUDAStorage` never becomes unreachable
+> (triggering `__del__` -> `CUDACachingAllocator.release()`) while any kernel
+> that reads or writes its memory is still in flight -- the operation that
+> last touched that memory already synchronized before control returned to
+> Python, and no Forge CUDA work is ever issued out of that order. The
+> allocator may therefore hand a cached block to a new `CUDAStorage` (a
+> cache hit, in `CUDACachingAllocator.allocate()`) with **no additional
+> synchronization of its own** -- the safety property is established by the
+> per-operation synchronization every `CUDABackend` method already performs,
+> not by anything the allocator itself does.
+
+This is not a new design decision -- `CUDACachingAllocator.allocate()`/
+`release()` are byte-for-byte unchanged by Milestone 26. It is the same
+"exact-size cache, no reuse-time synchronization" design M25 already shipped,
+now backed by an explicit, verified statement of *why* it is correct rather
+than an inherited assumption. `empty_cache()` inherits the identical
+reasoning: a block can only ever be in the free list after its last use
+already synchronized, so freeing it back to the driver needs no
+synchronization step of its own either.
+
+**Verification**: `tests/test_cuda_synchronize.py::
+test_allocator_reuse_does_not_corrupt_data` and `::
+test_allocator_reuse_across_many_alloc_release_cycles_stays_correct`
+allocate, use, and release a block, then allocate a same-size block
+(confirmed via `CUDAMemoryStats.cache_hit_count` to actually reuse the freed
+one) and prove its readback is exactly correct -- with no `forge.cuda.
+synchronize()` call anywhere between the release and the reuse. `::
+test_empty_cache_after_recent_work_is_safe_and_preserves_correctness` proves
+the same for `empty_cache()` specifically.
+
+**What would have to change for this to break**: only the introduction of
+multiple CUDA streams (explicitly out of scope for Milestone 26 and every
+prior milestone) -- see `docs/architecture/cuda-backend.md`'s **Future
+Stream-Aware Design** subsection for exactly what a stream-aware allocator
+would need (per-block last-use-stream tracking, CUDA events, deferred/
+stream-ordered freeing) before this contract's "no additional
+synchronization on reuse" claim could be restated safely under multiple
+streams.

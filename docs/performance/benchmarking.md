@@ -849,3 +849,43 @@ already includes this (its first, warmup call is always a miss). No new
 synchronization was added: `allocate()`/`release()` are pure host-side
 bookkeeping around calls that already synchronized internally (see
 `docs/architecture/cuda-backend.md`'s **Synchronization assumptions**).
+
+## Milestone 26: CUDA execution and synchronization semantics
+
+### Purpose
+Formalizes Forge's CUDA execution/synchronization contract and adds the
+public `forge.cuda.synchronize()` primitive -- see `docs/architecture/
+cuda-backend.md`'s **CUDA Execution and Synchronization Semantics (Milestone
+26)** section for the full audit. No kernel, launcher, allocator, or
+per-operation synchronization behavior changed; this milestone is
+documentation plus one thin new public API, so this section exists mainly to
+confirm the benchmark harness itself is unaffected.
+
+### Methodology unchanged
+`benchmarks/timing.py`'s Milestone 11 synchronize-bracketed methodology
+(`synchronize() -> start timer -> workload -> synchronize() -> stop timer`)
+keeps its exact structure. The only change is a call-site simplification:
+`_cuda_synchronize()` (`timing.py`) and the equivalent `_sync()`/
+`_sync(device)` helpers in `benchmarks/alloc_profile.py`, `mnist_bench.py`,
+`mnist_profile.py`, and `training_bench.py` now call the public `forge.cuda.
+synchronize()` instead of reaching into `get_cuda_backend().synchronize()`
+directly -- the same `CUDABackend.synchronize()` call underneath, reached
+through one fewer private import. `benchmarks/alloc_profile.py::
+_measure_alloc_free_overhead()`'s direct, uncached `allocator.raw_malloc`/
+`raw_free` timing remains deliberately unbracketed by any synchronize call,
+exactly as before Milestone 24 introduced it.
+
+### Measured example (940MX, real hardware): confirming no regression
+Re-running the M20 MNIST workload (`benchmarks/mnist_bench.py`'s `mnist`
+category, batch=64, 5 warmup + 30 steady-state iterations -- the same
+configuration Milestones 24/25 used) after this milestone's changes:
+
+| Metric | M25 (caching allocator) | M26 (post-synchronization-audit) |
+|---|---:|---:|
+| Mean iteration time (CUDA) | 19.56-19.68 ms (two runs) | 18.56-19.53 ms (two runs) |
+
+Both M26 runs fall inside M25's own reported range, well within the
+run-to-run WDDM variance already documented in Milestone 21 -- consistent
+with the fact that no hot-path code changed (`forge.cuda.synchronize()` is
+never called by any Forge-internal training/inference path; only benchmark
+and test call sites reach it).

@@ -60,9 +60,7 @@ from .sizes import MNIST_PROFILE_CONFIG
 
 def _sync(device: str) -> None:
     if device == "cuda":
-        from forge.backend.cuda.backend import get_cuda_backend
-
-        get_cuda_backend().synchronize()
+        forge.cuda.synchronize()
 
 
 def _profiled_run_backward(root, grad_array, device: str, op_times: "dict[str, float]") -> None:

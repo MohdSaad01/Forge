@@ -64,9 +64,7 @@ _OP_ITERATIONS = 30
 
 
 def _sync() -> None:
-    from forge.backend.cuda.backend import get_cuda_backend
-
-    get_cuda_backend().synchronize()
+    forge.cuda.synchronize()
 
 
 def _summarize_events(events, iterations: "int | None" = None) -> dict:

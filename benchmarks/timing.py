@@ -14,9 +14,10 @@ overhead, not execution time. Every CUDA measurement here instead follows:
     synchronize()           # block until the launched work actually finishes
     end = perf_counter()
 
-`synchronize()` is `CUDABackend.synchronize()` (`forge/backend/cuda/backend.py`),
-a thin wrapper around the same `cudaDeviceSynchronize()` every CUDA
-operation already calls internally before trusting its own result (see
+`synchronize()` is `forge.cuda.synchronize()` (Milestone 26's public wrapper
+around `CUDABackend.synchronize()`, `forge/backend/cuda/backend.py`), a thin
+wrapper around the same `cudaDeviceSynchronize()` every CUDA operation
+already calls internally before trusting its own result (see
 `docs/architecture/cuda-backend.md`) -- this file adds no new native code,
 only reuses that existing, already-verified synchronization point.
 
@@ -71,9 +72,9 @@ class Timing:
 
 
 def _cuda_synchronize() -> None:
-    from forge.backend.cuda.backend import get_cuda_backend
+    import forge
 
-    get_cuda_backend().synchronize()
+    forge.cuda.synchronize()
 
 
 def time_cpu(fn: Callable[[], object], warmup: int, iterations: int) -> Timing:

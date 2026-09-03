@@ -25,7 +25,12 @@ observing CUDA allocation/free lifecycle and peak memory usage. Milestone 25
 adds an exact-size CUDA caching allocator sitting between `CUDAStorage` and
 the driver (`forge.cuda.empty_cache()`; `memory_stats()` grows
 `reserved_bytes`/`cached_bytes`/`cache_hit_count`/`cache_miss_count`) -- see
-`docs/architecture/cuda-memory-allocator.md`.
+`docs/architecture/cuda-memory-allocator.md`. Milestone 26 formalizes
+Forge's CUDA execution/synchronization contract (single default stream,
+per-operation `cudaDeviceSynchronize()`, allocator reuse safety) and adds
+`forge.cuda.synchronize()`, a thin public wrapper around the pre-existing
+`CUDABackend.synchronize()` -- see `docs/architecture/cuda-backend.md`'s
+**CUDA Execution and Synchronization Semantics (Milestone 26)** section.
 """
 
 from . import backend, cuda, data, nn, optim, random, serialization, training

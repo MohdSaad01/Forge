@@ -1210,3 +1210,94 @@ confirm a clean skip (660 passed, 341 skipped, 0 failed). See
 25)** section, `docs/architecture/cuda-memory-allocator.md`'s
 **Implementation (Milestone 25)** section, and `docs/performance/
 benchmarking.md`'s **Milestone 25** section.
+
+### M26 — CUDA execution and synchronization semantics
+Formally establishes Forge's current CUDA execution/synchronization
+contract before any future asynchronous-execution work, per the milestone
+brief's explicit purpose. This was primarily an **audit**, not a redesign:
+every CUDA-touching code path (kernel launches, memory copies, autograd,
+`SGD`/`Adam`, `Trainer`, persistence, the M25 caching allocator) was
+inspected against the actual CUDA API semantics in `kernels.cu` and
+`backend.py`, and the (already-correct) synchronous execution model was
+formalized in writing rather than changed.
+
+**Findings.** Forge creates no CUDA streams -- every kernel launch and
+`cudaMemcpy` runs on CUDA's default stream. Every `CUDABackend` method
+already calls `cudaDeviceSynchronize()` before returning its result (a
+pattern established as far back as Milestone 8, unchanged since), so Forge's
+CUDA execution is host-synchronous *per operation* today despite the
+underlying CUDA calls being individually asynchronous. Kernel launch errors
+(`cudaGetLastError()`, immediately after every launch) and kernel execution
+errors (only visible at the following `cudaDeviceSynchronize()`) are both
+already surfaced before any `CUDABackend` method returns -- a distinction
+that existed in `kernels.cu` from the start but had never been written down
+explicitly. All CPU<->CUDA transfers (`Tensor.to()`) use plain synchronous
+`cudaMemcpy`, never `cudaMemcpyAsync`. `Trainer.fit()`/`evaluate()` already
+synchronize at every batch boundary for two independent reasons: every
+`Module`/`Loss`/`Optimizer` call synchronizes internally, and every batch
+additionally calls `loss.to("cpu").numpy()` for progress reporting -- a
+second, independent synchronous transfer. The M25 caching allocator's
+"safe to reuse immediately, no synchronization needed" design is formally
+justified by this same per-operation synchronization guarantee, now stated
+as an explicit, verified contract rather than an inherited assumption.
+
+**New public API.** `forge.cuda.synchronize()` (`forge/cuda/__init__.py`) --
+a thin wrapper dispatching to the pre-existing `CUDABackend.synchronize()`
+(added in Milestone 11 for `benchmarks/timing.py`, previously reachable only
+through `forge.backend.cuda.backend.get_cuda_backend()`). No backend-level
+code changed: the Milestone 11 `CUDABackend.synchronize()` method already
+did exactly what the milestone brief asked for, so Milestone 26 only made it
+publicly reachable and documented its contract precisely. `Backend`
+(`forge/backend/base.py`) gains no abstract `synchronize()` method, and
+`CPUBackend` gains no `synchronize()` -- nothing in Forge calls
+`get_backend(device).synchronize()` polymorphically today, so adding it to
+the common interface would be unneeded coupling for a CPU no-op with no
+caller (documented explicitly as a deliberate decision, not an oversight).
+`benchmarks/timing.py`, `alloc_profile.py`, `mnist_bench.py`,
+`mnist_profile.py`, and `training_bench.py` were updated to call the new
+public `forge.cuda.synchronize()` instead of reaching into
+`get_cuda_backend().synchronize()` directly -- a call-site simplification
+with no methodology change.
+
+**No kernel, launcher, allocator, autograd, optimizer, or `Trainer` code
+changed.** No CUDA streams, events, asynchronous Tensor operations, or
+stream-aware allocator were introduced, per the milestone's explicit scope
+rule. `docs/architecture/cuda-backend.md` gains a new **CUDA Execution and
+Synchronization Semantics (Milestone 26)** section (stream model, host/
+device synchronization semantics, kernel launch semantics, memory copy
+semantics, the public API, error semantics, the formalized allocator
+reuse-safety contract, `empty_cache()`/memory-statistics semantics, autograd/
+optimizer/`Trainer`/persistence/benchmark semantics, and a **Future
+Stream-Aware Design** section listing exactly what multi-stream support
+would require later); `docs/architecture/cuda-memory-allocator.md` gains a
+**Milestone 26: Synchronization Contract (Formalized)** section restating
+the allocator-specific consequence as a precise, testable claim;
+`docs/performance/benchmarking.md` gains a **Milestone 26** section
+confirming the benchmark harness and measured MNIST-workload performance are
+unaffected.
+
+15 new tests: 13 hardware-gated (`tests/test_cuda_synchronize.py` --
+`synchronize()` after a real op, with no prior work, and called repeatedly;
+synchronization after forward/backward/an optimizer step; a full forward ->
+loss -> backward -> `optimizer.step()` -> `synchronize()` cycle matching an
+identical CPU run within tolerance; the allocator memory-reuse safety
+property directly -- allocate/use/release a block, allocate a same-size
+block confirmed via `cache_hit_count` to reuse it, and read back exactly
+correct values with no intervening `synchronize()`; the same property under
+50 repeated cycles; `empty_cache()` immediately after real CUDA work with no
+prior `synchronize()`; and `memory_stats()`'s counters being exactly
+unchanged by `synchronize()`) and 2 CPU-only availability tests
+(`tests/test_cuda_synchronize_availability.py`, split out for the same
+module-level-`pytestmark` reason `test_cuda_memory_availability.py` is,
+mirroring it exactly) -- 1,014 tests total, all passing on the 940MX; every
+pre-existing test (999 tests) passes completely unmodified. `benchmarks/
+mnist_bench.py`'s M20 CNN workload (batch=64, 5 warmup + 30 steady-state
+iterations) was re-measured after this milestone's changes: 18.56-19.53 ms
+mean CUDA iteration time across two runs, matching M25's own 19.56-19.68 ms
+range within ordinary run-to-run variance -- confirming the new public API
+adds no measurable overhead to any hot path, as expected, since it is never
+called by Forge-internal code. See `docs/architecture/cuda-backend.md`'s
+**CUDA Execution and Synchronization Semantics (Milestone 26)** section,
+`docs/architecture/cuda-memory-allocator.md`'s **Milestone 26:
+Synchronization Contract (Formalized)** section, and `docs/performance/
+benchmarking.md`'s **Milestone 26** section.

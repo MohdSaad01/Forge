@@ -46,9 +46,7 @@ class _MLP(nn.Module):
 
 def _sync(device: str) -> None:
     if device == "cuda":
-        from forge.backend.cuda.backend import get_cuda_backend
-
-        get_cuda_backend().synchronize()
+        forge.cuda.synchronize()
 
 
 def _run_training(device: str, results: "list[BenchmarkResult]") -> None:

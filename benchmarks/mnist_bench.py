@@ -39,9 +39,7 @@ _EPOCH_SAMPLE_COUNT = 60_000
 
 def _sync(device: str) -> None:
     if device == "cuda":
-        from forge.backend.cuda.backend import get_cuda_backend
-
-        get_cuda_backend().synchronize()
+        forge.cuda.synchronize()
 
 
 def _run_mnist_training(device: str, results: "list[BenchmarkResult]") -> None:
