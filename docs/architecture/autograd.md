@@ -1,4 +1,4 @@
-# Forge Autograd (Milestone 2; backend-aware as of Milestone 10)
+# Forge Autograd (Milestone 2; backend-aware as of Milestone 10; reference-cycle-free as of Milestone 23)
 
 ## Package layout
 ```
@@ -171,6 +171,129 @@ calling `backward()` again after building a new graph adds to the existing
   raises `GradientStateError` — build a new forward pass to differentiate
   again. Leaves are unaffected: calling `backward()` directly on a leaf
   multiple times is allowed and simply accumulates each time.
+  As of Milestone 23, "can be garbage-collected" means *is released by
+  plain reference counting* — see below.
+
+## Graph teardown and object lifetime (Milestone 23)
+
+### Ownership model
+Forge's autograd graph is a strict DAG with references pointing only from
+outputs toward inputs, never back:
+```text
+Tensor.grad_fn -> Node.inputs -> (input Tensors, each possibly non-leaf) -> ...
+```
+- A `Node` **owns** its `inputs` tuple (the actual input `Tensor` objects —
+  required so `run_backward` can check `inp.requires_grad` and call
+  `inp._accumulate_grad`) and its `backward_fn` closure.
+- A `backward_fn` closure owns only the *minimal* saved state a backward
+  rule needs: raw backend storage (`a_data`, `input_data`, `result`, ...)
+  captured from `self._data`/`other._data`, plus plain Python
+  values (shapes, strides, scalars). It never captures the `Tensor` object
+  itself, its `Module`, or its `Node` — every `backward_fn` in
+  `forge/tensor/tensor.py` (`add`/`sub`/`mul`/`matmul`/`sum`/`reshape`/
+  `relu`/`exp`/`log`/`conv2d`/`max_pool2d`) was audited for this during M23
+  and none captures more than the arrays/scalars its formula actually reads.
+- No input `Tensor` references the `Node`/output that consumed it, and no
+  `Node` or `backward_fn` references its output `Tensor`. This means the
+  graph has always been acyclic *at the Tensor/Node level* — a `Tensor`
+  reachable from a root cannot, through `grad_fn`/`inputs`/closures alone,
+  reach back to that root.
+- `Module` -> `Parameter` (via `Module.__setattr__`), `Optimizer.state` ->
+  `Parameter` (as a dict key) -> `_AdamState`, and `Trainer.model`/
+  `.optimizer` are all legitimate, persistent, strictly-downward ownership
+  and were confirmed (by code audit plus the lifecycle tests in
+  `tests/test_lifetime.py`) to hold no back-reference into a temporary
+  computation graph, loss, or forward output.
+
+### The M22-discovered cycle
+Despite the DAG above being acyclic, M22 measured genuine reference cycles:
+a `gc.disable()` + repeated-training-step experiment showed hundreds of
+otherwise-unreachable objects per iteration that only `gc.collect()` could
+reclaim, and CUDA storage release depended on that collection running.
+
+The cycle was not in the Tensor/Node ownership graph at all — it was in how
+that graph was *traversed*. `run_backward` (`forge/autograd/engine.py`)
+built its dependency-ordered tensor list via a **recursive nested
+closure**:
+```python
+def _topological_order(root):
+    visited, order = set(), []
+    def visit(tensor):          # <- calls itself by name
+        ...
+        for inp in node.inputs:
+            visit(inp)
+        order.append(tensor)
+    visit(root)
+    return order
+```
+A nested function that calls itself by name closes over its own name from
+the enclosing scope, so `visit.__closure__` contains a cell whose contents
+*is* `visit` itself:
+```text
+visit (function)
+  -> __closure__ (tuple)
+       -> cell
+            -> visit            # the exact same function object -- a cycle
+```
+Confirmed directly (`sys.getrefcount`/`cell.cell_contents is visit` both
+positive) during this milestone's investigation. Because `visit` also
+closes over `order` — the full list of every `Tensor` in the graph — and
+`visited`, this one self-referential cell kept `order` (and therefore every
+Tensor `_topological_order` had appended to it, and every raw backend
+array/`CUDAStorage` those Tensors owned) alive until the next `gc.collect()`,
+even after `run_backward` returned and every ordinary reference to `visit`/
+`order`/`visited` had gone out of scope. This was the sole
+Forge-created reference cycle found in the package (confirmed by an AST scan
+of `forge/` for any other nested function referencing its own name — none
+exist).
+
+### Fix
+`_topological_order` was rewritten as an iterative, explicit-stack
+post-order traversal with no nested function at all (`forge/autograd/
+engine.py`) — not a `functools`/`weakref` workaround, since the closure was
+never legitimate ownership to begin with, just an accident of how Python
+closures capture a recursive function's own name. The iterative version
+produces byte-for-byte the same order as the old recursive one (same
+memoization via `visited`, same left-to-right/post-order semantics, verified
+by test) with no self-reference to break.
+
+### GC behavior
+With the fix, a `gc.disable()`'d repeated forward/backward/step loop (CPU or
+CUDA — see `tests/test_lifetime.py`/`tests/test_cuda_lifetime.py`) holds a
+constant live-object count across iterations; `gc.collect()` afterward
+reclaims zero additional Forge objects, i.e. plain reference counting alone
+is now sufficient to release a consumed graph. This is verified, not merely
+argued: before the fix, `gc.collect()` reclaimed hundreds of `Tensor`
+objects per repeated call; after, it reclaims none.
+
+### Known limitations
+- This guarantee covers **Forge-owned objects** (`Tensor`, `Node`,
+  `Module`, `Parameter`, `Optimizer`), not arbitrary user code building
+  cyclic structures on top of Forge (e.g. a user's own callback that closes
+  over a `Tensor` and is stored back onto that same `Tensor`) — Forge cannot
+  and does not attempt to make arbitrary user object graphs cycle-free.
+- CPython's `_ctypes` extension itself was found, during this milestone's
+  CUDA investigation, to leave a small (`ctypes.c_void_p`, `dict`) pair of
+  cyclic garbage behind on certain foreign-function calls through
+  `forge/backend/cuda/backend.py` (e.g. one such pair per `backward()` call
+  on a CUDA graph). This is a long-standing CPython `ctypes` argument-
+  marshaling implementation detail, entirely internal to the `_ctypes` C
+  extension — it involves no Forge object, is not part of the Tensor/Node
+  ownership graph, and (confirmed directly) never retains CUDA device
+  memory: `forge.cuda.memory_stats().allocated_bytes` does not grow across
+  many `backward()` calls with `gc.collect()` never invoked. It is out of
+  this milestone's scope (M23 is a Forge object-ownership audit, not a
+  `ctypes`/CPython-internals fix) and does not reproduce the M22 finding —
+  see `tests/test_cuda_lifetime.py::test_no_forge_objects_survive_a_backward_call_without_gc`.
+  Practically: Forge's own graph no longer needs cyclic GC, but a process
+  that never runs `gc.collect()` at all will still very slowly accumulate
+  this unrelated, memory-free `ctypes` artifact — an existing Python/ctypes
+  characteristic, not a Forge regression.
+- Python reference counting itself is a CPython implementation detail, not
+  a language guarantee — this milestone's claim is scoped to CPython (the
+  documented Forge development environment); a different Python
+  implementation without deterministic refcounting would still rely on its
+  own GC for timely release, same as it would for any other Python object.
 
 ## Broadcasting
 Elementwise ops (`+`, `-`, `*`) support NumPy-style broadcasting on CPU

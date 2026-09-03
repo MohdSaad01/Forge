@@ -975,3 +975,64 @@ the milestone's performance constraint. See `docs/architecture/cuda-
 backend.md`'s **CUDA Memory Statistics (Milestone 22)** section for full
 semantics, and `docs/performance/benchmarking.md`'s **Milestone 22** section
 for the benchmark-integration writeup.
+
+### M23 — Tensor/autograd reference-cycle audit and fix
+Root-causes and fixes the M22-discovered finding that Forge's Tensor/
+autograd/Module/Optimizer object graph depended on cyclic GC rather than
+plain reference counting. The Tensor/Node ownership graph itself was
+audited end to end (every `backward_fn` closure in `forge/tensor/tensor.py`,
+`Module`/`Parameter`/`Optimizer`/`Adam`/`Trainer`/`Loss`/`Conv2d`/
+`MaxPool2d`/`Dropout`) and confirmed acyclic by design -- inputs are owned
+strongly by `Node`, closures capture only raw backend storage/scalars, never
+an output `Tensor`/`Module`/`Optimizer`. The actual cycle was in
+`forge/autograd/engine.py`'s `_topological_order`: a recursive nested
+`def visit(tensor): ... visit(inp) ...` closure calling itself by name,
+whose closure cell therefore referenced `visit` itself (`visit.__closure__
+-> cell -> visit`) -- a genuine self-referential cycle, uncollectible by
+refcounting, that also kept the whole per-call topological-order list
+(every Tensor in the graph) alive until the next `gc.collect()`. Confirmed
+directly via `gc.get_referrers`/`cell.cell_contents is visit`, and via an
+AST scan of `forge/` confirming it was the only nested function in the
+package referencing its own name. Fix: `_topological_order` rewritten as an
+iterative, explicit-stack post-order traversal with no nested function --
+same topological ordering (verified byte-for-byte identical to the old
+recursive version), no self-reference to break. `Node.__slots__` gained
+`__weakref__` (previously absent) so lifetime tests/diagnostics can hold a
+`weakref.ref(node)`; no behavioral change.
+
+Measured on the 940MX: a `gc.disable()`'d 20-iteration MLP training loop
+that used to leak 200 `Tensor` objects (10/iteration) reclaimed only by
+`gc.collect()` now shows zero growth with `gc.collect()` never called. The
+same experiment against real CUDA allocation: before the fix,
+`allocated_bytes` grew from 21,844 to 93,604 bytes over 20 iterations
+without an intervening `gc.collect()` (dropping back to 3,904 once one ran);
+after the fix, `allocated_bytes` stays flat at 3,904 bytes throughout, no
+`gc.collect()` needed. `docs/architecture/cuda-backend.md`'s **CUDA Memory
+Statistics** "Known limitations" #2 is updated to reflect the resolution;
+`docs/architecture/autograd.md` gains a **Graph teardown and object
+lifetime (Milestone 23)** section with the full cycle diagram, ownership
+model, and fix.
+
+One separate, out-of-scope finding surfaced during CUDA investigation and is
+documented rather than fixed: CPython's `_ctypes` extension leaves a small
+(`ctypes.c_void_p`, `dict`) pair of cyclic garbage per certain foreign-
+function calls through `forge/backend/cuda/backend.py` (e.g. one pair per
+CUDA `backward()` call) -- a long-standing CPython implementation detail,
+involving no Forge object and, confirmed directly, never retaining CUDA
+device memory. Out of M23's Forge-object-ownership scope; not a regression.
+
+15 new tests: 10 CPU lifetime tests (`tests/test_lifetime.py` -- simple
+autograd, multi-use graphs, MLP, CNN, Dropout, Adam persistent state,
+repeated `Trainer.fit()` epochs, `no_grad`, and a mixed-workload GC-disabled
+regression test, all asserting zero live-object growth across repeated
+iterations with cyclic GC disabled and never collected mid-workload) plus 5
+CUDA lifetime tests (`tests/test_cuda_lifetime.py`, hardware-gated) proving
+the same property against real `forge.cuda.memory_stats()` and explicitly
+distinguishing the fixed Forge cycle from the unrelated `ctypes` artifact
+above -- 945 tests total (930 + 15), all passing on the 940MX. No CUDA
+kernel changed; no caching allocator introduced. Performance: backward-only
+timing on a 3-layer MLP (200-iteration `timeit` average) was 520.1us before
+and 503.6us after -- no regression (the iterative traversal is marginally
+faster, avoiding recursive-call/closure-cell overhead). See
+`docs/architecture/autograd.md`'s **Graph teardown and object lifetime
+(Milestone 23)** section for full semantics.

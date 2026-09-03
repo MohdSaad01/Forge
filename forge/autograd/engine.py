@@ -28,7 +28,13 @@ from typing import Any, Callable
 class Node:
     """One differentiable operation's backward rule, attached as a Tensor's ``grad_fn``."""
 
-    __slots__ = ("inputs", "backward_fn", "name")
+    # `__weakref__` is included (rather than the bare 3-tuple) so lifetime
+    # diagnostics/tests can hold a `weakref.ref(node)` to confirm a Node
+    # became unreachable without keeping it alive themselves -- see
+    # `docs/architecture/autograd.md`'s **Graph teardown and object
+    # lifetime** section. Costs one extra pointer per Node, no behavioral
+    # change.
+    __slots__ = ("inputs", "backward_fn", "name", "__weakref__")
 
     def __init__(
         self,
@@ -42,21 +48,45 @@ class Node:
 
 
 def _topological_order(root: Any) -> list:
-    """Dependency-ordered (inputs-before-outputs) list of tensors reachable from root."""
+    """Dependency-ordered (inputs-before-outputs) list of tensors reachable from root.
+
+    Iterative (explicit-stack) post-order DFS -- deliberately not a recursive
+    nested function. A recursive `def visit(tensor): ... visit(inp) ...`
+    closure that calls itself by name captures a cell referencing its own
+    function object (`visit.__closure__` holds a cell whose contents is
+    `visit` itself): a genuine Python reference cycle, uncollectible by
+    reference counting alone. Because that closure also closes over `order`
+    (this function's whole result-so-far) and `visited`, the cycle keeps
+    every Tensor already appended to `order` alive until the next
+    `gc.collect()` -- this was Forge's M22-discovered cycle (see
+    `docs/architecture/autograd.md`'s **Graph teardown and object lifetime**
+    section). Each stack entry is `(tensor, expanded)`: an unexpanded entry
+    pushes its own post-order marker (`expanded=True`) followed by its
+    not-yet-visited `node.inputs` in reverse (so a LIFO stack pops them in
+    forward order), reproducing the original recursive traversal's ordering
+    and memoization exactly, with no nested function and therefore no
+    self-referential closure.
+    """
     visited: set[int] = set()
     order: list = []
+    stack: list = [(root, False)]
 
-    def visit(tensor: Any) -> None:
-        if id(tensor) in visited:
-            return
-        visited.add(id(tensor))
+    while stack:
+        tensor, expanded = stack.pop()
+        if expanded:
+            order.append(tensor)
+            continue
+        tid = id(tensor)
+        if tid in visited:
+            continue
+        visited.add(tid)
+        stack.append((tensor, True))
         node = tensor._grad_fn
         if node is not None:
-            for inp in node.inputs:
-                visit(inp)
-        order.append(tensor)
+            for inp in reversed(node.inputs):
+                if id(inp) not in visited:
+                    stack.append((inp, False))
 
-    visit(root)
     return order
 
 

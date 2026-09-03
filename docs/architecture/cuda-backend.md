@@ -905,33 +905,45 @@ its provoking allocation inside an isolated **subprocess**
 every CUDA test that runs afterward, in this file and any other, for the
 rest of that `pytest` invocation.
 
-**2. Forge's Tensor/autograd/Module/Optimizer object graph contains genuine
-Python reference cycles, so CUDA memory release depends on Python's cyclic
-garbage collector, not refcounting alone.** `run_backward`
-(`forge/autograd/engine.py`) already clears `tensor._grad_fn = None` for
-every node it consumes, and no `backward_fn` closure captures an output
-`Tensor` (each captures raw backend storage instead -- see
-`docs/architecture/autograd.md`) -- so the *intended* design has no cycles.
-Empirically, though, running `gc.disable()` then a normal
-`zero_grad -> forward -> loss -> backward -> step` loop for 10 iterations,
-followed by one manual `gc.collect()`, reclaims several hundred otherwise-
-unreachable `Tensor`/`CUDAStorage`/closure (`function`/`cell`) objects that
-plain refcounting left live -- proof of a real cycle somewhere in the
-object graph a full training step builds (not yet root-caused to a specific
-line; suspected to involve `Module`/`Parameter`/closure state rather than
-the `Node` graph itself, based on the collected object types). The
-practical consequence: **an `allocated_bytes` snapshot taken without an
-intervening `gc.collect()` can substantially overstate true live CUDA
-memory** -- measured on this hardware, 50 SGD iterations of a small MLP
-inflated `allocated_bytes` from a ~1.2MB steady state to ~3.1MB before any
+**2. (Resolved in Milestone 23.) Forge's Tensor/autograd/Module/Optimizer
+object graph contained a genuine Python reference cycle, so CUDA memory
+release depended on Python's cyclic garbage collector, not refcounting
+alone.** `run_backward` (`forge/autograd/engine.py`) already cleared
+`tensor._grad_fn = None` for every node it consumed, and no `backward_fn`
+closure captured an output `Tensor` (each captures raw backend storage
+instead -- see `docs/architecture/autograd.md`) -- the Tensor/Node ownership
+graph itself was, and remains, acyclic. Empirically, though, running
+`gc.disable()` then a normal `zero_grad -> forward -> loss -> backward ->
+step` loop for 10 iterations, followed by one manual `gc.collect()`,
+reclaimed several hundred otherwise-unreachable `Tensor`/`CUDAStorage`/
+closure (`function`/`cell`) objects that plain refcounting left live --
+measured on this hardware, 50 SGD iterations of a small MLP inflated
+`allocated_bytes` from a ~1.2MB steady state to ~3.1MB before any
 `gc.collect()`, dropping back to ~96KB (the model's true persistent
-footprint) after one. Every lifecycle test in
-`tests/test_cuda_memory.py`, and the benchmark integration below, call
-`gc.collect()` immediately before each snapshot for exactly this reason --
-this is also why the milestone brief's own test guidance says to "force
-Python garbage collection where necessary" rather than trusting refcounting
-alone (see **Tensor Lifecycle Tests**/**Autograd lifecycle** in the
-milestone brief).
+footprint) after one.
+
+Milestone 23 root-caused this: not the Tensor/Node graph, but a **recursive
+nested closure** in `_topological_order` (`forge/autograd/engine.py`) whose
+`def visit(tensor): ... visit(inp) ...` captured its own name in its
+closure cell -- `visit.__closure__` held a cell referencing `visit` itself,
+a genuine self-referential cycle, which also kept the entire per-call
+topological-order list (every `Tensor` in the graph) alive until the next
+`gc.collect()`. See `docs/architecture/autograd.md`'s **Graph teardown and
+object lifetime (Milestone 23)** section for the full cycle diagram and fix
+(an iterative, non-recursive traversal with no nested function). Re-running
+the same 50-iteration measurement post-fix shows zero `allocated_bytes`
+growth across iterations with `gc.collect()` never called at all --
+`tests/test_cuda_lifetime.py` is the permanent regression test for this.
+
+Every lifecycle test in `tests/test_cuda_memory.py`, and the benchmark
+integration below, still call `gc.collect()` immediately before each
+snapshot -- this is now purely defensive (establishing a clean baseline
+against an unrelated, memory-free `ctypes` artifact documented in
+`docs/architecture/autograd.md`'s **Known limitations**, not because
+`CUDAStorage` release depends on it any more) and is left as-is rather than
+removed, since a `gc.collect()` immediately before a snapshot is harmless
+and these tests' job is measuring `allocated_bytes`, not re-proving M23's
+fix (`test_cuda_lifetime.py` does that instead).
 
 ### Thread safety
 `_MemoryTracker` guards its four counters with one `threading.Lock`,
