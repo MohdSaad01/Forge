@@ -63,6 +63,25 @@ Forge remains single-threaded elsewhere; this is cheap insurance, not a
 concurrency subsystem. The lock is released before any real CUDA driver call
 (`cf_malloc`/`cf_free`) so a slow driver call never holds up unrelated
 bookkeeping reads.
+
+**Milestone 27 -- pending (stream-ordered) blocks.** The ownership invariant
+above still holds, but a device allocation released by a `CUDAStorage` last
+used on an explicit (non-default) `CUDAStream` can no longer become a *ready*
+free block immediately -- Python object destruction no longer implies GPU
+completion once asynchronous execution exists (see
+`docs/architecture/cuda-streams.md`). Such a release instead becomes a
+*pending* block: `CUDAStorage.__del__` calls `release_pending()`, which
+records a real `CUDAEvent` (`stream.py`) on that storage's last-use stream
+and stores `(event, ptr)` in `_pending_blocks[nbytes]`, still exclusively
+owned by this allocator (Invariant 3) but not yet eligible for reuse. A
+pending block becomes eligible the moment its event is observed complete
+(`CUDAEvent.query()`) -- checked opportunistically on the next same-size
+`allocate()` call, and forced (via `CUDAEvent.synchronize()`) only as a last
+resort during OOM handling or `empty_cache()`. A block released by a
+`CUDAStorage` last used on the *default* stream is unaffected: it still goes
+through the original `release()` -> ready free list path unchanged, because
+the M26 contract (every default-stream operation already synchronizes before
+returning) still holds for that stream specifically.
 """
 
 from __future__ import annotations
@@ -73,6 +92,7 @@ from dataclasses import dataclass
 
 from ...exceptions import CUDAError
 from . import profiler as _profiler
+from . import stream as _stream
 
 
 @dataclass(frozen=True)
@@ -94,16 +114,28 @@ class CUDAMemoryStats:
       allocator.md` Section 14's explicit recommendation. `cuda_malloc_count`/
       `cuda_free_count` below are clearer aliases for the same two fields.
 
-    New Milestone 25 fields distinguish active memory from cached-but-unused
+    Milestone 25 fields distinguish active memory from cached-but-unused
     memory:
 
     - `reserved_bytes`: total device memory this process currently holds via
-      the allocator, active or cached (`active + cached`).
+      the allocator -- active, ready-cached, or pending (`active + cached +
+      pending`).
     - `peak_reserved_bytes`: historical peak of `reserved_bytes`.
-    - `cached_bytes`: `reserved_bytes - allocated_bytes` -- memory available
-      for a same-size request to reuse without a driver call.
+    - `cached_bytes`: bytes held in the *ready* free list -- immediately
+      reusable for a same-size request with no driver call and no wait.
     - `cache_hit_count` / `cache_miss_count`: allocation *requests* (not
-      driver calls) served from the cache vs. requiring a `cudaMalloc`.
+      driver calls) served from the ready cache or a reclaimed pending block
+      vs. requiring a `cudaMalloc`.
+
+    New Milestone 27 fields distinguish *ready* cached memory (immediately
+    reusable) from *pending* memory (released, but the `CUDAStream` that
+    last used it may not have finished -- see `allocator.py`'s module
+    docstring):
+
+    - `pending_bytes`: bytes released by a `CUDAStorage` last used on a
+      non-default stream, not yet confirmed safe to reuse.
+    - `pending_count`: number of individual pending blocks (across all
+      sizes) making up `pending_bytes`.
     """
 
     allocated_bytes: int
@@ -115,6 +147,8 @@ class CUDAMemoryStats:
     cached_bytes: int = 0
     cache_hit_count: int = 0
     cache_miss_count: int = 0
+    pending_bytes: int = 0
+    pending_count: int = 0
 
     @property
     def cuda_malloc_count(self) -> int:
@@ -137,6 +171,8 @@ class CUDAMemoryStats:
             "cached_bytes": self.cached_bytes,
             "cache_hit_count": self.cache_hit_count,
             "cache_miss_count": self.cache_miss_count,
+            "pending_bytes": self.pending_bytes,
+            "pending_count": self.pending_count,
         }
 
 
@@ -179,6 +215,17 @@ def raw_free(lib: "ctypes.CDLL", ptr: "ctypes.c_void_p") -> None:
         raise CUDAError(_format_cuda_error(lib, code, "cudaFree failed"))
 
 
+# -- pending (stream-ordered) blocks (Milestone 27) -------------------------------
+
+
+@dataclass
+class _PendingBlock:
+    """A released block whose safety-to-reuse depends on a recorded `CUDAEvent` completing."""
+
+    event: "_stream.CUDAEvent"
+    ptr: "ctypes.c_void_p"
+
+
 # -- the caching allocator --------------------------------------------------------
 
 
@@ -196,6 +243,7 @@ class CUDACachingAllocator:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._free_blocks: "dict[int, list[ctypes.c_void_p]]" = {}
+        self._pending_blocks: "dict[int, list[_PendingBlock]]" = {}
         self._active_bytes = 0
         self._peak_active_bytes = 0
         self._reserved_bytes = 0
@@ -204,11 +252,13 @@ class CUDACachingAllocator:
         self._cache_miss_count = 0
         self._cuda_malloc_count = 0
         self._cuda_free_count = 0
+        self._pending_bytes = 0
+        self._pending_count = 0
 
     # -- allocation ----------------------------------------------------------
 
     def allocate(self, lib: "ctypes.CDLL", nbytes: int) -> "ctypes.c_void_p":
-        """Serve `nbytes` from the exact-size cache, or fall through to a real `cudaMalloc`."""
+        """Serve `nbytes` from the ready cache, a reclaimed pending block, or a real `cudaMalloc`."""
         with self._lock:
             blocks = self._free_blocks.get(nbytes)
             if blocks:
@@ -221,6 +271,19 @@ class CUDACachingAllocator:
                     self._peak_active_bytes = self._active_bytes
                 _profiler.get_profiler().record("alloc", nbytes, ptr.value or 0)
                 return ptr
+
+        # No ready block: opportunistically reclaim a pending block whose
+        # event has already completed (Milestone 27) before paying for a
+        # driver call -- still a cache hit, since it needed no `cudaMalloc`.
+        reclaimed = self._try_reclaim_pending(nbytes)
+        if reclaimed is not None:
+            with self._lock:
+                self._active_bytes += nbytes
+                self._cache_hit_count += 1
+                if self._active_bytes > self._peak_active_bytes:
+                    self._peak_active_bytes = self._active_bytes
+            _profiler.get_profiler().record("alloc", nbytes, reclaimed.value or 0)
+            return reclaimed
 
         # Cache miss: no block held under the lock across the driver call.
         ptr = self._driver_malloc(lib, nbytes)
@@ -236,12 +299,37 @@ class CUDACachingAllocator:
         _profiler.get_profiler().record("alloc", nbytes, ptr.value or 0)
         return ptr
 
+    def _try_reclaim_pending(self, nbytes: int) -> "ctypes.c_void_p | None":
+        """Return a pending block of exactly `nbytes` whose event has already completed, if any."""
+        with self._lock:
+            pending = self._pending_blocks.get(nbytes)
+            if not pending:
+                return None
+            for i, block in enumerate(pending):
+                if block.event.query():
+                    pending.pop(i)
+                    if not pending:
+                        del self._pending_blocks[nbytes]
+                    self._pending_bytes -= nbytes
+                    self._pending_count -= 1
+                    return block.ptr
+            return None
+
     def _driver_malloc(self, lib: "ctypes.CDLL", nbytes: int) -> "ctypes.c_void_p":
-        """`cudaMalloc`, with the M24-designed OOM policy: purge the cache once, retry once."""
+        """`cudaMalloc`, with the M24 OOM policy extended for pending blocks (Milestone 27):
+
+        purge the ready cache and retry; if that still fails, wait for and
+        free every pending block (the last resort -- correctness over
+        overlap under real memory pressure) and retry once more.
+        """
         ptr, code = _try_raw_malloc(lib, nbytes)
         if ptr is not None:
             return ptr
-        self.empty_cache(lib)
+        self._empty_ready(lib)
+        ptr, code = _try_raw_malloc(lib, nbytes)
+        if ptr is not None:
+            return ptr
+        self._drain_pending(lib)
         ptr, code = _try_raw_malloc(lib, nbytes)
         if ptr is not None:
             return ptr
@@ -252,8 +340,10 @@ class CUDACachingAllocator:
     # -- release ---------------------------------------------------------------
 
     def release(self, nbytes: int, ptr: "ctypes.c_void_p") -> None:
-        """Return `ptr` (an active block's `nbytes`) to the exact-size cache. No driver call.
+        """Return `ptr` (an active block's `nbytes`) to the ready free list. No driver call.
 
+        Only safe for a block last used on the CUDA default stream -- see
+        `release_pending()` for a block last used on an explicit `CUDAStream`.
         `CUDAStorage.__del__` already guards against calling this twice for
         the same storage (it clears `self.ptr` before this call ever
         happens), so this should never see the same pointer released twice
@@ -273,18 +363,51 @@ class CUDACachingAllocator:
             blocks.append(ptr)
         _profiler.get_profiler().record("free", nbytes, ptr.value or 0)
 
+    def release_pending(
+        self, lib: "ctypes.CDLL", nbytes: int, ptr: "ctypes.c_void_p", stream_handle: "ctypes.c_void_p | None"
+    ) -> None:
+        """Return `ptr` to the *pending* set, safe to reuse only once its last-use event completes.
+
+        Records a fresh `CUDAEvent` on `stream_handle` right now -- since
+        `CUDAStorage.__del__` calls this synchronously from Python, every
+        operation that used `ptr` on that stream was necessarily already
+        enqueued before this call, so the recorded event completing implies
+        all of them have too (stream program-order, not wall-clock timing).
+        See `allocator.py`'s module docstring.
+        """
+        event = _stream.CUDAEvent(lib)
+        event.record(stream_handle)
+        with self._lock:
+            self._active_bytes -= nbytes
+            self._pending_blocks.setdefault(nbytes, []).append(_PendingBlock(event, ptr))
+            self._pending_bytes += nbytes
+            self._pending_count += 1
+        _profiler.get_profiler().record("free", nbytes, ptr.value or 0)
+
     # -- cache purge -------------------------------------------------------------
 
     def empty_cache(self, lib: "ctypes.CDLL") -> int:
-        """Return every currently cached block to the driver via `cudaFree`. Never touches active blocks.
+        """Return every non-active block to the driver via `cudaFree`.
+
+        Ready blocks are freed immediately, no waiting needed (identical to
+        the M25/M26 behavior). Pending blocks (Milestone 27) are *waited on*
+        first (`CUDAEvent.synchronize()`, one at a time) since they may still
+        be in flight on their producing stream -- so, unlike the M25/M26
+        version, this can now block the calling thread if pending work has
+        not finished. Never touches active blocks. Returns the number of
+        blocks actually freed (ready + pending).
+        """
+        return self._empty_ready(lib) + self._drain_pending(lib)
+
+    def _empty_ready(self, lib: "ctypes.CDLL") -> int:
+        """Free every currently *ready* cached block. No waiting -- see `empty_cache()`.
 
         Processes one block at a time, removing it from `_free_blocks` only
         after its `cudaFree` succeeds -- a failure partway through (see
         Section 9 of the milestone brief for why a large `cudaMalloc`
         failure, not `cudaFree`, is the hardware-observed hazard) leaves the
         remaining not-yet-freed blocks exactly as cached as they were, rather
-        than silently losing track of them. Returns the number of blocks
-        actually freed.
+        than silently losing track of them.
         """
         with self._lock:
             snapshot = [(nbytes, ptr) for nbytes, ptrs in self._free_blocks.items() for ptr in ptrs]
@@ -302,11 +425,29 @@ class CUDACachingAllocator:
             freed += 1
         return freed
 
+    def _drain_pending(self, lib: "ctypes.CDLL") -> int:
+        """Wait for and free every pending block. Can block -- see `empty_cache()`."""
+        with self._lock:
+            snapshot = [(nbytes, block) for nbytes, blocks in self._pending_blocks.items() for block in blocks]
+            self._pending_blocks = {}
+        freed = 0
+        for nbytes, block in snapshot:
+            block.event.synchronize()  # wait -- this is the "last resort" cost documented above
+            raw_free(lib, block.ptr)
+            with self._lock:
+                self._reserved_bytes -= nbytes
+                self._cuda_free_count += 1
+                self._pending_bytes -= nbytes
+                self._pending_count -= 1
+            freed += 1
+        return freed
+
     # -- statistics --------------------------------------------------------------
 
     def snapshot(self) -> CUDAMemoryStats:
         with self._lock:
             active = self._active_bytes
+            pending = self._pending_bytes
             return CUDAMemoryStats(
                 allocated_bytes=active,
                 peak_allocated_bytes=self._peak_active_bytes,
@@ -314,9 +455,11 @@ class CUDACachingAllocator:
                 free_count=self._cuda_free_count,
                 reserved_bytes=self._reserved_bytes,
                 peak_reserved_bytes=self._peak_reserved_bytes,
-                cached_bytes=self._reserved_bytes - active,
+                cached_bytes=self._reserved_bytes - active - pending,
                 cache_hit_count=self._cache_hit_count,
                 cache_miss_count=self._cache_miss_count,
+                pending_bytes=pending,
+                pending_count=self._pending_count,
             )
 
     def reset_peak(self) -> None:
@@ -339,8 +482,15 @@ def allocate(lib: "ctypes.CDLL", nbytes: int) -> "ctypes.c_void_p":
 
 
 def release(nbytes: int, ptr: "ctypes.c_void_p") -> None:
-    """Internal -- called only by `CUDAStorage.__del__`."""
+    """Internal -- called only by `CUDAStorage.__del__`, for a default-stream storage."""
     _allocator.release(nbytes, ptr)
+
+
+def release_pending(
+    lib: "ctypes.CDLL", nbytes: int, ptr: "ctypes.c_void_p", stream_handle: "ctypes.c_void_p | None"
+) -> None:
+    """Internal -- called only by `CUDAStorage.__del__`, for a storage last used on a `CUDAStream`."""
+    _allocator.release_pending(lib, nbytes, ptr, stream_handle)
 
 
 def empty_cache(lib: "ctypes.CDLL") -> int:
@@ -364,6 +514,7 @@ __all__ = [
     "get_allocator",
     "allocate",
     "release",
+    "release_pending",
     "empty_cache",
     "memory_stats",
     "reset_peak_memory_stats",

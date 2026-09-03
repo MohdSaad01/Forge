@@ -54,6 +54,55 @@ __declspec(dllexport) int cf_synchronize() {
     return static_cast<int>(cudaDeviceSynchronize());
 }
 
+// -- CUDA streams and events (Milestone 27) --------------------------------
+//
+// Real `cudaStream_t`/`cudaEvent_t` handles, exported as opaque `void*` so
+// `ctypes` never needs to know their actual (opaque) struct layout -- the
+// same "raw pointer in, raw pointer out" convention `cf_malloc`/`cf_free`
+// already use for device memory. `cf_stream_create`/`cf_stream_destroy`/
+// `cf_stream_synchronize` back `forge.backend.cuda.stream.CUDAStream`, the
+// only public stream abstraction (`forge.cuda.Stream`). `cf_event_*` are
+// used only *internally*, by the caching allocator
+// (`forge.backend.cuda.allocator`), to know when a block released on a
+// non-default stream is actually safe to reuse -- no public CUDA event API
+// is exposed (see the Milestone 27 brief's explicit scope limit).
+// `cudaEventDisableTiming` is passed at creation since Forge's internal
+// events are used only to test/wait for completion, never to measure
+// elapsed time -- a small, standard CUDA optimization for exactly this use.
+
+__declspec(dllexport) int cf_stream_create(void** out_stream) {
+    return static_cast<int>(cudaStreamCreate(reinterpret_cast<cudaStream_t*>(out_stream)));
+}
+
+__declspec(dllexport) int cf_stream_destroy(void* stream) {
+    return static_cast<int>(cudaStreamDestroy(static_cast<cudaStream_t>(stream)));
+}
+
+__declspec(dllexport) int cf_stream_synchronize(void* stream) {
+    return static_cast<int>(cudaStreamSynchronize(static_cast<cudaStream_t>(stream)));
+}
+
+__declspec(dllexport) int cf_event_create(void** out_event) {
+    return static_cast<int>(cudaEventCreateWithFlags(
+        reinterpret_cast<cudaEvent_t*>(out_event), cudaEventDisableTiming));
+}
+
+__declspec(dllexport) int cf_event_record(void* event, void* stream) {
+    return static_cast<int>(cudaEventRecord(static_cast<cudaEvent_t>(event), static_cast<cudaStream_t>(stream)));
+}
+
+__declspec(dllexport) int cf_event_query(void* event) {
+    return static_cast<int>(cudaEventQuery(static_cast<cudaEvent_t>(event)));
+}
+
+__declspec(dllexport) int cf_event_synchronize(void* event) {
+    return static_cast<int>(cudaEventSynchronize(static_cast<cudaEvent_t>(event)));
+}
+
+__declspec(dllexport) int cf_event_destroy(void* event) {
+    return static_cast<int>(cudaEventDestroy(static_cast<cudaEvent_t>(event)));
+}
+
 } // extern "C"
 
 // -- elementwise kernels ----------------------------------------------------
@@ -84,10 +133,10 @@ static void launch_config(long long n, int& blocks, int& threads) {
 
 #define ELEMENTWISE_LAUNCHER(NAME, KERNEL, TYPE, SUFFIX)                                   \
     extern "C" __declspec(dllexport) int NAME##_##SUFFIX(                                  \
-        const TYPE* a, const TYPE* b, TYPE* out, long long n) {                            \
+        const TYPE* a, const TYPE* b, TYPE* out, long long n, void* stream) {              \
         int blocks, threads;                                                               \
         launch_config(n, blocks, threads);                                                 \
-        KERNEL<TYPE><<<blocks, threads>>>(a, b, out, n);                                   \
+        KERNEL<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(a, b, out, n);          \
         return static_cast<int>(cudaGetLastError());                                       \
     }
 
@@ -149,11 +198,11 @@ __global__ void k_mul_bcast(const T* mat, const T* vec, T* out, long long rows, 
 #define BCAST_LAUNCHER(NAME, KERNEL, TYPE, SUFFIX)                                        \
     extern "C" __declspec(dllexport) int NAME##_bcast_##SUFFIX(                           \
         const TYPE* mat, const TYPE* vec, TYPE* out,                                      \
-        long long rows, long long cols, int vec_is_left) {                                \
+        long long rows, long long cols, int vec_is_left, void* stream) {                  \
         long long total = rows * cols;                                                    \
         int blocks, threads;                                                              \
         launch_config(total, blocks, threads);                                            \
-        KERNEL<TYPE><<<blocks, threads>>>(mat, vec, out, rows, cols, vec_is_left);         \
+        KERNEL<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(mat, vec, out, rows, cols, vec_is_left); \
         return static_cast<int>(cudaGetLastError());                                      \
     }
 
@@ -187,11 +236,11 @@ __global__ void k_sub_colbcast(const T* mat, const T* colvec, T* out, long long 
 #define COLBCAST_LAUNCHER(NAME, KERNEL, TYPE, SUFFIX)                                    \
     extern "C" __declspec(dllexport) int NAME##_colbcast_##SUFFIX(                       \
         const TYPE* mat, const TYPE* colvec, TYPE* out,                                  \
-        long long rows, long long cols, int vec_is_left) {                               \
+        long long rows, long long cols, int vec_is_left, void* stream) {                 \
         long long total = rows * cols;                                                   \
         int blocks, threads;                                                             \
         launch_config(total, blocks, threads);                                           \
-        KERNEL<TYPE><<<blocks, threads>>>(mat, colvec, out, rows, cols, vec_is_left);    \
+        KERNEL<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(mat, colvec, out, rows, cols, vec_is_left); \
         return static_cast<int>(cudaGetLastError());                                     \
     }
 
@@ -214,10 +263,10 @@ __global__ void k_relu(const T* a, T* out, long long n) {
 
 #define UNARY_LAUNCHER(NAME, KERNEL, TYPE, SUFFIX)                                        \
     extern "C" __declspec(dllexport) int NAME##_##SUFFIX(                                 \
-        const TYPE* a, TYPE* out, long long n) {                                          \
+        const TYPE* a, TYPE* out, long long n, void* stream) {                            \
         int blocks, threads;                                                              \
         launch_config(n, blocks, threads);                                                \
-        KERNEL<TYPE><<<blocks, threads>>>(a, out, n);                                     \
+        KERNEL<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(a, out, n);            \
         return static_cast<int>(cudaGetLastError());                                      \
     }
 
@@ -330,11 +379,11 @@ __global__ void k_transpose(const T* in, T* out, long long rows, long long cols)
 
 #define TRANSPOSE_LAUNCHER(TYPE, SUFFIX)                                                  \
     extern "C" __declspec(dllexport) int cf_transpose_##SUFFIX(                           \
-        const TYPE* in, TYPE* out, long long rows, long long cols) {                      \
+        const TYPE* in, TYPE* out, long long rows, long long cols, void* stream) {        \
         dim3 threads(16, 16);                                                             \
         dim3 blocks(static_cast<unsigned int>((cols + 15) / 16),                          \
                     static_cast<unsigned int>((rows + 15) / 16));                         \
-        k_transpose<TYPE><<<blocks, threads>>>(in, out, rows, cols);                      \
+        k_transpose<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(in, out, rows, cols); \
         return static_cast<int>(cudaGetLastError());                                      \
     }
 
@@ -355,10 +404,10 @@ __global__ void k_reduce_rows(const T* mat, T* out, long long rows, long long co
 
 #define REDUCE_ROWS_LAUNCHER(TYPE, SUFFIX)                                                \
     extern "C" __declspec(dllexport) int cf_reduce_rows_##SUFFIX(                         \
-        const TYPE* mat, TYPE* out, long long rows, long long cols) {                     \
+        const TYPE* mat, TYPE* out, long long rows, long long cols, void* stream) {       \
         int blocks, threads;                                                              \
         launch_config(cols, blocks, threads);                                             \
-        k_reduce_rows<TYPE><<<blocks, threads>>>(mat, out, rows, cols);                   \
+        k_reduce_rows<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(mat, out, rows, cols); \
         return static_cast<int>(cudaGetLastError());                                      \
     }
 
@@ -382,10 +431,10 @@ __global__ void k_sgd_step(T* param, const T* grad, double lr, long long n) {
 
 #define SGD_STEP_LAUNCHER(TYPE, SUFFIX)                                                   \
     extern "C" __declspec(dllexport) int cf_sgd_step_##SUFFIX(                            \
-        TYPE* param, const TYPE* grad, double lr, long long n) {                          \
+        TYPE* param, const TYPE* grad, double lr, long long n, void* stream) {            \
         int blocks, threads;                                                              \
         launch_config(n, blocks, threads);                                                \
-        k_sgd_step<TYPE><<<blocks, threads>>>(param, grad, lr, n);                        \
+        k_sgd_step<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(param, grad, lr, n); \
         return static_cast<int>(cudaGetLastError());                                      \
     }
 
@@ -437,10 +486,10 @@ __global__ void k_adam_step(
     extern "C" __declspec(dllexport) int cf_adam_step_##SUFFIX(                          \
         TYPE* param, const TYPE* grad, TYPE* m, TYPE* v,                                 \
         double lr, double beta1, double beta2, double eps, double weight_decay,          \
-        double bias_correction1, double bias_correction2, long long n) {                 \
+        double bias_correction1, double bias_correction2, long long n, void* stream) {   \
         int blocks, threads;                                                             \
         launch_config(n, blocks, threads);                                               \
-        k_adam_step<TYPE><<<blocks, threads>>>(                                          \
+        k_adam_step<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(                 \
             param, grad, m, v, lr, beta1, beta2, eps, weight_decay,                      \
             bias_correction1, bias_correction2, n);                                      \
         return static_cast<int>(cudaGetLastError());                                     \
@@ -463,10 +512,10 @@ __global__ void k_broadcast_scalar(const T* scalar, T* out, long long n) {
 
 #define BROADCAST_SCALAR_LAUNCHER(TYPE, SUFFIX)                                           \
     extern "C" __declspec(dllexport) int cf_broadcast_scalar_##SUFFIX(                    \
-        const TYPE* scalar, TYPE* out, long long n) {                                     \
+        const TYPE* scalar, TYPE* out, long long n, void* stream) {                       \
         int blocks, threads;                                                              \
         launch_config(n, blocks, threads);                                                \
-        k_broadcast_scalar<TYPE><<<blocks, threads>>>(scalar, out, n);                    \
+        k_broadcast_scalar<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(scalar, out, n); \
         return static_cast<int>(cudaGetLastError());                                      \
     }
 
@@ -539,10 +588,10 @@ __global__ void k_matmul(const T* A, const T* B, T* C, int M, int K, int N) {
 
 #define MATMUL_LAUNCHER(TYPE, SUFFIX)                                                      \
     extern "C" __declspec(dllexport) int cf_matmul_##SUFFIX(                               \
-        const TYPE* A, const TYPE* B, TYPE* C, int M, int K, int N) {                      \
+        const TYPE* A, const TYPE* B, TYPE* C, int M, int K, int N, void* stream) {        \
         dim3 threads(MATMUL_TILE, MATMUL_TILE);                                            \
         dim3 blocks((N + MATMUL_TILE - 1) / MATMUL_TILE, (M + MATMUL_TILE - 1) / MATMUL_TILE); \
-        k_matmul<TYPE><<<blocks, threads>>>(A, B, C, M, K, N);                              \
+        k_matmul<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(A, B, C, M, K, N);     \
         return static_cast<int>(cudaGetLastError());                                       \
     }
 
@@ -587,13 +636,15 @@ __global__ void k_sum(const T* a, T* out, long long n) {
 }
 
 #define SUM_LAUNCHER(TYPE, SUFFIX)                                                          \
-    extern "C" __declspec(dllexport) int cf_sum_##SUFFIX(const TYPE* a, TYPE* out, long long n) { \
-        cudaError_t err = cudaMemset(out, 0, sizeof(TYPE));                                 \
+    extern "C" __declspec(dllexport) int cf_sum_##SUFFIX(                                   \
+        const TYPE* a, TYPE* out, long long n, void* stream) {                              \
+        cudaStream_t s = (cudaStream_t)stream;                                              \
+        cudaError_t err = cudaMemsetAsync(out, 0, sizeof(TYPE), s);                         \
         if (err != cudaSuccess) return static_cast<int>(err);                               \
         int threads = 256;                                                                  \
         long long b = (n + threads - 1) / threads;                                          \
         int blocks = b < 1 ? 1 : static_cast<int>(b);                                       \
-        k_sum<TYPE><<<blocks, threads, threads * sizeof(TYPE)>>>(a, out, n);                \
+        k_sum<TYPE><<<blocks, threads, threads * sizeof(TYPE), s>>>(a, out, n);             \
         return static_cast<int>(cudaGetLastError());                                        \
     }
 
@@ -641,10 +692,10 @@ __global__ void k_sum_axis1(const T* mat, T* out, long long rows, long long cols
 
 #define AXIS1_REDUCE_LAUNCHER(NAME, KERNEL, TYPE, SUFFIX)                                \
     extern "C" __declspec(dllexport) int NAME##_##SUFFIX(                                \
-        const TYPE* mat, TYPE* out, long long rows, long long cols) {                    \
+        const TYPE* mat, TYPE* out, long long rows, long long cols, void* stream) {      \
         int blocks, threads;                                                             \
         launch_config(rows, blocks, threads);                                            \
-        KERNEL<TYPE><<<blocks, threads>>>(mat, out, rows, cols);                         \
+        KERNEL<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(mat, out, rows, cols); \
         return static_cast<int>(cudaGetLastError());                                     \
     }
 
@@ -669,11 +720,11 @@ __global__ void k_broadcast_axis1(const T* rowvals, T* out, long long rows, long
 
 #define BROADCAST_AXIS1_LAUNCHER(TYPE, SUFFIX)                                           \
     extern "C" __declspec(dllexport) int cf_broadcast_axis1_##SUFFIX(                    \
-        const TYPE* rowvals, TYPE* out, long long rows, long long cols) {                \
+        const TYPE* rowvals, TYPE* out, long long rows, long long cols, void* stream) {  \
         long long total = rows * cols;                                                   \
         int blocks, threads;                                                             \
         launch_config(total, blocks, threads);                                           \
-        k_broadcast_axis1<TYPE><<<blocks, threads>>>(rowvals, out, rows, cols);          \
+        k_broadcast_axis1<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(rowvals, out, rows, cols); \
         return static_cast<int>(cudaGetLastError());                                     \
     }
 
@@ -752,11 +803,11 @@ __global__ void k_conv2d_forward(
     extern "C" __declspec(dllexport) int cf_conv2d_forward_##SUFFIX(                      \
         const TYPE* x, const TYPE* w, const TYPE* bias, TYPE* out,                        \
         int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
-        int SH, int SW, int PH, int PW, int Hout, int Wout, int has_bias) {               \
+        int SH, int SW, int PH, int PW, int Hout, int Wout, int has_bias, void* stream) { \
         long long total = static_cast<long long>(N) * Cout * Hout * Wout;                 \
         int blocks, threads;                                                              \
         launch_config(total, blocks, threads);                                            \
-        k_conv2d_forward<TYPE><<<blocks, threads>>>(                                      \
+        k_conv2d_forward<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(             \
             x, w, bias, out, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout, has_bias); \
         return static_cast<int>(cudaGetLastError());                                      \
     }
@@ -810,11 +861,11 @@ __global__ void k_conv2d_backward_input(
     extern "C" __declspec(dllexport) int cf_conv2d_backward_input_##SUFFIX(               \
         const TYPE* grad_out, const TYPE* w, TYPE* grad_x,                                \
         int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
-        int SH, int SW, int PH, int PW, int Hout, int Wout) {                             \
+        int SH, int SW, int PH, int PW, int Hout, int Wout, void* stream) {               \
         long long total = static_cast<long long>(N) * Cin * H * W;                        \
         int blocks, threads;                                                              \
         launch_config(total, blocks, threads);                                            \
-        k_conv2d_backward_input<TYPE><<<blocks, threads>>>(                               \
+        k_conv2d_backward_input<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(      \
             grad_out, w, grad_x, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout);  \
         return static_cast<int>(cudaGetLastError());                                      \
     }
@@ -951,17 +1002,18 @@ __global__ void k_conv2d_backward_weight_reduce(
     extern "C" __declspec(dllexport) int cf_conv2d_backward_weight_##SUFFIX(              \
         const TYPE* grad_out, const TYPE* x, TYPE* grad_w,                                \
         int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
-        int SH, int SW, int PH, int PW, int Hout, int Wout) {                             \
+        int SH, int SW, int PH, int PW, int Hout, int Wout, void* stream) {               \
+        cudaStream_t s = (cudaStream_t)stream;                                            \
         long long total = static_cast<long long>(Cout) * Cin * KH * KW;                   \
         if (total < CONV2D_WEIGHT_REDUCE_THRESHOLD) {                                     \
             int blocks = total < 1 ? 1 : static_cast<int>(total);                         \
             k_conv2d_backward_weight_reduce<TYPE>                                         \
-                <<<blocks, CONV2D_REDUCE_THREADS, CONV2D_REDUCE_THREADS * sizeof(TYPE)>>>( \
+                <<<blocks, CONV2D_REDUCE_THREADS, CONV2D_REDUCE_THREADS * sizeof(TYPE), s>>>( \
                     grad_out, x, grad_w, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout); \
         } else {                                                                          \
             int blocks, threads;                                                          \
             launch_config(total, blocks, threads);                                        \
-            k_conv2d_backward_weight<TYPE><<<blocks, threads>>>(                          \
+            k_conv2d_backward_weight<TYPE><<<blocks, threads, 0, s>>>(                    \
                 grad_out, x, grad_w, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout); \
         }                                                                                  \
         return static_cast<int>(cudaGetLastError());                                      \
@@ -1000,10 +1052,10 @@ __global__ void k_conv2d_backward_bias_reduce(const T* grad_out, T* grad_b, int 
 
 #define CONV2D_BACKWARD_BIAS_LAUNCHER(TYPE, SUFFIX)                                       \
     extern "C" __declspec(dllexport) int cf_conv2d_backward_bias_##SUFFIX(                \
-        const TYPE* grad_out, TYPE* grad_b, int N, int Cout, int Hout, int Wout) {        \
+        const TYPE* grad_out, TYPE* grad_b, int N, int Cout, int Hout, int Wout, void* stream) { \
         int blocks = Cout < 1 ? 1 : Cout;                                                 \
         k_conv2d_backward_bias_reduce<TYPE>                                               \
-            <<<blocks, CONV2D_REDUCE_THREADS, CONV2D_REDUCE_THREADS * sizeof(TYPE)>>>(    \
+            <<<blocks, CONV2D_REDUCE_THREADS, CONV2D_REDUCE_THREADS * sizeof(TYPE), (cudaStream_t)stream>>>( \
                 grad_out, grad_b, N, Cout, Hout, Wout);                                   \
         return static_cast<int>(cudaGetLastError());                                      \
     }
@@ -1057,11 +1109,11 @@ __global__ void k_maxpool2d_forward(
     extern "C" __declspec(dllexport) int cf_maxpool2d_forward_##SUFFIX(                   \
         const TYPE* x, TYPE* out,                                                         \
         int N, int C, int H, int W, int KH, int KW, int SH, int SW, int PH, int PW,       \
-        int Hout, int Wout) {                                                             \
+        int Hout, int Wout, void* stream) {                                               \
         long long total = static_cast<long long>(N) * C * Hout * Wout;                    \
         int blocks, threads;                                                              \
         launch_config(total, blocks, threads);                                            \
-        k_maxpool2d_forward<TYPE><<<blocks, threads>>>(                                   \
+        k_maxpool2d_forward<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(          \
             x, out, N, C, H, W, KH, KW, SH, SW, PH, PW, Hout, Wout);                       \
         return static_cast<int>(cudaGetLastError());                                      \
     }
@@ -1119,14 +1171,15 @@ __global__ void k_maxpool2d_backward(
     extern "C" __declspec(dllexport) int cf_maxpool2d_backward_##SUFFIX(                  \
         const TYPE* x, const TYPE* grad_out, TYPE* grad_x,                                \
         int N, int C, int H, int W, int KH, int KW, int SH, int SW, int PH, int PW,       \
-        int Hout, int Wout) {                                                             \
-        cudaError_t memset_err = cudaMemset(                                              \
-            grad_x, 0, sizeof(TYPE) * static_cast<size_t>(N) * C * H * W);                \
+        int Hout, int Wout, void* stream) {                                               \
+        cudaStream_t s = (cudaStream_t)stream;                                            \
+        cudaError_t memset_err = cudaMemsetAsync(                                         \
+            grad_x, 0, sizeof(TYPE) * static_cast<size_t>(N) * C * H * W, s);             \
         if (memset_err != cudaSuccess) return static_cast<int>(memset_err);               \
         long long total = static_cast<long long>(N) * C * Hout * Wout;                    \
         int blocks, threads;                                                              \
         launch_config(total, blocks, threads);                                            \
-        k_maxpool2d_backward<TYPE><<<blocks, threads>>>(                                  \
+        k_maxpool2d_backward<TYPE><<<blocks, threads, 0, s>>>(                            \
             x, grad_out, grad_x, N, C, H, W, KH, KW, SH, SW, PH, PW, Hout, Wout);          \
         return static_cast<int>(cudaGetLastError());                                      \
     }
@@ -1180,10 +1233,10 @@ __global__ void k_dropout_mask(T* mask, long long n, double p, unsigned long lon
 
 #define DROPOUT_MASK_LAUNCHER(TYPE, SUFFIX)                                              \
     extern "C" __declspec(dllexport) int cf_dropout_mask_##SUFFIX(                       \
-        TYPE* mask, long long n, double p, unsigned long long seed) {                    \
+        TYPE* mask, long long n, double p, unsigned long long seed, void* stream) {      \
         int blocks, threads;                                                             \
         launch_config(n, blocks, threads);                                               \
-        k_dropout_mask<TYPE><<<blocks, threads>>>(mask, n, p, seed);                     \
+        k_dropout_mask<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(mask, n, p, seed); \
         return static_cast<int>(cudaGetLastError());                                     \
     }
 

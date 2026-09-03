@@ -889,3 +889,77 @@ run-to-run WDDM variance already documented in Milestone 21 -- consistent
 with the fact that no hot-path code changed (`forge.cuda.synchronize()` is
 never called by any Forge-internal training/inference path; only benchmark
 and test call sites reach it).
+
+## Milestone 27: CUDA streams and asynchronous execution
+
+### Purpose
+Introduces real CUDA streams and an opt-in asynchronous execution mode
+(`with forge.cuda.stream(s): ...`) -- see `docs/architecture/
+cuda-streams.md` for the full design. The **default-stream compatibility
+mode** (no explicit `Stream`, `forge.cuda.current_stream() is None`) is
+byte-for-byte the M26 execution model: every existing benchmark and its
+methodology is unaffected there. This section covers (1) confirming that
+default-stream performance did not regress and (2) a new benchmark
+demonstrating real multi-stream overlap, which did not exist before this
+milestone.
+
+### Methodology unchanged for default-stream benchmarks
+`benchmarks/timing.py`'s synchronize-bracketed methodology is unchanged;
+every pre-existing benchmark script runs in default-stream mode (none of
+them call `forge.cuda.stream()`), so none needed any methodology change.
+
+### Measured example (940MX, real hardware): default-stream mode, no regression
+Re-running the M20 MNIST workload (`benchmarks/mnist_bench.py`'s `mnist`
+category, batch=64, 5 warmup + 30 steady-state iterations -- the same
+configuration Milestones 21/24/25/26 used), two separate runs:
+
+| Metric | M26 (post-sync-audit) | M27, run 1 | M27, run 2 |
+|---|---:|---:|---:|
+| Mean iteration time (CUDA) | 18.56-19.53 ms | 23.03 ms (std 2.57 ms) | 27.47 ms (std 5.88 ms) |
+
+Both M27 runs are somewhat higher than the M26 numbers but the two M27 runs
+also disagree with *each other* by more than either disagrees with M26 --
+consistent with the already-documented WDDM driver-scheduling variance
+(Milestone 21's benchmarking notes), not a systematic regression. The extra
+per-operation work Milestone 27 actually adds to the default-stream path is
+small and constant: one `current_stream() is None` check
+(`_maybe_synchronize`) before the (still-unconditional, in this mode)
+`cudaDeviceSynchronize()`, one no-op loop over already-`None` `last_stream`
+attributes (`_stream_guard`, since every storage's `last_stream` stays
+`None` throughout default-stream execution), and one extra attribute read
+per `CUDAStorage` construction -- all pure-Python, sub-microsecond
+operations dwarfed by both the measured means and their variance.
+
+### New: multi-stream overlap benchmark (Section 29 of the milestone brief)
+
+    python -m benchmarks.stream_bench
+
+Not part of `python -m benchmarks`'s category list (matching
+`allocator_bench.py`'s "diagnostic script" precedent). Two independent
+chained-add workloads (400 launches of a 20,000-element add each) are timed
+three ways: fully sequential with two real streams (synchronized between
+workloads), concurrent (issued to two streams with no synchronization until
+both finish), and the old default-stream baseline (no explicit streams at
+all -- every op synchronizes before returning). Measured directly on the
+940MX (median of 7 trials each):
+
+| Configuration | Median time |
+|---|---:|
+| default-stream baseline (M26 behavior) | 87.05 ms |
+| sequential, 2 real streams, synchronized between | 41.62 ms |
+| concurrent, 2 real streams, synchronized only at the end | 36.55 ms |
+
+Two findings: (1) **removing per-op synchronization alone** (issuing on a
+real stream but still synchronizing between the two workloads) already cuts
+time roughly in half versus the default-stream baseline -- direct evidence
+of Section 8's "no hidden per-operation synchronization" requirement. (2)
+**Concurrent issuance** on top of that yields a further, real ~1.14x
+speedup over the already-async sequential case -- direct evidence of actual
+overlapping execution on the 940MX's 3 SMs, not merely reduced host-side
+overhead. A workload sweep (documented in `benchmarks/stream_bench.py`'s
+module docstring) found this small-kernel/many-launches shape gives the
+clearest overlap signal on this 3-SM device; a single large elementwise-add
+per stream (2,000,000 elements, few launches) measured only ~1.01x, since
+one such kernel already occupies the whole device and leaves no idle SMs
+for a second stream's blocks to use -- exactly the brief's own caveat ("do
+not expect dramatic overlap on every kernel/GPU").

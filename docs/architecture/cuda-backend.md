@@ -1,4 +1,4 @@
-# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21; CUDA memory statistics and allocation lifecycle in Milestone 22; CUDA allocation profiling and caching-allocator design in Milestone 24; exact-size CUDA caching allocator implemented in Milestone 25; CUDA execution and synchronization semantics formalized, `forge.cuda.synchronize()` added, in Milestone 26)
+# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21; CUDA memory statistics and allocation lifecycle in Milestone 22; CUDA allocation profiling and caching-allocator design in Milestone 24; exact-size CUDA caching allocator implemented in Milestone 25; CUDA execution and synchronization semantics formalized, `forge.cuda.synchronize()` added, in Milestone 26; real CUDA streams and asynchronous execution added in Milestone 27 -- see `docs/architecture/cuda-streams.md`)
 
 ## Summary
 Forge has a real CUDA execution backend for a small operation set: tensor
@@ -37,8 +37,10 @@ forge/
             build.py           Locates nvcc/MSVC, compiles kernels.cu -> a DLL
             backend.py         CUDAStorage, CUDABackend, get_cuda_backend(), is_cuda_available()
             memory.py            CUDAMemoryStats, allocation/free counters (M22)
+            stream.py            CUDAStream, CUDAEvent (internal), current-stream tracking (M27)
+            allocator.py         CUDACachingAllocator -- ready + pending blocks (M25; M27)
             __init__.py        Re-exports the above
-    cuda/__init__.py           forge.cuda: memory_stats(), reset_peak_memory_stats() (M22)
+    cuda/__init__.py           forge.cuda: memory_stats(), reset_peak_memory_stats() (M22); Stream, current_stream(), set_stream(), stream() (M27)
     tensor/tensor.py         Tensor.to(device); Tensor._move_storage_() (M9); backward() (device-generic as of M10)
     autograd/engine.py        run_backward -- backend-dispatched gradient accumulation (M10)
     nn/module.py              Module.to(device), Module.device (new in M9)
@@ -1253,6 +1255,16 @@ allocator.md` for measured results.
 
 ## CUDA Execution and Synchronization Semantics (Milestone 26)
 
+> **Milestone 27 note.** This section's "no streams, one implicit default
+> stream" description is now specifically the **default-stream compatibility
+> mode** -- Forge's behavior whenever `forge.cuda.current_stream()` is `None`
+> (the default, and the state outside any `with forge.cuda.stream(s):`
+> block). It remains completely accurate for that mode: every statement
+> below still holds verbatim there, and the entire pre-M27 CUDA test suite
+> passes unmodified against it. Milestone 27 adds a second, opt-in mode --
+> real CUDA streams and asynchronous execution -- documented in full in
+> `docs/architecture/cuda-streams.md`, which this section does not restate.
+
 M25 built a caching allocator on top of an *assumed* synchronous execution
 model ("every op already synchronizes before returning"), stated but never
 formally audited end-to-end. This milestone is that audit: it inspects every
@@ -1644,10 +1656,17 @@ does not have to rediscover it:
   host memory, `cudaMemcpyAsync`, and a story for when the destination
   tensor's data is actually guaranteed ready.
 
-None of this is implemented now. This milestone's deliverable is the
-*current*, single-stream, per-op-synchronized contract, stated precisely
-enough that a future milestone introducing streams knows exactly which
-assumptions it is replacing.
+None of this was implemented as of Milestone 26. This milestone's
+deliverable was the *then-current*, single-stream, per-op-synchronized
+contract, stated precisely enough that a future milestone introducing
+streams would know exactly which assumptions it was replacing.
+**Milestone 27 is that future milestone** -- see `docs/architecture/
+cuda-streams.md` for what was actually built: real `Stream` objects,
+per-storage `last_stream` tracking, a "fail clearly" cross-stream policy
+(not full `cudaStreamWaitEvent` dependency resolution), real internal CUDA
+events replacing `cudaDeviceSynchronize()` for allocator reuse safety, and
+deferred/stream-ordered (pending-block) allocator reuse. Nonblocking
+`Tensor.to()` remains unimplemented, exactly as anticipated here.
 
 ## CUDA model persistence (Milestone 13)
 `save_model()`/`load_model()` (`forge/serialization/model.py`) now support

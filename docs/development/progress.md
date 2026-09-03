@@ -1301,3 +1301,138 @@ called by Forge-internal code. See `docs/architecture/cuda-backend.md`'s
 `docs/architecture/cuda-memory-allocator.md`'s **Milestone 26:
 Synchronization Contract (Formalized)** section, and `docs/performance/
 benchmarking.md`'s **Milestone 26** section.
+
+### M27 — CUDA streams and asynchronous execution
+Introduces real CUDA streams and an opt-in asynchronous execution mode on
+top of Milestone 26's formalized synchronous contract, per the milestone
+brief's explicit purpose ("begin the transition" M26 documented but
+deliberately did not implement).
+
+**Public API.** `forge.cuda.Stream()` (a real `cudaStreamCreate`d handle),
+`forge.cuda.current_stream()`, `forge.cuda.set_stream()`, and `with
+forge.cuda.stream(s): ...` (`forge/cuda/__init__.py`, backed by
+`forge/backend/cuda/stream.py`'s `CUDAStream`). No public CUDA event API,
+stream priorities, stream pools, or CUDA Graphs -- exactly the milestone
+brief's scope limit.
+
+**Design decision: default-stream compatibility mode.** Rather than making
+every CUDA operation asynchronous by default (with an opt-in synchronous
+mode), Forge keeps `forge.cuda.current_stream() is None` (no active `with
+forge.cuda.stream(s):` block) as the exact Milestone 8-26 host-synchronous
+behavior, unchanged byte-for-byte -- verified by re-running the entire
+pre-existing 380-test CUDA suite completely unmodified. Asynchronous
+execution (no per-op `cudaDeviceSynchronize()`) is opt-in, only inside a
+`with forge.cuda.stream(s):` block. This was chosen specifically to avoid
+silently invalidating the many pre-existing tests (and any future user
+code) that read a CUDA result back to the host immediately after an
+operation with no explicit synchronization, relying on the M26 guarantee.
+
+**Kernel launcher changes.** Every kernel-launching `*_LAUNCHER` macro in
+`kernels.cu` (~19 macros covering all ~40 kernel-launching `CUDABackend`
+methods) gained a trailing `void* stream` parameter, passed as the fourth
+argument to each `kernel<<<blocks, threads, 0, (cudaStream_t)stream>>>`
+launch (`stream=NULL` reproducing the exact pre-M27 default-stream launch
+configuration). `cf_stream_create`/`_destroy`/`_synchronize` and
+`cf_event_create`/`_record`/`_query`/`_synchronize`/`_destroy` were added as
+new exported runtime calls (the event functions are internal-only, used by
+the allocator, never exposed as public API). `cf_memcpy_h2d`/`_d2h`/`_d2d`
+were deliberately left unchanged -- still plain synchronous `cudaMemcpy`,
+which is unconditionally safe under CUDA's legacy-default-stream semantics
+and does not need `cudaMemcpyAsync` for correctness here (Section 33 of the
+milestone brief explicitly permits this).
+
+**`CUDABackend` changes.** Three new helper methods
+(`_stream_handle`/`_maybe_synchronize`/`_stream_guard`) centralize every
+per-op decision: which stream to launch on, whether to synchronize
+afterward (only in default-stream mode), and whether an input storage's
+`last_stream` conflicts with the operation about to run. `_stream_guard` is
+folded into `_require_compute_dtype` (called by nearly every kernel-
+launching method already, with the exact storage list needed) plus two
+explicit call sites (`reshape`, `from_array`'s CUDA-to-CUDA branch) for the
+two methods that skip dtype validation. `CUDAStorage` gains one field,
+`last_stream` -- the `Stream` (or `None` for default) this storage was last
+touched by, the one piece of stream-history tracking the milestone brief
+allows ("do not attach a full stream history"). `to_numpy()` (D2H) now
+synchronizes a storage's own `last_stream` before reading it back, keeping
+`.to("cpu")`'s host-blocking contract self-evident without relying only on
+implicit legacy-stream ordering.
+
+**Cross-stream policy: fail clearly, not automatic dependency resolution.**
+Per Section 20/21 of the brief, using a tensor last touched on one real
+stream from a different real stream raises `forge.CUDAError` immediately
+(`_stream_guard`) rather than attempting `cudaStreamWaitEvent`-based
+automatic ordering (explicitly out of scope). A tensor produced on the
+default stream remains safe to read from any stream (the M26 guarantee
+already covers it).
+
+**Allocator changes (the central M25/M27 change).** `CUDACachingAllocator`
+(`forge/backend/cuda/allocator.py`) gains a third block state, *pending*,
+alongside the existing *active*/*ready*: a block released by a storage last
+used on a real stream is not immediately safe to reuse. `CUDAStorage.
+__del__` routes such a release through `release_pending()`, which records a
+real internal `CUDAEvent` on that storage's stream at release time (correct
+by CUDA's per-stream program-order guarantee); the block becomes reusable
+once that event is observed complete, checked opportunistically on the next
+same-size `allocate()` call -- never forced early via
+`cudaDeviceSynchronize()`, which would defeat asynchronous execution.
+`empty_cache()` now *waits* (`CUDAEvent.synchronize()`) for pending blocks
+before freeing them -- a real, documented cost change from M25/M26 (ready
+blocks are still freed immediately, no waiting). `CUDAMemoryStats` gains
+`pending_bytes`/`pending_count`; `cached_bytes` now means specifically
+*ready* bytes.
+
+**Autograd/optimizer/Trainer/persistence: no code changes needed.**
+`Tensor`/`forge.autograd.engine` are backend-agnostic and read
+`current_stream()` ambiently through `CUDABackend`, so forward and backward
+passes, and `SGD`/`Adam` optimizer steps, correctly execute on whatever
+stream is current with zero changes to `forge/tensor/`, `forge/autograd/`,
+or `forge/optim/`. `Trainer` (Option A from Section 23 of the brief) was not
+modified and uses no stream internally, so its existing "returns only after
+all issued CUDA work completes" contract holds trivially, unchanged.
+`save_model()`/`save_checkpoint()` needed no changes either: `to_numpy()`'s
+new stream-specific synchronization (above) already makes them safe to call
+with no explicit synchronize after async work.
+
+**Multi-stream overlap, measured on the 940MX.** `benchmarks/stream_bench.py`
+(new, standalone script, not a `python -m benchmarks` category) demonstrates
+real overlap: a default-stream baseline workload took a median 87.05 ms;
+the identical workload issued on two real streams but synchronized between
+them took 41.62 ms (proving the removed per-op synchronization alone is a
+~2.1x win); issued concurrently on both streams with synchronization only at
+the end took 36.55 ms (a further, real ~1.14x speedup from actual
+overlapping kernel execution on the 940MX's 3 SMs). A large-single-kernel
+workload sweep found only ~1.01x overlap there, since one such kernel
+already occupies the whole device -- consistent with the brief's own
+"do not expect dramatic overlap on every kernel/GPU" caveat.
+`benchmarks/mnist_bench.py`'s M20 CNN workload was re-measured in
+(unaffected) default-stream mode across two runs (23.03 ms, 27.47 ms mean
+CUDA iteration time) -- both within the already-documented WDDM run-to-run
+variance, not a regression (the M26 range was 18.56-19.53 ms).
+
+42 new tests, all hardware-gated except one shared availability file: 22 in
+`tests/test_cuda_streams.py` (stream creation/destruction/identity,
+current-stream/context-manager restore including through an exception,
+kernel execution correctness on an explicit stream for add/matmul/relu/
+conv2d/maxpool2d/loss/optimizer-step, a timing-based proof that stream
+issuance is not gated by per-op synchronization the way default-stream
+issuance is, a 6-stream stress test, and a repeated create/use/destroy leak
+test), 5 CPU-only availability tests
+(`tests/test_cuda_streams_availability.py`, split out for the same
+module-level-`pytestmark` reason as `test_cuda_synchronize_availability.py`),
+9 in `tests/test_cuda_stream_allocator.py` (pending-block creation,
+same-stream reuse after sync, same-stream rapid release/reallocate
+correctness with no manual sync, cross-stream reuse safety under real
+concurrent computation, default-stream-tensor cross-stream-read safety,
+cross-stream-tensor-use failing clearly, `empty_cache()` draining pending
+blocks and preserving live storage, and memory-stats coherence), and 6 in
+`tests/test_cuda_stream_autograd.py` (forward+backward on one stream
+matching CPU, cross-stream backward failing clearly, optimizer-step-then-
+forward observing the update on the same stream, Adam matching CPU on a
+stream, and save_model/save_checkpoint round-tripping correctly with no
+explicit synchronize after async work) -- 1,056 tests total, all passing on
+the 940MX; every pre-existing test (1,014 tests) passes completely
+unmodified. See `docs/architecture/cuda-streams.md` (new), the **Milestone
+27 note** and **Future Stream-Aware Design** updates in `docs/architecture/
+cuda-backend.md`, the **Milestone 27: Pending Blocks** section in
+`docs/architecture/cuda-memory-allocator.md`, and the **Milestone 27**
+section in `docs/performance/benchmarking.md`.

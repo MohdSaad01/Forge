@@ -10,10 +10,15 @@ array pretending to be one (see `docs/architecture/cuda-backend.md`).
 `CUDABackend` implements the same `Backend` interface `CPUBackend` does
 (`docs/architecture/backend-architecture.md`), dispatching each operation to
 a small, explicit CUDA kernel compiled by `build.py` and loaded once per
-process via `ctypes`. Every kernel launch is followed by an explicit
-`cudaDeviceSynchronize()` (via `cf_synchronize`) before its result is
-trusted, so CUDA's asynchronous execution model can never be mistaken for a
-completed, verified operation.
+process via `ctypes`, on whichever CUDA stream is currently current
+(`forge.backend.cuda.stream.current_stream()`). On the CUDA default stream
+(current unless a `with forge.cuda.stream(s):` block is active), every
+kernel launch is still followed by an explicit `cudaDeviceSynchronize()`
+before its result is trusted, so CUDA's asynchronous execution model can
+never be mistaken for a completed, verified operation there -- the exact
+Milestone 8-26 contract. On an explicit `CUDAStream`, that per-op
+synchronization is skipped instead (Milestone 27's asynchronous execution
+mode); see `docs/architecture/cuda-streams.md` for the full contract.
 
 Deliberately small operation set (per the milestone brief): tensor
 creation/transfer, `add`/`sub`/`mul` (exact-shape, plus one targeted
@@ -38,6 +43,7 @@ from ...exceptions import CUDAError
 from ..base import Backend
 from . import allocator as _allocator
 from . import build as _build
+from . import stream as _stream
 
 _COMPUTE_DTYPES = (np.dtype(np.float32), np.dtype(np.float64))
 _SUFFIX = {np.dtype(np.float32): "f32", np.dtype(np.float64): "f64"}
@@ -74,92 +80,126 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
     lib.cf_synchronize.argtypes = []
     lib.cf_synchronize.restype = ctypes.c_int
 
+    # -- CUDA streams and events (Milestone 27) -- see stream.py --
+    lib.cf_stream_create.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    lib.cf_stream_create.restype = ctypes.c_int
+    lib.cf_stream_destroy.argtypes = [ctypes.c_void_p]
+    lib.cf_stream_destroy.restype = ctypes.c_int
+    lib.cf_stream_synchronize.argtypes = [ctypes.c_void_p]
+    lib.cf_stream_synchronize.restype = ctypes.c_int
+    lib.cf_event_create.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    lib.cf_event_create.restype = ctypes.c_int
+    lib.cf_event_record.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    lib.cf_event_record.restype = ctypes.c_int
+    lib.cf_event_query.argtypes = [ctypes.c_void_p]
+    lib.cf_event_query.restype = ctypes.c_int
+    lib.cf_event_synchronize.argtypes = [ctypes.c_void_p]
+    lib.cf_event_synchronize.restype = ctypes.c_int
+    lib.cf_event_destroy.argtypes = [ctypes.c_void_p]
+    lib.cf_event_destroy.restype = ctypes.c_int
+
+    # Every kernel-launching function below gained a trailing `void* stream`
+    # parameter in Milestone 27 (`ctypes.c_void_p` -- `None` means the CUDA
+    # default stream); the memcpy/malloc/free/synchronize functions above did
+    # not (see `docs/architecture/cuda-streams.md`'s **Memory copy semantics**
+    # section for why those stay plain, stream-implicit `cudaMemcpy`).
+
     for suffix in ("f32", "f64"):
         for op in ("add", "sub", "mul"):
             fn = getattr(lib, f"cf_{op}_{suffix}")
-            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
             fn.restype = ctypes.c_int
 
             bcast_fn = getattr(lib, f"cf_{op}_bcast_{suffix}")
             bcast_fn.argtypes = [
                 ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int,
+                ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int, ctypes.c_void_p,
             ]
             bcast_fn.restype = ctypes.c_int
 
         matmul_fn = getattr(lib, f"cf_matmul_{suffix}")
         matmul_fn.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
         ]
         matmul_fn.restype = ctypes.c_int
 
         sum_fn = getattr(lib, f"cf_sum_{suffix}")
-        sum_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+        sum_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
         sum_fn.restype = ctypes.c_int
 
         relu_fn = getattr(lib, f"cf_relu_{suffix}")
-        relu_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+        relu_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
         relu_fn.restype = ctypes.c_int
 
         # -- backward-only kernels (Milestone 10) --
         neg_fn = getattr(lib, f"cf_neg_{suffix}")
-        neg_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+        neg_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
         neg_fn.restype = ctypes.c_int
 
         for name in (f"cf_relu_backward_{suffix}", f"cf_scale_{suffix}"):
             fn = getattr(lib, name)
-            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
             fn.restype = ctypes.c_int
 
         transpose_fn = getattr(lib, f"cf_transpose_{suffix}")
-        transpose_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong]
+        transpose_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_void_p,
+        ]
         transpose_fn.restype = ctypes.c_int
 
         reduce_rows_fn = getattr(lib, f"cf_reduce_rows_{suffix}")
-        reduce_rows_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong]
+        reduce_rows_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_void_p,
+        ]
         reduce_rows_fn.restype = ctypes.c_int
 
         sgd_step_fn = getattr(lib, f"cf_sgd_step_{suffix}")
-        sgd_step_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_double, ctypes.c_longlong]
+        sgd_step_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_double, ctypes.c_longlong, ctypes.c_void_p,
+        ]
         sgd_step_fn.restype = ctypes.c_int
 
         adam_step_fn = getattr(lib, f"cf_adam_step_{suffix}")
         adam_step_fn.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
             ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
-            ctypes.c_double, ctypes.c_double, ctypes.c_longlong,
+            ctypes.c_double, ctypes.c_double, ctypes.c_longlong, ctypes.c_void_p,
         ]
         adam_step_fn.restype = ctypes.c_int
 
         broadcast_scalar_fn = getattr(lib, f"cf_broadcast_scalar_{suffix}")
-        broadcast_scalar_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+        broadcast_scalar_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
         broadcast_scalar_fn.restype = ctypes.c_int
 
         # -- Milestone 14: exp/log, axis=1 reduction, column-broadcast sub --
         for name in (f"cf_exp_{suffix}", f"cf_log_{suffix}"):
             fn = getattr(lib, name)
-            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
             fn.restype = ctypes.c_int
 
         for name in (f"cf_exp_backward_{suffix}", f"cf_log_backward_{suffix}"):
             fn = getattr(lib, name)
-            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong]
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
             fn.restype = ctypes.c_int
 
         for name in (f"cf_max_axis1_{suffix}", f"cf_sum_axis1_{suffix}"):
             fn = getattr(lib, name)
-            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong]
+            fn.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_void_p,
+            ]
             fn.restype = ctypes.c_int
 
         broadcast_axis1_fn = getattr(lib, f"cf_broadcast_axis1_{suffix}")
-        broadcast_axis1_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong]
+        broadcast_axis1_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_void_p,
+        ]
         broadcast_axis1_fn.restype = ctypes.c_int
 
         sub_colbcast_fn = getattr(lib, f"cf_sub_colbcast_{suffix}")
         sub_colbcast_fn.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int,
+            ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int, ctypes.c_void_p,
         ]
         sub_colbcast_fn.restype = ctypes.c_int
 
@@ -167,39 +207,39 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         conv_fwd_fn = getattr(lib, f"cf_conv2d_forward_{suffix}")
         conv_fwd_fn.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ] + [ctypes.c_int] * 14
+        ] + [ctypes.c_int] * 14 + [ctypes.c_void_p]
         conv_fwd_fn.restype = ctypes.c_int
 
         conv_bwd_input_fn = getattr(lib, f"cf_conv2d_backward_input_{suffix}")
         conv_bwd_input_fn.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ] + [ctypes.c_int] * 13
+        ] + [ctypes.c_int] * 13 + [ctypes.c_void_p]
         conv_bwd_input_fn.restype = ctypes.c_int
 
         conv_bwd_weight_fn = getattr(lib, f"cf_conv2d_backward_weight_{suffix}")
         conv_bwd_weight_fn.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ] + [ctypes.c_int] * 13
+        ] + [ctypes.c_int] * 13 + [ctypes.c_void_p]
         conv_bwd_weight_fn.restype = ctypes.c_int
 
         conv_bwd_bias_fn = getattr(lib, f"cf_conv2d_backward_bias_{suffix}")
-        conv_bwd_bias_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 4
+        conv_bwd_bias_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 4 + [ctypes.c_void_p]
         conv_bwd_bias_fn.restype = ctypes.c_int
 
         pool_fwd_fn = getattr(lib, f"cf_maxpool2d_forward_{suffix}")
-        pool_fwd_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 12
+        pool_fwd_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 12 + [ctypes.c_void_p]
         pool_fwd_fn.restype = ctypes.c_int
 
         pool_bwd_fn = getattr(lib, f"cf_maxpool2d_backward_{suffix}")
         pool_bwd_fn.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ] + [ctypes.c_int] * 12
+        ] + [ctypes.c_int] * 12 + [ctypes.c_void_p]
         pool_bwd_fn.restype = ctypes.c_int
 
         # -- Milestone 16: Dropout --
         dropout_mask_fn = getattr(lib, f"cf_dropout_mask_{suffix}")
         dropout_mask_fn.argtypes = [
-            ctypes.c_void_p, ctypes.c_longlong, ctypes.c_double, ctypes.c_uint64,
+            ctypes.c_void_p, ctypes.c_longlong, ctypes.c_double, ctypes.c_uint64, ctypes.c_void_p,
         ]
         dropout_mask_fn.restype = ctypes.c_int
 
@@ -222,21 +262,37 @@ class CUDAStorage:
     """A handle to a device buffer (allocated via the Milestone 25 caching allocator) plus its shape/dtype.
 
     Holds real GPU-resident memory -- never a NumPy array. On destruction the
-    underlying pointer is returned to `forge.backend.cuda.allocator`'s
-    exact-size cache (see that module) rather than immediately `cudaFree`d --
-    `self.ptr = None` is set *before* that hand-off so a second `__del__`
-    call can never return the same pointer to the cache twice (the ownership
-    invariant `allocator.py` depends on: a live `CUDAStorage` and a cached
-    free block never alias the same pointer).
+    underlying pointer is returned to `forge.backend.cuda.allocator` (see
+    that module) rather than immediately `cudaFree`d -- `self.ptr = None` is
+    set *before* that hand-off so a second `__del__` call can never return
+    the same pointer to the cache twice (the ownership invariant
+    `allocator.py` depends on: a live `CUDAStorage` and a cached free block
+    never alias the same pointer).
+
+    `last_stream` (Milestone 27) is the `CUDAStream` this storage was last
+    touched by (as an operation's input *or* output -- see
+    `CUDABackend._stream_guard`), or `None` if it has only ever been touched
+    on the CUDA default stream. This is the one piece of stream-lifetime
+    metadata Forge tracks per storage (per the milestone brief's "do not
+    attach a full stream history" constraint) -- just enough for `__del__`
+    to know whether an immediate cache release is still safe (`None`,
+    exactly the M26 contract) or whether the allocator must defer reuse
+    until that stream's recorded event completes (`release_pending()`, see
+    `docs/architecture/cuda-streams.md`). Holding a strong reference to the
+    `CUDAStream` object itself (not just its raw handle) is deliberate: it
+    keeps the stream's underlying CUDA resource valid until this storage's
+    own `__del__` has recorded an event on it -- see `stream.py`'s
+    `CUDAStream` docstring.
     """
 
-    __slots__ = ("ptr", "shape", "dtype", "_lib")
+    __slots__ = ("ptr", "shape", "dtype", "_lib", "last_stream")
 
     def __init__(self, ptr: "ctypes.c_void_p", shape: "tuple[int, ...]", dtype: Any, lib: "ctypes.CDLL"):
         self.ptr = ptr
         self.shape = tuple(int(s) for s in shape)
         self.dtype = np.dtype(dtype)
         self._lib = lib
+        self.last_stream = _stream.current_stream()
 
     @property
     def ndim(self) -> int:
@@ -261,9 +317,14 @@ class CUDAStorage:
         if not ptr:
             return
         nbytes = self.nbytes
+        last_stream = self.last_stream
         self.ptr = None  # transfer ownership to the allocator's cache before it can be touched again
+        self.last_stream = None
         try:
-            _allocator.release(nbytes, ptr)
+            if last_stream is None:
+                _allocator.release(nbytes, ptr)
+            else:
+                _allocator.release_pending(self._lib, nbytes, ptr, last_stream.handle)
         except Exception:
             return  # interpreter shutdown may have already torn down module globals
 
@@ -292,6 +353,61 @@ class CUDABackend(Backend):
     def _synchronize(self, action: str) -> None:
         self._check(self._lib.cf_synchronize(), f"{action} (synchronize)")
 
+    # -- stream plumbing (Milestone 27) --------------------------------------
+    #
+    # Every kernel-launching method below reads these three helpers, never
+    # `_stream.current_stream()` directly, so the "which stream, and does
+    # this op synchronize" decision lives in one place. See
+    # `docs/architecture/cuda-streams.md` for the full contract.
+
+    def _stream_handle(self) -> "ctypes.c_void_p | None":
+        """The raw stream handle every kernel launch below passes as its trailing argument."""
+        current = _stream.current_stream()
+        return current.handle if current is not None else None
+
+    def _maybe_synchronize(self, action: str) -> None:
+        """`cudaDeviceSynchronize()` only in default-stream (M26-compatible) mode.
+
+        Skipped for an operation issued on an explicit `CUDAStream`: that is
+        the entire point of Milestone 27's asynchronous execution mode (see
+        Section 8/9 of the milestone brief) -- the caller must synchronize
+        explicitly (`stream.synchronize()` or `forge.cuda.synchronize()`)
+        before relying on the result from the host.
+        """
+        if _stream.current_stream() is None:
+            self._synchronize(action)
+
+    def _stream_guard(self, storages: "tuple[CUDAStorage, ...]", op: str) -> None:
+        """Validate and refresh each storage's `last_stream` before a kernel launch touches it.
+
+        Raises `CUDAError` if any storage was last touched on a *different*,
+        still-live stream than the one this operation is about to launch on
+        (Forge does not support this cross-stream dependency -- see
+        Section 20/21 of the milestone brief and Invariant 5 in
+        `docs/architecture/cuda-streams.md`: "fail clearly rather than
+        silently produce incorrect results"). A storage whose `last_stream`
+        is `None` (only ever touched on the default stream) is always safe
+        to read from any stream, since default-stream work is already fully
+        complete by the time Python can see the storage at all (the M26
+        contract, still intact for that one stream). Marking every storage
+        to the current stream here -- *before* the launch -- is correct
+        because Python is single-threaded: nothing else can run between this
+        check and the launch it guards.
+        """
+        current = _stream.current_stream()
+        for s in storages:
+            previous = s.last_stream
+            if previous is not None and previous is not current:
+                raise CUDAError(
+                    f"CUDA '{op}' would use a tensor last used on stream {previous!r} while "
+                    f"the current Forge CUDA stream is {current!r} -- Forge does not support "
+                    "this cross-stream dependency in this milestone. Synchronize explicitly "
+                    "(that stream's .synchronize(), or forge.cuda.synchronize()) before "
+                    "crossing streams, or keep the whole producer/consumer chain on one stream."
+                )
+        for s in storages:
+            s.last_stream = current
+
     def _alloc(self, nbytes: int) -> "ctypes.c_void_p":
         """Request `nbytes` of device memory via the Milestone 25 caching allocator.
 
@@ -315,6 +431,15 @@ class CUDABackend(Backend):
                     "Converting a CUDA tensor's dtype during construction is not supported "
                     f"in this milestone (source dtype '{data.dtype}', requested '{target_dtype}')."
                 )
+            # `cf_memcpy_d2d` stays a plain synchronous `cudaMemcpy` (never
+            # `cudaMemcpyAsync`, no stream argument -- see `docs/architecture/
+            # cuda-streams.md`'s **Memory copy semantics**), which under
+            # CUDA's legacy-default-stream semantics is already implicitly
+            # ordered against every other Forge stream. `_stream_guard` is
+            # not required for correctness here, but is kept for a clear
+            # Forge-level error (rather than a silent, implicit ordering
+            # guarantee) and to keep `data.last_stream` accurate.
+            self._stream_guard((data,), "from_array (device-to-device copy)")
             new_ptr = self._alloc(data.nbytes)
             if data.nbytes > 0:
                 code = self._lib.cf_memcpy_d2d(new_ptr, data.ptr, ctypes.c_size_t(data.nbytes))
@@ -343,6 +468,14 @@ class CUDABackend(Backend):
     def to_numpy(self, storage: Any) -> np.ndarray:
         if not isinstance(storage, CUDAStorage):
             raise CUDAError(f"CUDABackend.to_numpy() expects a CUDAStorage, got {type(storage).__name__}.")
+        # Explicit stream-specific synchronization (Milestone 27) before the
+        # plain, host-blocking `cudaMemcpy` below -- keeps `to_numpy()`'s
+        # "always host-blocking, always correct" contract self-evident
+        # rather than relying only on `cudaMemcpy`'s implicit legacy-stream
+        # ordering. Only waits for `storage`'s own last-use stream, not the
+        # whole device.
+        if storage.last_stream is not None:
+            storage.last_stream.synchronize()
         host = np.empty(storage.shape, dtype=storage.dtype)
         if host.nbytes > 0:
             code = self._lib.cf_memcpy_d2h(host.ctypes.data_as(ctypes.c_void_p), storage.ptr, ctypes.c_size_t(host.nbytes))
@@ -352,6 +485,7 @@ class CUDABackend(Backend):
     # -- compute-dtype validation -------------------------------------------
 
     def _require_compute_dtype(self, *storages: CUDAStorage, op: str) -> np.dtype:
+        self._stream_guard(storages, op)
         dtype = storages[0].dtype
         for s in storages[1:]:
             if s.dtype != dtype:
@@ -371,9 +505,9 @@ class CUDABackend(Backend):
             n = a.size
             out_ptr = self._alloc(n * dtype.itemsize)
             fn = getattr(self._lib, f"cf_{op}_{_SUFFIX[dtype]}")
-            code = fn(a.ptr, b.ptr, out_ptr, ctypes.c_longlong(n))
+            code = fn(a.ptr, b.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
             self._check(code, op)
-            self._synchronize(op)
+            self._maybe_synchronize(op)
             return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
         # Milestone 9: the one broadcast shape Linear's `x @ weight + bias`
@@ -399,9 +533,10 @@ class CUDABackend(Backend):
         code = fn(
             mat.ptr, vec.ptr, out_ptr,
             ctypes.c_longlong(rows), ctypes.c_longlong(cols), ctypes.c_int(vec_is_left),
+            self._stream_handle(),
         )
         self._check(code, f"{op} (row-broadcast)")
-        self._synchronize(f"{op} (row-broadcast)")
+        self._maybe_synchronize(f"{op} (row-broadcast)")
         return CUDAStorage(out_ptr, out_shape, dtype, self._lib)
 
     def add(self, a: Any, b: Any) -> CUDAStorage:
@@ -452,9 +587,10 @@ class CUDABackend(Backend):
         code = fn(
             mat.ptr, colvec.ptr, out_ptr,
             ctypes.c_longlong(rows), ctypes.c_longlong(cols), ctypes.c_int(vec_is_left),
+            self._stream_handle(),
         )
         self._check(code, "sub (column-broadcast)")
-        self._synchronize("sub (column-broadcast)")
+        self._maybe_synchronize("sub (column-broadcast)")
         return CUDAStorage(out_ptr, out_shape, dtype, self._lib)
 
     def _reduce_axis1(self, mat: CUDAStorage) -> CUDAStorage:
@@ -463,9 +599,9 @@ class CUDABackend(Backend):
         rows, cols = mat.shape
         out_ptr = self._alloc(rows * dtype.itemsize)
         fn = getattr(self._lib, f"cf_sum_axis1_{_SUFFIX[dtype]}")
-        code = fn(mat.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+        code = fn(mat.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols), self._stream_handle())
         self._check(code, "reduce_axis1 (column-broadcast gradient reduction)")
-        self._synchronize("reduce_axis1")
+        self._maybe_synchronize("reduce_axis1")
         return CUDAStorage(out_ptr, (rows,), dtype, self._lib)
 
     # -- matmul ----------------------------------------------------------------
@@ -496,9 +632,9 @@ class CUDABackend(Backend):
 
         out_ptr = self._alloc(M * N * dtype.itemsize)
         fn = getattr(self._lib, f"cf_matmul_{_SUFFIX[dtype]}")
-        code = fn(a.ptr, b.ptr, out_ptr, ctypes.c_int(M), ctypes.c_int(K), ctypes.c_int(N))
+        code = fn(a.ptr, b.ptr, out_ptr, ctypes.c_int(M), ctypes.c_int(K), ctypes.c_int(N), self._stream_handle())
         self._check(code, "matmul")
-        self._synchronize("matmul")
+        self._maybe_synchronize("matmul")
         return CUDAStorage(out_ptr, out_shape, dtype, self._lib)
 
     # -- reduction ---------------------------------------------------------------
@@ -508,9 +644,9 @@ class CUDABackend(Backend):
         if axis is None:
             out_ptr = self._alloc(dtype.itemsize)
             fn = getattr(self._lib, f"cf_sum_{_SUFFIX[dtype]}")
-            code = fn(a.ptr, out_ptr, ctypes.c_longlong(a.size))
+            code = fn(a.ptr, out_ptr, ctypes.c_longlong(a.size), self._stream_handle())
             self._check(code, "sum")
-            self._synchronize("sum")
+            self._maybe_synchronize("sum")
             shape = (1,) * a.ndim if keepdims else ()
             return CUDAStorage(out_ptr, shape, dtype, self._lib)
 
@@ -523,9 +659,9 @@ class CUDABackend(Backend):
             rows, cols = a.shape
             out_ptr = self._alloc(rows * dtype.itemsize)
             fn = getattr(self._lib, f"cf_sum_axis1_{_SUFFIX[dtype]}")
-            code = fn(a.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+            code = fn(a.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols), self._stream_handle())
             self._check(code, "sum(axis=1)")
-            self._synchronize("sum(axis=1)")
+            self._maybe_synchronize("sum(axis=1)")
             shape = (rows, 1) if keepdims else (rows,)
             return CUDAStorage(out_ptr, shape, dtype, self._lib)
 
@@ -543,6 +679,7 @@ class CUDABackend(Backend):
             total *= s
         if total != a.size:
             raise ValueError(f"cannot reshape CUDA tensor of size {a.size} into shape {shape}.")
+        self._stream_guard((a,), "reshape (device-to-device copy)")  # see from_array's identical note
         new_ptr = self._alloc(a.nbytes)
         if a.nbytes > 0:
             code = self._lib.cf_memcpy_d2d(new_ptr, a.ptr, ctypes.c_size_t(a.nbytes))
@@ -556,9 +693,9 @@ class CUDABackend(Backend):
         n = a.size
         out_ptr = self._alloc(n * dtype.itemsize)
         fn = getattr(self._lib, f"cf_relu_{_SUFFIX[dtype]}")
-        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n))
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
         self._check(code, "relu")
-        self._synchronize("relu")
+        self._maybe_synchronize("relu")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
     # -- exp / log (Milestone 14) -------------------------------------------------
@@ -568,9 +705,9 @@ class CUDABackend(Backend):
         n = a.size
         out_ptr = self._alloc(n * dtype.itemsize)
         fn = getattr(self._lib, f"cf_exp_{_SUFFIX[dtype]}")
-        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n))
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
         self._check(code, "exp")
-        self._synchronize("exp")
+        self._maybe_synchronize("exp")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
     def log(self, a: CUDAStorage) -> CUDAStorage:
@@ -578,9 +715,9 @@ class CUDABackend(Backend):
         n = a.size
         out_ptr = self._alloc(n * dtype.itemsize)
         fn = getattr(self._lib, f"cf_log_{_SUFFIX[dtype]}")
-        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n))
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
         self._check(code, "log")
-        self._synchronize("log")
+        self._maybe_synchronize("log")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
     # -- backward helpers (Milestone 10) ---------------------------------------
@@ -595,9 +732,9 @@ class CUDABackend(Backend):
         n = a.size
         out_ptr = self._alloc(n * dtype.itemsize)
         fn = getattr(self._lib, f"cf_neg_{_SUFFIX[dtype]}")
-        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n))
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
         self._check(code, "neg")
-        self._synchronize("neg")
+        self._maybe_synchronize("neg")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
     def _scale(self, scalar: CUDAStorage, vec: CUDAStorage) -> CUDAStorage:
@@ -606,9 +743,9 @@ class CUDABackend(Backend):
         n = vec.size
         out_ptr = self._alloc(n * dtype.itemsize)
         fn = getattr(self._lib, f"cf_scale_{_SUFFIX[dtype]}")
-        code = fn(scalar.ptr, vec.ptr, out_ptr, ctypes.c_longlong(n))
+        code = fn(scalar.ptr, vec.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
         self._check(code, "scale")
-        self._synchronize("scale")
+        self._maybe_synchronize("scale")
         return CUDAStorage(out_ptr, vec.shape, dtype, self._lib)
 
     def _transpose(self, a: CUDAStorage) -> CUDAStorage:
@@ -618,9 +755,9 @@ class CUDABackend(Backend):
         rows, cols = a.shape
         out_ptr = self._alloc(rows * cols * dtype.itemsize)
         fn = getattr(self._lib, f"cf_transpose_{_SUFFIX[dtype]}")
-        code = fn(a.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols), self._stream_handle())
         self._check(code, "transpose")
-        self._synchronize("transpose")
+        self._maybe_synchronize("transpose")
         return CUDAStorage(out_ptr, (cols, rows), dtype, self._lib)
 
     def _reduce_rows(self, mat: CUDAStorage) -> CUDAStorage:
@@ -629,9 +766,9 @@ class CUDABackend(Backend):
         rows, cols = mat.shape
         out_ptr = self._alloc(cols * dtype.itemsize)
         fn = getattr(self._lib, f"cf_reduce_rows_{_SUFFIX[dtype]}")
-        code = fn(mat.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+        code = fn(mat.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols), self._stream_handle())
         self._check(code, "reduce_rows (row-broadcast gradient reduction)")
-        self._synchronize("reduce_rows")
+        self._maybe_synchronize("reduce_rows")
         return CUDAStorage(out_ptr, (cols,), dtype, self._lib)
 
     def _row_broadcast_kind(self, a: CUDAStorage, b: CUDAStorage) -> str:
@@ -717,18 +854,18 @@ class CUDABackend(Backend):
                 n *= s
             out_ptr = self._alloc(n * dtype.itemsize)
             fn = getattr(self._lib, f"cf_broadcast_scalar_{_SUFFIX[dtype]}")
-            code = fn(grad_output.ptr, out_ptr, ctypes.c_longlong(n))
+            code = fn(grad_output.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
             self._check(code, "sum backward (broadcast)")
-            self._synchronize("sum backward")
+            self._maybe_synchronize("sum backward")
             return CUDAStorage(out_ptr, original_shape, dtype, self._lib)
 
         if ndim == 2 and axis in (1, -1):
             rows, cols = original_shape
             out_ptr = self._alloc(rows * cols * dtype.itemsize)
             fn = getattr(self._lib, f"cf_broadcast_axis1_{_SUFFIX[dtype]}")
-            code = fn(grad_output.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+            code = fn(grad_output.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols), self._stream_handle())
             self._check(code, "sum(axis=1) backward (broadcast)")
-            self._synchronize("sum(axis=1) backward")
+            self._maybe_synchronize("sum(axis=1) backward")
             return CUDAStorage(out_ptr, original_shape, dtype, self._lib)
 
         # Forward CUDA `sum(axis=...)` already raises CUDAError for any other
@@ -747,9 +884,9 @@ class CUDABackend(Backend):
         n = a.size
         out_ptr = self._alloc(n * dtype.itemsize)
         fn = getattr(self._lib, f"cf_relu_backward_{_SUFFIX[dtype]}")
-        code = fn(grad_output.ptr, a.ptr, out_ptr, ctypes.c_longlong(n))
+        code = fn(grad_output.ptr, a.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
         self._check(code, "relu backward")
-        self._synchronize("relu backward")
+        self._maybe_synchronize("relu backward")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
     def exp_backward(self, grad_output: CUDAStorage, result: CUDAStorage) -> CUDAStorage:
@@ -757,9 +894,9 @@ class CUDABackend(Backend):
         n = result.size
         out_ptr = self._alloc(n * dtype.itemsize)
         fn = getattr(self._lib, f"cf_exp_backward_{_SUFFIX[dtype]}")
-        code = fn(grad_output.ptr, result.ptr, out_ptr, ctypes.c_longlong(n))
+        code = fn(grad_output.ptr, result.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
         self._check(code, "exp backward")
-        self._synchronize("exp backward")
+        self._maybe_synchronize("exp backward")
         return CUDAStorage(out_ptr, result.shape, dtype, self._lib)
 
     def log_backward(self, grad_output: CUDAStorage, a: CUDAStorage) -> CUDAStorage:
@@ -767,9 +904,9 @@ class CUDABackend(Backend):
         n = a.size
         out_ptr = self._alloc(n * dtype.itemsize)
         fn = getattr(self._lib, f"cf_log_backward_{_SUFFIX[dtype]}")
-        code = fn(grad_output.ptr, a.ptr, out_ptr, ctypes.c_longlong(n))
+        code = fn(grad_output.ptr, a.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
         self._check(code, "log backward")
-        self._synchronize("log backward")
+        self._maybe_synchronize("log backward")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
     # -- CrossEntropyLoss support (Milestone 14) ---------------------------------
@@ -781,9 +918,9 @@ class CUDABackend(Backend):
         rows, cols = a.shape
         out_ptr = self._alloc(rows * dtype.itemsize)
         fn = getattr(self._lib, f"cf_max_axis1_{_SUFFIX[dtype]}")
-        code = fn(a.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols))
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(rows), ctypes.c_longlong(cols), self._stream_handle())
         self._check(code, "max_axis1")
-        self._synchronize("max_axis1")
+        self._maybe_synchronize("max_axis1")
         return CUDAStorage(out_ptr, (rows, 1), dtype, self._lib)
 
     # -- Conv2d / MaxPool2d (Milestone 15) ---------------------------------------
@@ -814,9 +951,10 @@ class CUDABackend(Backend):
             ctypes.c_int(Cout), ctypes.c_int(KH), ctypes.c_int(KW),
             ctypes.c_int(SH), ctypes.c_int(SW), ctypes.c_int(PH), ctypes.c_int(PW),
             ctypes.c_int(Hout), ctypes.c_int(Wout), ctypes.c_int(1 if bias is not None else 0),
+            self._stream_handle(),
         )
         self._check(code, "conv2d")
-        self._synchronize("conv2d")
+        self._maybe_synchronize("conv2d")
         return CUDAStorage(out_ptr, (N, Cout, Hout, Wout), dtype, self._lib)
 
     def conv2d_backward(
@@ -839,16 +977,16 @@ class CUDABackend(Backend):
 
         grad_x_ptr = self._alloc(N * Cin * H * W * dtype.itemsize)
         fn_gx = getattr(self._lib, f"cf_conv2d_backward_input_{_SUFFIX[dtype]}")
-        code = fn_gx(grad_output.ptr, weight.ptr, grad_x_ptr, *shape_args)
+        code = fn_gx(grad_output.ptr, weight.ptr, grad_x_ptr, *shape_args, self._stream_handle())
         self._check(code, "conv2d backward (input)")
-        self._synchronize("conv2d backward (input)")
+        self._maybe_synchronize("conv2d backward (input)")
         grad_x = CUDAStorage(grad_x_ptr, x.shape, dtype, self._lib)
 
         grad_w_ptr = self._alloc(Cout * Cin * KH * KW * dtype.itemsize)
         fn_gw = getattr(self._lib, f"cf_conv2d_backward_weight_{_SUFFIX[dtype]}")
-        code = fn_gw(grad_output.ptr, x.ptr, grad_w_ptr, *shape_args)
+        code = fn_gw(grad_output.ptr, x.ptr, grad_w_ptr, *shape_args, self._stream_handle())
         self._check(code, "conv2d backward (weight)")
-        self._synchronize("conv2d backward (weight)")
+        self._maybe_synchronize("conv2d backward (weight)")
         grad_w = CUDAStorage(grad_w_ptr, weight.shape, dtype, self._lib)
 
         grad_b = None
@@ -858,9 +996,10 @@ class CUDABackend(Backend):
             code = fn_gb(
                 grad_output.ptr, grad_b_ptr,
                 ctypes.c_int(N), ctypes.c_int(Cout), ctypes.c_int(Hout), ctypes.c_int(Wout),
+                self._stream_handle(),
             )
             self._check(code, "conv2d backward (bias)")
-            self._synchronize("conv2d backward (bias)")
+            self._maybe_synchronize("conv2d backward (bias)")
             grad_b = CUDAStorage(grad_b_ptr, (Cout,), dtype, self._lib)
 
         return grad_x, grad_w, grad_b
@@ -883,9 +1022,10 @@ class CUDABackend(Backend):
             ctypes.c_int(N), ctypes.c_int(C), ctypes.c_int(H), ctypes.c_int(W),
             ctypes.c_int(KH), ctypes.c_int(KW), ctypes.c_int(SH), ctypes.c_int(SW),
             ctypes.c_int(PH), ctypes.c_int(PW), ctypes.c_int(Hout), ctypes.c_int(Wout),
+            self._stream_handle(),
         )
         self._check(code, "max_pool2d")
-        self._synchronize("max_pool2d")
+        self._maybe_synchronize("max_pool2d")
         return CUDAStorage(out_ptr, (N, C, Hout, Wout), dtype, self._lib)
 
     def max_pool2d_backward(
@@ -906,9 +1046,10 @@ class CUDABackend(Backend):
             ctypes.c_int(N), ctypes.c_int(C), ctypes.c_int(H), ctypes.c_int(W),
             ctypes.c_int(KH), ctypes.c_int(KW), ctypes.c_int(SH), ctypes.c_int(SW),
             ctypes.c_int(PH), ctypes.c_int(PW), ctypes.c_int(Hout), ctypes.c_int(Wout),
+            self._stream_handle(),
         )
         self._check(code, "max_pool2d backward")
-        self._synchronize("max_pool2d backward")
+        self._maybe_synchronize("max_pool2d backward")
         return CUDAStorage(grad_x_ptr, x.shape, dtype, self._lib)
 
     # -- Dropout (Milestone 16) ---------------------------------------------------
@@ -929,9 +1070,9 @@ class CUDABackend(Backend):
         n = a.size
         out_ptr = self._alloc(n * dtype.itemsize)
         fn = getattr(self._lib, f"cf_dropout_mask_{_SUFFIX[dtype]}")
-        code = fn(out_ptr, ctypes.c_longlong(n), ctypes.c_double(p), ctypes.c_uint64(seed))
+        code = fn(out_ptr, ctypes.c_longlong(n), ctypes.c_double(p), ctypes.c_uint64(seed), self._stream_handle())
         self._check(code, "dropout_mask")
-        self._synchronize("dropout_mask")
+        self._maybe_synchronize("dropout_mask")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
     # -- optimizer (Milestone 10) -----------------------------------------------
@@ -939,9 +1080,9 @@ class CUDABackend(Backend):
     def sgd_step(self, data: CUDAStorage, grad: CUDAStorage, lr: float) -> CUDAStorage:
         dtype = self._require_compute_dtype(data, grad, op="sgd_step")
         fn = getattr(self._lib, f"cf_sgd_step_{_SUFFIX[dtype]}")
-        code = fn(data.ptr, grad.ptr, ctypes.c_double(lr), ctypes.c_longlong(data.size))
+        code = fn(data.ptr, grad.ptr, ctypes.c_double(lr), ctypes.c_longlong(data.size), self._stream_handle())
         self._check(code, "sgd_step")
-        self._synchronize("sgd_step")
+        self._maybe_synchronize("sgd_step")
         return data
 
     # -- Adam optimizer (Milestone 17) ---------------------------------------
@@ -969,10 +1110,10 @@ class CUDABackend(Backend):
             ctypes.c_double(lr), ctypes.c_double(beta1), ctypes.c_double(beta2),
             ctypes.c_double(eps), ctypes.c_double(weight_decay),
             ctypes.c_double(bias_correction1), ctypes.c_double(bias_correction2),
-            ctypes.c_longlong(data.size),
+            ctypes.c_longlong(data.size), self._stream_handle(),
         )
         self._check(code, "adam_step")
-        self._synchronize("adam_step")
+        self._maybe_synchronize("adam_step")
         return data, m, v
 
     # -- public synchronization (Milestone 11; exposed as forge.cuda.synchronize() in Milestone 26) --

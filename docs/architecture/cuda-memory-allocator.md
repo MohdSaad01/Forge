@@ -756,3 +756,45 @@ would need (per-block last-use-stream tracking, CUDA events, deferred/
 stream-ordered freeing) before this contract's "no additional
 synchronization on reuse" claim could be restated safely under multiple
 streams.
+
+## Milestone 27: Pending Blocks (Streams Implemented)
+
+Milestone 27 is exactly the "what would have to change" scenario named
+above: it introduces real CUDA streams (`forge.cuda.Stream`), and this
+allocator is no longer allowed to assume every release is already safe to
+reuse. The **M26 contract restated above still holds, unchanged, for any
+block released by a `CUDAStorage` whose `last_stream` is `None`** (the
+default-stream compatibility mode, Forge's unchanged historical behavior --
+see `docs/architecture/cuda-streams.md`'s **Default stream compatibility
+mode** section). It does *not* hold for a block released by a storage last
+used on an explicit `Stream`; those blocks now go through a new path:
+
+> **M27 contract, pending blocks.** `CUDACachingAllocator` tracks a third
+> block state, *pending* (alongside *active* and *ready*): a block released
+> by a `CUDAStorage` whose `last_stream` was a real `Stream`, not yet known
+> to be safe to reuse. `CUDAStorage.__del__` routes such a release through
+> `release_pending()`, which records a real `CUDAEvent` on that storage's
+> `last_stream` *at release time* -- correct because CUDA streams execute in
+> strict per-stream program order, so every operation that touched this
+> storage was necessarily enqueued before this release could run. The block
+> becomes eligible for reuse (`CUDACachingAllocator.allocate()`'s
+> `_try_reclaim_pending`) the moment that event is observed complete
+> (`CUDAEvent.query()`), checked opportunistically on the next same-size
+> request, after the ready free list and before a real `cudaMalloc`. Forge
+> never forces an event to complete early (e.g. via
+> `cudaDeviceSynchronize()`) merely to make a block reusable sooner --
+> that would defeat asynchronous execution.
+
+Full design, invariants, and hardware verification: `docs/architecture/
+cuda-streams.md`'s **Allocator Changes**/**Pending Allocation Model**/
+**Same-Stream Reuse**/**Cross-Stream Reuse**/**Memory Statistics** sections.
+`CUDAMemoryStats` gains `pending_bytes`/`pending_count`; `cached_bytes` now
+means specifically *ready* bytes (`reserved_bytes - allocated_bytes -
+pending_bytes`); `empty_cache()` now *waits* (`CUDAEvent.synchronize()`) for
+each pending block before freeing it, a real, documented cost change from
+M25/M26 where `empty_cache()` never needed to wait for anything.
+
+Every M25/M26 test in `tests/test_cuda_allocator.py` continues to pass
+unmodified: they exercise only the default-stream path, which is byte-for-
+byte unchanged. New Milestone 27 tests live in `tests/
+test_cuda_stream_allocator.py`.
