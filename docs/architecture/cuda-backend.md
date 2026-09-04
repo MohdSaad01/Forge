@@ -1044,6 +1044,65 @@ contract -- inputs, outputs, semantics -- is identical) -- the same
 happens to span more than one kernel launch. No public API, Tensor
 semantics, or cross-cutting architectural decision was touched.
 
+## CUDA Conv2d backward: dInput channel-fused work mapping (Milestone 36, accepted)
+M35's roofline characterization measured `dInput` reaching only ~12% of the
+940MX's practical compute ceiling while using well under 20% of its practical
+bandwidth ceiling at every representative shape, despite an arithmetic
+intensity that classifies most shapes compute-bound. `nvcc -Xptxas -v` traced
+this to a 512-byte per-thread **local memory** stack frame in the M32
+`k_conv2d_backward_input` kernel: the `kh_valid`/`ho_valid`/`kw_valid`/
+`wo_valid` tables M32 introduced are indexed with a runtime-computed loop
+variable, so `nvcc` cannot place them in registers regardless of size --
+real, `Cout * h_count * w_count`-times-per-thread local-memory traffic
+invisible to the roofline model's logical-bytes accounting. This is a case
+where the earlier register-count reduction some might expect from "hoisting
+work out of a loop" (M32's own change) instead traded one inefficiency
+(redundant division) for another (local-memory reads) -- see
+`docs/performance/conv2d-backward-profiling.md`'s **Milestone 36** section
+for the complete root-cause analysis, three-candidate evaluation, and
+before/after evidence this decision is based on.
+
+**New kernel.** `k_conv2d_backward_input_channelfused` (`kernels.cu`): one
+thread per `(n, hi, wi)` -- dropping `ci` from the thread index entirely --
+holding all `Cin` accumulators in a `#pragma unroll`-forced, compile-time-
+bounded (`MAX_CIN_REG=16`) register array (verified via `-Xptxas -v` to have
+**zero** stack frame, vs. the baseline's 512 bytes), and reading each
+`grad_output[n,co,ho,wo]` value exactly once per thread, reused via a
+register across every `ci` weight multiply -- directly eliminating the
+`Cin`-fold grad_output read amplification the milestone brief's Section 8
+asked about, via register reuse rather than shared memory. Two rejected
+candidates (shared-memory grad_output tiling; warp-cooperative reduction
+over `Cout`) remain in `kernels.cu` as profiling-only kernels, matching
+M33/M34's convention for a rejected/accepted candidate pair.
+
+**Production dispatch.** `cf_conv2d_backward_input_*` (`kernels.cu`) now
+checks `Cin <= CONV2D_DINPUT_CHANNELFUSED_MAX_CIN` (16) and calls the new
+kernel when true (every one of Forge's 7 representative shapes qualifies),
+falling back to the unchanged `k_conv2d_backward_input` otherwise -- the same
+"shape-based hybrid dispatch behind an unchanged single exported symbol"
+pattern M21's `dWeight` threshold and M34's `weight_elements` threshold both
+use. `CUDABackend.conv2d_backward`'s Python-level call site is completely
+unchanged (still one `cf_conv2d_backward_input_*` call); the dispatch lives
+entirely inside the compiled kernel library, one level lower than M34's
+Python-level branch.
+
+**Why accepted.** Measured 1.0x-8.7x faster in isolation and 0.97x-1.42x
+faster for the complete `conv2d_backward` call (dInput + unchanged dWeight +
+unchanged dBias) across three independent hardware runs, with zero new
+persistent device allocations (all extra state is register-resident) and a
+register count close to baseline (54 vs. 48, f32) rather than the much
+higher pressure the rejected shared-memory candidate required (126-128
+registers). The one shape with no real gain (`mnist_conv1`, `Cin=1`, where
+the channel-fused mapping has no thread-count advantage since `Cin=1`) shows
+only a 3% full-backward regression -- well inside the milestone's "does not
+regress small workloads severely" acceptance bar.
+
+**Why no ADR.** Same reasoning as M32/M34: this changes kernel-selection
+logic and a kernel's internal thread mapping behind an unchanged
+`CUDABackend.conv2d_backward` / `cf_conv2d_backward_input_*` signature and
+contract. No public API, Tensor semantics, or cross-cutting architectural
+decision was touched.
+
 ## CUDA Memory Statistics (Milestone 22)
 Milestone 22 is observability, not optimization: it instruments the
 `cudaMalloc`/`cudaFree` boundary that already existed (`CUDABackend._alloc`,

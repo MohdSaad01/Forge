@@ -1135,3 +1135,352 @@ no simulated or emulated CUDA behavior anywhere in this milestone.
   (explicitly out of scope, Section 6) -- `dInput` remains the M32-optimized
   direct kernel, still the larger `conv2d_backward` cost at most shapes even
   after this milestone's `dWeight` improvement.
+
+# Milestone 36: dInput channel-fused work mapping (accepted)
+
+## Purpose
+M35's roofline characterization measured `conv2d` backward as 50.97% of a
+real CUDA training step and `dInput` reaching only ~12% of the 940MX's
+practical compute ceiling (104.57 GFLOP/s) while using well under 20% (often
+under 5%) of its practical bandwidth ceiling (15.09 GB/s) at every
+representative shape -- despite an arithmetic intensity (4-48 FLOPs/byte)
+that places most shapes decisively compute-bound by the roofline model
+(ridge point ~6.93 FLOPs/byte). This milestone profiles `dInput`'s actual
+instruction/memory behavior (not just its wall-clock time), finds the real
+cause, measures three structurally different candidates against it, and
+integrates the one that wins decisively and consistently.
+
+## How to reproduce
+```bash
+python -m benchmarks.conv2d_backward_dinput_profile   # isolated dInput: current vs. A/B/C candidates
+python -m benchmarks.conv2d_backward_profile          # full conv2d_backward, before/after (empty_cache between shapes -- see Limitations)
+python -m benchmarks.m35_mnist                         # kernel-contribution ranking + batch-size scaling, rerun
+python -m benchmarks.pipeline_profile                  # async prefetch-depth sweep, rerun
+python -m pytest tests/test_cuda_conv2d_dinput_optimization.py
+```
+Archived results: `benchmarks/results/m36_dinput_candidates_profile.json`
+(+ `_rerun`/`_run3`, three independent passes -- see **Hardware variance**
+below), `m36_dinput_baseline.json` / `m36_dinput_optimized.json` (roofline-
+classified dInput-only before/after, the primary optimization evidence),
+`m36_conv2d_backward_after.json` (full backward after, paired with the
+pre-existing `conv2d_backward_profile.json` as before), and `m36_mnist.json`.
+
+## Root-cause analysis (Sections 14-17 of the milestone brief)
+`nvcc -Xptxas -v` on the unmodified M32 `k_conv2d_backward_input` reports:
+```
+ptxas info : Function properties for k_conv2d_backward_input
+    512 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info : Used 48 registers, ...
+```
+The `kh_valid`/`ho_valid`/`kw_valid`/`wo_valid` local tables M32 introduced
+(4 arrays x `MAX_CONV_K=32` `int`s = 512 bytes) are indexed with a
+runtime-computed loop variable (`hi_i`/`wi_i`) -- `nvcc` cannot keep such an
+array in registers regardless of its size, so it places it in per-thread
+**local memory** (an implicit, DRAM-backed, L1/L2-cached region distinct from
+registers or shared memory), read back `Cout * h_count * w_count` times per
+thread. This traffic is real but invisible to `benchmarks/roofline.py`'s
+`bytes_conv2d_dinput` model, which only counts the kernel's logical
+grad_output/weight/grad_x operands, never implementation-internal spill/local
+traffic -- exactly why a kernel classified compute-bound by arithmetic
+intensity could still sit at only ~12% of the practical *compute* ceiling
+while using a sliver of the *bandwidth* budget: it was spending real cycles
+on something neither ceiling's FLOP/byte accounting could see. Per Section
+14/15's explicit guidance ("if a kernel is far below both ceilings,
+investigate instruction efficiency/occupancy/latency rather than labeling it
+memory-bound"), this ruled out a pure memory-bandwidth-reuse fix as the
+primary lever before any candidate was even benchmarked.
+
+## grad_output read amplification (Section 8)
+For a fixed `(n, h, w)`, `grad_output[n, co, ho, wo]` is identical across
+every `ci` (the formula in Section 4 of the milestone brief sums over `co`,
+`kh`, `kw` -- never `ci`-dependent for a fixed output position). Under the
+baseline's one-thread-per-`(n,ci,h,w)` mapping, `Cin` separate threads each
+independently re-read the same `grad_output` values from global memory --
+`Cin`-fold amplification (1, 8, or 16x at Forge's 7 representative shapes).
+
+## Candidate algorithms (Sections 9-11)
+Three structurally different kernels were added to `kernels.cu` (profiling-
+only, `cf_conv2d_backward_input_{smem,channelfused,warpreduce}_*`) and
+measured against the unchanged production kernel via
+`benchmarks/conv2d_backward_dinput_profile.py`:
+
+- **Candidate A (`k_conv2d_backward_input_smem`)** -- shared-memory
+  grad_output row-tile reuse across `Cin`: a block owns one `(n, hi)` pair,
+  cooperatively loads the `h_count <= KH` needed grad_output rows (all
+  `Cout` channels, full `Wout`) into shared memory once, then every
+  `(ci, wi)` thread in the block reads from shared memory instead of
+  re-issuing `Cin` separate global loads. Tests the read-amplification
+  hypothesis directly, keeping the baseline's thread mapping otherwise
+  unchanged. Tested at 64/128/256 threads/block.
+- **Candidate B (`k_conv2d_backward_input_channelfused`)** -- alternative
+  work mapping: one thread now owns a full `(n, hi, wi)` position across
+  *every* `ci`, holding `Cin` accumulators in a `#pragma unroll`-forced,
+  compile-time-bounded (`MAX_CIN_REG=16`) register array, and reads each
+  `grad_output[n,co,ho,wo]` value exactly once per thread, reused via a
+  register across every `ci` multiply. The `kh`/`ho`/`kw`/`wo` validity
+  resolution also moves to plain scalars in the outer loop nest (never
+  stored to an array), eliminating M32's local-memory tables entirely.
+  Requires `Cin <= MAX_CIN_REG` for correctness (see **Kernel design**).
+- **Candidate C (`k_conv2d_backward_input_warp`)** -- partial cooperative
+  reduction over `Cout`: a warp (32 lanes), not a single thread, owns one
+  `(n,ci,h,w)` output element; each lane sums a disjoint slice of `Cout`,
+  combined via `__shfl_down_sync` (mirrors M33's `k_conv2d_backward_weight_
+  warp`). Tested at 2/4/8 warps/block. A priori expectation: rejection, since
+  `dInput` already launches `N*Cin*H*W` threads (tens of thousands to
+  ~800K at these shapes) -- far more than the 940MX's ~6,144-concurrent-
+  thread capacity already uses in one wave, so there is no starved
+  parallelism for this candidate to fix.
+
+## Candidate benchmark results
+Isolated dInput-only timings (940MX, real CUDA), `current` = unmodified
+production kernel (this run, before the M36 dispatch change), best
+block/warp configuration per candidate:
+
+| Shape | current (ms) | Candidate A: smem (ms) | Candidate B: channelfused (ms) | Candidate C: warp (ms) | Winner |
+|---|---|---|---|---|---|
+| mnist_conv1 | 0.96 | 2.29 (0.42x) | 0.78-0.94 (~1.0-1.2x) | 5.16 (0.19x) | B |
+| mnist_conv2 | 1.94-4.98 | 2.73-2.78 (0.7-1.8x) | 0.87-1.16 (1.7-5.7x) | 9.11-9.22 (0.2-0.5x) | B |
+| large_channel | 36.9-114.4 | 42.1-120.2 (~0.9-1.0x) | 12.9-36.4 (2.5-8.7x) | 157.5-419.5 (0.2-0.3x) | B |
+| large_spatial | 18.9-47.0 | 23.8-66.8 (~0.7-0.8x) | 8.3-21.1 (2.2-4.3x) | 92.5-235.3 (0.2x) | B |
+| batch_32 | 18.4-51.9 | 21.4-60.2 (~0.9x) | 7.1-19.2 (2.4-7.3x) | 104.3-209.4 (0.2x) | B |
+| batch_64 | 37.0-92.3 | 42.2-120.2 (~0.6-1.0x) | 14.4-36.4 (2.5-5.5x) | 190.6-419.8 (0.2x) | B |
+| batch_128 | 72.4-203.2 | 84.2-240.0 (~0.6-0.8x) | 25.5-71.3 (2.6-2.9x) | 368.9-840.2 (0.2x) | B |
+
+(Ranges span three independent runs -- see **Hardware variance** below.)
+Candidate B (channel-fused) wins at every shape in every run. Candidate A
+(shared-memory tiling) never beats production, confirming the bandwidth
+analysis: since `dInput` was never bandwidth-starved (2-17% of the practical
+ceiling), trading global reads for shared-memory reads plus `__syncthreads()`
+plus much higher register pressure (126-128 registers/thread and a residual
+256-byte stack frame -- see **Register usage**) is a net loss. Candidate C
+(warp-cooperative) loses catastrophically (3-20x slower) at every shape,
+confirming the already-sufficient-parallelism hypothesis.
+
+## Register usage (`nvcc -Xptxas -v`, `sm_50`)
+| Kernel | Registers (f32) | Stack frame | Notes |
+|---|---|---|---|
+| `k_conv2d_backward_input` (baseline) | 48 | **512 bytes** | M32's dynamically-indexed local tables |
+| Candidate A: `_smem` | 126-128 | 256 bytes | halves the local-memory tables (h-side now in shared memory) but adds heavy register pressure from the per-thread `kw_valid`/`wo_valid` tables plus tile bookkeeping |
+| **Candidate B: `_channelfused`** | **54** | **0 bytes** | `Cin`-sized accumulator array fully promoted to registers (compile-time-unrolled, guarded by `if (ci >= Cin) break`) |
+| Candidate C: `_warp` | 53 | 0 bytes | no local memory, but 32x more threads launched for the same work |
+
+Candidate B is the only one that both removes the local-memory traffic *and*
+keeps register pressure close to baseline (54 vs. 48 registers, f32) --
+consistent with it being the clear winner on measured occupancy/latency
+grounds, not just reduced global-memory traffic.
+
+## Selected strategy: Candidate B (channel-fused work mapping)
+Chosen per Section 13's `runtime contribution x memory reuse potential x
+complexity` framework: largest and most consistent measured speedup (1.0x-
+8.7x across three independent runs, never a severe regression), lowest
+implementation complexity (no shared memory, no synchronization, no atomics),
+and a root cause (local-memory traffic + register-bound instruction
+inefficiency) that this design addresses directly rather than by accident.
+
+## Kernel design
+`k_conv2d_backward_input_channelfused` (`kernels.cu`): one thread per
+`(n, hi, wi)` (dropping `ci` from the thread index entirely). Per thread:
+1. `Cin` accumulators (`T acc[MAX_CIN_REG]`, `MAX_CIN_REG=16`) initialized via
+   a `#pragma unroll` loop with a compile-time-constant trip count -- this,
+   not the array's size, is what lets `nvcc` promote it to registers.
+2. Outer loops over `kh`, `kw` resolve `(ho, wo)` validity as plain scalars
+   (no array store) -- the exact M32 optimization (avoid recomputing
+   `co`-independent division/modulo `Cout` times), just without the
+   local-memory table that undermined it.
+3. Inner loop over `co` reads `grad_output[n,co,ho,wo]` into a register `g`
+   once, then a `#pragma unroll`-forced loop over `ci in [0, MAX_CIN_REG)`
+   (guarded by `if (ci >= Cin) break`, a lane-uniform predicate since `Cin`
+   is a shape parameter, not data -- no warp divergence) multiplies `g` by
+   `w[co,ci,kh,kw]` into `acc[ci]`.
+4. All `Cin` accumulators are written to `grad_x[n,ci,hi,wi]` at the end.
+
+**Production dispatch**: `cf_conv2d_backward_input_*` (`kernels.cu`) now
+checks `Cin <= CONV2D_DINPUT_CHANNELFUSED_MAX_CIN` (16) and calls the
+channel-fused kernel when true, falling back to the unchanged, always-correct
+`k_conv2d_backward_input` otherwise (Section 38's sanctioned hybrid
+dispatch). Every one of Forge's 7 representative shapes has `Cin <= 16`, so
+every one of them takes the new path in production. A layer with `Cin > 16`
+(not produced by any existing Forge test or example, but not prohibited by
+`Conv2d`'s public API either) transparently falls back to the baseline
+kernel -- verified directly by `tests/test_cuda_conv2d_dinput_optimization.py
+::test_production_dispatch_correct_at_cin_boundary` (parametrized at
+`Cin=16` and `Cin=17`, both checked against the CPU backend).
+
+## Block configuration
+Candidate B uses the same `launch_config` (256 threads/block, 1D grid) every
+other simple elementwise/reduction kernel in `kernels.cu` uses -- no new
+block-size tuning was needed or performed (Section 20's 64/128/256 sweep was
+run for Candidates A and C, whose designs have a genuine block-size-dependent
+tradeoff; Candidate B's flat one-thread-per-output-position mapping has no
+such tradeoff to tune).
+
+## Shared memory usage
+None. Candidate B uses zero shared memory (a deliberate advantage over
+Candidate A, which needed up to ~36KB/block and still lost).
+
+## Memory access pattern
+`grad_out` is read once per `(thread, kh, kw, co)` combination and reused in
+a register across all `Cin` accumulators (the read-amplification fix from
+Section 8, achieved without shared memory or synchronization). `weight` is
+still read once per `(co, ci, kh, kw)` combination per thread -- unavoidable,
+since every `ci` needs its own weight value -- but `weight`'s small total
+size (`Cout*Cin*KH*KW`, at most a few thousand elements at Forge's shapes)
+means it is well-served by the L2/read-only cache across the many threads
+that share it. `grad_x` writes are fully coalesced within a `ci` (consecutive
+`wi` -> consecutive addresses), same as the baseline.
+
+## Correctness validation
+Direct kernel-level parity (`tests/test_cuda_conv2d_dinput_optimization.py::
+test_channelfused_matches_baseline_kernel`, 9 shapes x 2 dtypes = 18 cases)
+covers stride in {1, 2}, padding in {0, 1, 2}, kernel size in {2, 3, 5}
+(Section 23), square and non-square `H`/`W`, `Cin=1` and `Cin=MAX_CIN_REG`
+boundary, float32 and float64 (`rtol=1e-3..1e-8`). All pass. Production
+dispatch correctness at and across the `Cin <= 16` boundary is covered by
+`test_production_dispatch_correct_at_cin_boundary` (parametrized `Cin in
+{16, 17}`) through the full `nn.Conv2d`/autograd path against the CPU
+backend. The full pre-existing `tests/test_cuda_conv.py` and
+`tests/test_cuda_conv2d_backward_optimization.py` suites (finite-difference,
+cross-stream, explicit-stream, memory-safety) pass unmodified, since every
+one of their shapes has `Cin <= 16` and therefore already exercises the new
+production path end-to-end.
+
+## Finite difference results
+`test_cuda_conv2d_backward_optimization.py`'s existing
+`test_cuda_conv2d_finite_difference_weight`/`_bias` tests (stride in
+{1, 2}, padding in {0, 1}) pass unmodified against the new dInput dispatch
+(dInput's own gradient is checked directly by `test_cuda_conv.py`'s
+pre-existing input finite-difference test, also passing unmodified).
+
+## Cross-stream results
+`test_cuda_conv2d_backward_optimization.py`'s
+`test_cuda_conv2d_backward_correct_when_inputs_from_different_streams` and
+`..._when_grad_output_from_different_stream` pass unmodified -- the new
+kernel is called through the exact same `CUDABackend.conv2d_backward` /
+`_stream_guard` chokepoint as before; nothing about M28's automatic
+cross-stream dependency insertion needed to change.
+
+## Async results
+`test_cuda_conv2d_backward_on_explicit_stream_matches_cpu` (explicit
+`forge.cuda.Stream`, no default-stream synchronization) passes unmodified.
+
+## Memory results
+No new persistent device allocations: Candidate B needs zero additional
+global-memory buffers (all its extra state is register-resident). A 100-
+iteration stress test at `Cin=16` (the channel-fused path) showed
+`allocated_bytes`/`reserved_bytes`/`pending_bytes` all returning to their
+pre-loop values after `gc.collect()` + `empty_cache()` -- no leak.
+
+## Hardware variance
+Three independent runs of `conv2d_backward_dinput_profile.py`, back-to-back
+in the same session, showed substantial run-to-run variance in absolute
+timings for *all* kernels (including the unmodified baseline) -- e.g.
+`large_channel`'s baseline ranged 36.9-114.4ms across runs, a >3x spread,
+consistent with thermal/clock-state variation on this laptop GPU under
+sustained benchmark load (not attributable to any code change, since the
+unmodified production and dWeight/forward kernels showed the same spread).
+Candidate B's *relative* speedup over baseline was positive in every run at
+every shape except `mnist_conv1` (where it ranged 0.81x-1.23x, i.e.
+effectively a wash) -- see **Before/After** below for the clean, controlled,
+same-session comparison used as this milestone's primary evidence.
+
+## Before / after dInput results (controlled, same-session, `empty_cache()`-hygienic)
+| Shape | AI | dInput before (GFLOP/s, % ceiling) | dInput after (GFLOP/s, % ceiling) | Speedup |
+|---|---|---|---|---|
+| mnist_conv1 | 4.00 | 10.02, 16.6% | 8.94, 14.8% | 0.89x |
+| mnist_conv2 | 23.89 | 12.32, 11.8% | 29.04, 27.8% | 2.36x |
+| large_channel | 47.91 | 12.82, 12.3% | 35.26, 33.7% | 2.75x |
+| large_spatial | 23.99 | 12.05, 11.5% | 29.88, 28.6% | 2.48x |
+| batch_32 | 47.82 | 12.27, 11.7% | 33.13, 31.7% | 2.70x |
+| batch_64 | 47.91 | 12.65, 12.1% | 33.81, 32.3% | 2.67x |
+| batch_128 | 47.95 | 12.66, 12.1% | 35.78, 34.2% | 2.83x |
+
+## Before / after Conv2d backward results (dInput + unchanged dWeight + unchanged dBias)
+| Shape | Backward before (ms) | Backward after (ms) | Speedup |
+|---|---|---|---|
+| mnist_conv1 | 3.121 | 3.208 | 0.97x |
+| mnist_conv2 | 3.977 | 2.812 | 1.41x |
+| large_channel | 81.079 | 58.110 | 1.40x |
+| large_spatial | 41.499 | 30.048 | 1.38x |
+| batch_32 | 41.578 | 29.718 | 1.40x |
+| batch_64 | 81.234 | 58.355 | 1.39x |
+| batch_128 | 160.305 | 113.106 | 1.42x |
+
+`mnist_conv1` (`Cin=1`) is the one shape where Candidate B has no launch-
+count advantage over baseline (`N*H*W == N*Cin*H*W` when `Cin=1`) and its
+restructured loop nest adds a small amount of overhead -- a 3% backward-total
+regression, well within Section 37's "does not regress small workloads
+severely" acceptance bar and far outweighed by the gains everywhere else.
+
+## MNIST results
+`python -m benchmarks.m35_mnist` (real M20 CNN, batch=64) kernel-contribution
+ranking, before (M35) vs. after (M36):
+
+| | Before (M35) | After (M36) |
+|---|---|---|
+| `backward:conv2d` % of step | 50.97% | 46.82% |
+| `backward:conv2d` GFLOP/s | 8.415 | 8.748 |
+
+Consistent in direction and rough magnitude with the controlled per-shape
+comparison above (MNIST's real conv1/conv2 layers are smaller than most of
+the 7 representative shapes, so the blended improvement is more modest).
+
+## Async prefetch results
+`pipeline_profile._profile_async_epoch` at batch=64, prefetch depths 1/2/3,
+against the new production kernel:
+
+| Prefetch depth | GPU backward (ms/step) | Compute-stream utilization |
+|---|---|---|
+| 1 | 8.49 | 81.9% |
+| 2 | 6.98 | 86.2% |
+| 3 | 7.02 | 87.8% |
+
+The pipeline still overlaps host and device work correctly with the faster
+kernel -- utilization did not degrade (if anything it improved slightly at
+higher depths, since less GPU work per step gives the CPU-side dataloader
+more slack to stay ahead).
+
+## Production decision
+**Accepted.** Candidate B (`k_conv2d_backward_input_channelfused`) is
+integrated into production, dispatched whenever `Cin <= 16`. Candidates A
+and C are rejected and remain as profiling-only kernels for reference
+(matching M33/M34's convention for a rejected/accepted candidate pair).
+
+## Limitations
+- **`empty_cache()` hygiene matters for this benchmark suite on the 940MX**:
+  running `conv2d_backward_profile.py`'s full shape sweep (`SHAPES` +
+  `BATCH_SIZES`) back-to-back in one process without an `empty_cache()`
+  between shapes was observed to accumulate enough cached-but-unreleased
+  VRAM to trigger a Windows WDDM TDR launch timeout (`CUDA error: the launch
+  timed out and was terminated (code 702)`) partway through the batch sweep
+  -- reproducible twice, resolved by adding `forge.cuda.empty_cache()`
+  between shapes (this milestone's **Before/after** measurements use that
+  hygiene). This is a pre-existing characteristic of the M32 benchmark
+  script under this GPU's tight 2GB VRAM budget, not a defect introduced by
+  this milestone's kernel change (the accumulation is the same regardless of
+  which dInput kernel is dispatched).
+- **`MAX_CIN_REG=16` is a hard correctness bound**, not a tunable knob --
+  production dispatch never calls the channel-fused kernel above it, but the
+  bound was chosen to exactly cover Forge's 7 representative shapes (max
+  `Cin=16`), not derived from a register-pressure sweep across larger `Cin`.
+  A deeper CNN with `Cin > 16` layers would silently fall back to the
+  baseline kernel (no correctness risk, per the dispatch guard) but would
+  not benefit from this milestone's speedup there.
+- **`mnist_conv1` (`Cin=1`) shows no real gain** (0.89x-1.02x across
+  measurements) -- Candidate B's benefit comes from `Cin`-fold thread-count
+  reduction and grad_output register reuse, both of which vanish at `Cin=1`.
+- Run-to-run hardware variance on this laptop GPU (see **Hardware
+  variance**) means any single benchmark invocation's absolute numbers
+  should not be over-interpreted -- the controlled, same-session before/after
+  comparison is the primary evidence, corroborated by the register-usage
+  analysis (a hardware-independent, deterministic measurement).
+
+## Future opportunities
+- Combining Candidate B's register-reuse mapping with a modest amount of
+  spatial (not channel) shared-memory tiling across neighboring `(hi, wi)`
+  positions (whose input windows overlap for `stride < KH`) was not
+  attempted -- Section 12 explicitly scoped this milestone to a single
+  focused `dInput` experiment, not a general tiled-convolution engine.
+- A register-pressure sweep to find the actual `MAX_CIN_REG` ceiling before
+  occupancy degrades unacceptably (this milestone stopped at the value that
+  exactly covers Forge's existing shapes) could extend the dispatch boundary
+  for deeper CNNs.

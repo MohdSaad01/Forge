@@ -92,3 +92,56 @@ Plain step: 15.1346ms. Instrumented step: 14.5923ms. Overhead: -3.6% (within run
 - `benchmarks\results\m35_plots\roofline.png`
 - `benchmarks\results\m35_plots\kernel_contribution.png`
 - `benchmarks\results\m35_plots\gemm_scaling.png`
+
+## Milestone 36 update: dInput roofline reclassification
+
+M36 optimized `dInput` (see `docs/performance/conv2d-backward-profiling.md`'s
+**Milestone 36** section for the full investigation). Re-running this
+document's methodology after that change:
+
+| Shape | AI | dInput before (GFLOP/s, % ceiling, class) | dInput after (GFLOP/s, % ceiling, class) |
+|---|---|---|---|
+| mnist_conv1 | 4.00 | 10.02, 16.6%, mixed | 8.94, 14.8%, mixed |
+| mnist_conv2 | 23.89 | 12.32, 11.8%, mixed | 29.04, 27.8%, mixed |
+| large_channel | 47.91 | 12.82, 12.3%, mixed | 35.26, 33.7%, **compute_bound** |
+| large_spatial | 23.99 | 12.05, 11.5%, mixed | 29.88, 28.6%, mixed |
+| batch_32 | 47.82 | 12.27, 11.7%, mixed | 33.13, 31.7%, **compute_bound** |
+| batch_64 | 47.91 | 12.65, 12.1%, mixed | 33.81, 32.3%, **compute_bound** |
+| batch_128 | 47.95 | 12.66, 12.1%, mixed | 35.78, 34.2%, **compute_bound** |
+
+Four of seven shapes cross `benchmarks/roofline.py`'s 30%-of-ceiling
+`NEAR_CEILING_FRACTION` threshold and reclassify from `mixed_or_ambiguous` to
+`compute_bound` -- consistent with the root cause being instruction/register
+efficiency (local-memory traffic removed, not a bandwidth-reuse fix): the
+kernel moved *toward* its compute ceiling, not toward the bandwidth ceiling,
+exactly as expected for a fix that eliminates local-memory reads and keeps
+register pressure near baseline rather than reducing global-memory traffic.
+`mnist_conv1` (`Cin=1`) shows no reclassification and a small GFLOP/s
+regression -- expected, since Candidate B's benefit requires `Cin > 1`.
+
+**Updated bottleneck ranking** (`python -m benchmarks.m35_mnist`, real MNIST
+training step, batch=64):
+
+| Op | % of step (M35) | % of step (M36) |
+|---|---|---|
+| `backward:conv2d` | 50.97% | 46.82% |
+| `forward:Conv2d` | 14.09% | 15.68% |
+| `backward:@` | 7.20% | 6.77% |
+
+`backward:conv2d` remains the single largest contributor after M36 (dWeight
+is unchanged and still dominates the combined `dInput+dWeight` kernel-launch
+time at most shapes -- see the profiling doc's before/after table), but its
+share of the step dropped by ~4 percentage points. **Amdahl check**: dInput
+alone was roughly half of `backward:conv2d`'s time pre-M36 at the
+representative shapes (`d_input_ms` vs. `d_weight_ms` in `conv2d_backward_
+profile.json`), i.e. roughly 25% of the full step; a ~2.5x average dInput
+speedup at that share predicts an overall step speedup of
+`1 / (0.75 + 0.25/2.5) = 1.18x` -- in the same direction and rough range as
+the ~1.09x implied by the measured 50.97% -> 46.82% shift (`0.5097/0.4682 x
+(1/step_before) `, not a precise match since the two measurements come from
+different sessions with the hardware variance documented in the profiling
+doc's **Hardware variance** section, but consistent enough to confirm no
+surprising interaction effect). `dWeight` (im2col+GEMM, still M34-optimized
+and untouched) is now the more clearly dominant of the two `conv2d_backward`
+kernels at most shapes -- the natural M37+ candidate if further Conv2d
+backward optimization is pursued.

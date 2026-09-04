@@ -2053,3 +2053,47 @@ clean CUDA rebuild on the 940MX. No `forge/` production code changed.
 
 **Why no ADR.** No public API, Tensor semantics, or architectural boundary
 was touched -- this milestone added benchmarking/analysis code only.
+
+### M36 — CUDA Conv2d dInput algorithmic optimization (accepted)
+Followed M35's naming of `conv2d` backward's `dInput` as the top
+optimization-headroom candidate. `nvcc -Xptxas -v` on the unmodified M32
+`k_conv2d_backward_input` found a 512-byte per-thread **local memory** stack
+frame (its dynamically-indexed `kh_valid`/`ho_valid`/`kw_valid`/`wo_valid`
+tables can never be register-resident) -- real traffic invisible to the
+roofline model, explaining why the kernel sat at only ~12% of the practical
+compute ceiling despite an arithmetic intensity that classifies it
+compute-bound. Three structurally different candidates (`kernels.cu`,
+profiling-only): **A** shared-memory grad_output row-tile reuse across
+`Cin` (rejected -- never beat baseline, confirming `dInput` was never
+bandwidth-starved); **B** channel-fused work mapping, one thread per
+`(n,h,w)` holding all `Cin` accumulators in a register array, reading each
+grad_output value once and reusing it via a register across every `ci`
+(**accepted** -- 1.0x-8.7x faster in isolation, 0.97x-1.42x faster for the
+complete `conv2d_backward` call, across three independent hardware runs, zero
+stack frame confirmed by `-Xptxas -v`); **C** warp-cooperative reduction over
+`Cout` (rejected -- 3-20x slower, `dInput` already launches far more threads
+than the 940MX can use concurrently). Production dispatch (`cf_conv2d_
+backward_input_*`) now calls Candidate B whenever `Cin <= 16` (every one of
+Forge's 7 representative shapes), falling back to the unchanged M32 kernel
+otherwise. See `docs/performance/conv2d-backward-profiling.md`'s
+**Milestone 36** section and `docs/architecture/cuda-backend.md`'s matching
+section for the complete evidence.
+
+**Files changed.** `forge/backend/cuda/kernels.cu` (three new profiling-only
+candidate kernels + production dispatch change, `dWeight`/`dBias`/forward
+untouched), `forge/backend/cuda/backend.py` (ctypes bindings for the three
+profiling-only candidates), `benchmarks/conv2d_backward_dinput_profile.py`
+(new), `tests/test_cuda_conv2d_dinput_optimization.py` (new, 21 tests).
+
+**Tests.** 1,258 tests total (1,237 pre-existing + 21 new), all passing
+after a clean CUDA rebuild on the 940MX. Every pre-existing `test_cuda_
+conv.py` / `test_cuda_conv2d_backward_optimization.py` test (finite-
+difference, cross-stream, explicit-stream, memory-safety) passes unmodified,
+since all their shapes have `Cin <= 16` and already exercise the new
+production path end-to-end.
+
+**Why no ADR.** Same reasoning as M21/M32/M34: kernel-selection logic and a
+kernel's internal thread mapping changed behind an unchanged `CUDABackend.
+conv2d_backward` / `cf_conv2d_backward_input_*` signature and contract. No
+public API, Tensor semantics, or cross-cutting architectural decision was
+touched.

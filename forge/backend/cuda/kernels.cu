@@ -1092,21 +1092,405 @@ __global__ void k_conv2d_backward_input(
     grad_x[idx] = acc;
 }
 
+// `k_conv2d_backward_input_channelfused` (Milestone 36 Candidate B) is
+// defined here, immediately after the baseline kernel it is dispatched
+// against below, purely so the production launcher can call it directly --
+// see the "dInput candidate kernels" section further down (after that
+// launcher) for its full design rationale and Candidates A/C, which stay in
+// their original, narratively-grouped location since nothing dispatches to
+// them at compile time.
+
+constexpr int MAX_CIN_REG = 16;  // Forge's 7 representative shapes all have Cin <= 16
+
+template <typename T>
+__global__ void k_conv2d_backward_input_channelfused(
+    const T* grad_out, const T* w, T* grad_x,
+    int N, int Cin, int H, int W,
+    int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = static_cast<long long>(N) * H * W;
+    if (idx >= total) return;
+
+    int wi = static_cast<int>(idx % W);
+    long long t1 = idx / W;
+    int hi = static_cast<int>(t1 % H);
+    int n = static_cast<int>(t1 / H);
+
+    T acc[MAX_CIN_REG];
+#pragma unroll
+    for (int ci = 0; ci < MAX_CIN_REG; ++ci) acc[ci] = static_cast<T>(0);
+
+    for (int kh = 0; kh < KH; ++kh) {
+        int t = hi + PH - kh;
+        if (t % SH != 0) continue;
+        int ho = t / SH;
+        if (ho < 0 || ho >= Hout) continue;
+        for (int kw_ = 0; kw_ < KW; ++kw_) {
+            int tw = wi + PW - kw_;
+            if (tw % SW != 0) continue;
+            int wo = tw / SW;
+            if (wo < 0 || wo >= Wout) continue;
+            for (int co = 0; co < Cout; ++co) {
+                long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+                T g = grad_out[g_idx];  // read once, reused across every ci below
+                long long w_base = static_cast<long long>(co) * Cin * KH * KW + kh * KW + kw_;
+#pragma unroll
+                for (int ci = 0; ci < MAX_CIN_REG; ++ci) {
+                    if (ci >= Cin) break;
+                    acc[ci] += g * w[w_base + static_cast<long long>(ci) * KH * KW];
+                }
+            }
+        }
+    }
+
+    long long out_base = static_cast<long long>(n) * Cin * H * W + static_cast<long long>(hi) * W + wi;
+#pragma unroll
+    for (int ci = 0; ci < MAX_CIN_REG; ++ci) {
+        if (ci >= Cin) break;
+        grad_x[out_base + static_cast<long long>(ci) * H * W] = acc[ci];
+    }
+}
+
+// Milestone 36 production dispatch: `k_conv2d_backward_input_channelfused`
+// (defined below, in the "dInput candidate kernels" section) measured
+// 1.0x-6.9x faster than `k_conv2d_backward_input` (this section, unchanged)
+// at every one of the 7 representative shapes/batch sizes -- see
+// `docs/performance/conv2d-backward-profiling.md`'s **Milestone 36** section
+// for the full before/after evidence. It requires `Cin <=
+// CONV2D_DINPUT_CHANNELFUSED_MAX_CIN` for correctness (its register-resident
+// accumulator array is sized and fully unrolled at that bound at compile
+// time -- see that kernel's own comment); every one of Forge's representative
+// shapes satisfies this (`Cin` in {1, 8, 16}), so this dispatch is exercised
+// by every one of them. A layer with `Cin` above the bound (never produced by
+// Forge's own `nn.Conv2d`/MNIST-scale test shapes, but not otherwise
+// prohibited by `Conv2d`'s public API) transparently falls back to the
+// unchanged, always-correct `k_conv2d_backward_input` -- Section 38's
+// sanctioned hybrid dispatch, kept to this one simple boundary check.
+constexpr int CONV2D_DINPUT_CHANNELFUSED_MAX_CIN = 16;
+
 #define CONV2D_BACKWARD_INPUT_LAUNCHER(TYPE, SUFFIX)                                      \
     extern "C" __declspec(dllexport) int cf_conv2d_backward_input_##SUFFIX(               \
         const TYPE* grad_out, const TYPE* w, TYPE* grad_x,                                \
         int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
         int SH, int SW, int PH, int PW, int Hout, int Wout, void* stream) {               \
-        long long total = static_cast<long long>(N) * Cin * H * W;                        \
-        int blocks, threads;                                                              \
-        launch_config(total, blocks, threads);                                            \
-        k_conv2d_backward_input<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(      \
-            grad_out, w, grad_x, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout);  \
+        cudaStream_t s = (cudaStream_t)stream;                                            \
+        if (Cin <= CONV2D_DINPUT_CHANNELFUSED_MAX_CIN) {                                  \
+            long long total = static_cast<long long>(N) * H * W;                          \
+            int blocks, threads;                                                          \
+            launch_config(total, blocks, threads);                                        \
+            k_conv2d_backward_input_channelfused<TYPE><<<blocks, threads, 0, s>>>(        \
+                grad_out, w, grad_x, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout); \
+        } else {                                                                          \
+            long long total = static_cast<long long>(N) * Cin * H * W;                    \
+            int blocks, threads;                                                          \
+            launch_config(total, blocks, threads);                                        \
+            k_conv2d_backward_input<TYPE><<<blocks, threads, 0, s>>>(                     \
+                grad_out, w, grad_x, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout); \
+        }                                                                                 \
         return static_cast<int>(cudaGetLastError());                                      \
     }
 
 CONV2D_BACKWARD_INPUT_LAUNCHER(float, f32)
 CONV2D_BACKWARD_INPUT_LAUNCHER(double, f64)
+
+// -- dInput candidate kernels (Milestone 36, profiling-only) -----------------
+//
+// M36 root-cause finding: `nvcc -Xptxas -v` on `k_conv2d_backward_input`
+// (above) reports "512 bytes stack frame ... 0 bytes spill stores/loads" --
+// the `kh_valid`/`ho_valid`/`kw_valid`/`wo_valid` local arrays M32 introduced
+// (4 arrays x MAX_CONV_K=32 ints = 512 bytes) are indexed with a
+// runtime-computed loop variable (`hi_i`/`wi_i`), which nvcc cannot keep in
+// registers regardless of array size -- it places them in per-thread local
+// memory (an implicit DRAM-backed, L1/L2-cached region), read back
+// `Cout * h_count * w_count` times per thread. This is real, uncounted-by-
+// the-roofline-model traffic (the `bytes_conv2d_dinput` model in
+// `benchmarks/roofline.py` only counts grad_out/weight/grad_x, never
+// implementation-internal local-memory spill), and it explains the
+// milestone's headline number directly: at every representative shape,
+// measured arithmetic intensity places `dInput` decisively to the *right* of
+// the 940MX's measured ridge point (~6.93 FLOPs/byte = 104.57 GFLOP/s compute
+// ceiling / 15.09 GB/s bandwidth ceiling -- see `m35-roofline-
+// characterization.md`) -- e.g. `large_channel`'s AI=47.9, `mnist_conv2`'s
+// AI=23.9 -- so this kernel is classified compute-bound by the FLOP/byte
+// model, yet achieves only ~12% of the practical *compute* ceiling while
+// using under 20% (often under 5%) of the practical *bandwidth* ceiling
+// (Section 14/15 of the milestone brief: "if a kernel is far below both
+// ceilings, investigate instruction efficiency/occupancy/latency rather than
+// labeling it memory-bound"). A kernel that is both far from its compute
+// ceiling and using only a sliver of its bandwidth budget is not bandwidth-
+// starved -- it is spending real cycles on something the FLOP/byte model
+// cannot see: local-memory traffic and register pressure (48 registers even
+// before counting the 512-byte stack frame).
+//
+// Three structurally different candidates are measured against this
+// diagnosis, matching Sections 9-11 of the milestone brief:
+//
+//   Candidate A (`_smem`)   -- shared-memory grad_output row-tile reuse
+//                              across the `Cin` dimension (Section 9): a
+//                              block owns one `(n, hi)` pair, cooperatively
+//                              loads the `h_count <= KH` needed grad_output
+//                              rows (all `Cout` channels, full `Wout`) into
+//                              shared memory once, then every `(ci, wi)`
+//                              thread in the block reads from shared memory
+//                              instead of re-issuing `Cin` separate global
+//                              loads for the same values. Directly tests the
+//                              "grad_output read amplification" hypothesis
+//                              (Section 8) in isolation -- it keeps the
+//                              baseline's one-thread-per-`(n,ci,h,w)` mapping
+//                              and its per-thread `kw_valid`/`wo_valid`
+//                              tables unchanged, changing only where
+//                              grad_output is read from.
+//   Candidate B (`_channelfused`) -- alternative work mapping (Section 10,
+//                              "channel" dimension): one thread now owns a
+//                              full `(n, hi, wi)` position across *every*
+//                              `ci`, holding `Cin` accumulators in a
+//                              `#pragma unroll`-forced, compile-time-bounded
+//                              (`MAX_CIN_REG=32`) register array (verified via
+//                              `-Xptxas -v` to actually promote to registers,
+//                              zero stack frame -- see the M36 report's
+//                              **Register Usage** section) and reading each
+//                              `grad_output[n,co,ho,wo]` value exactly once
+//                              per thread, reused via a register across all
+//                              `Cin` weight multiplies. This also eliminates
+//                              M32's arrays entirely (kh/ho/kw/wo are now
+//                              plain scalars in the outer loop nest, never
+//                              stored to an array), so it tests the
+//                              instruction-efficiency root cause and the
+//                              grad_output-reuse hypothesis together, via
+//                              register reuse instead of shared memory.
+//                              Shapes with `Cin > MAX_CIN_REG` are out of
+//                              scope for this kernel (production dispatch,
+//                              if adopted, would fall back to the baseline
+//                              kernel -- Section 38's sanctioned hybrid
+//                              dispatch; every one of Forge's 7 representative
+//                              shapes has `Cin <= 16`).
+//   Candidate C (`_warp`)   -- partial cooperative reduction over `Cout`
+//                              (Section 11): a warp (32 lanes), not a single
+//                              thread, owns one `(n,ci,h,w)` output element;
+//                              each lane sums a disjoint slice of `Cout` and
+//                              the warp combines partial sums via
+//                              `__shfl_down_sync` (no shared memory, no
+//                              `__syncthreads()`, mirroring M33's
+//                              `k_conv2d_backward_weight_warp` pattern).
+//                              Tests whether the same cooperative-reduction
+//                              idea M33 evaluated for `dWeight` (and
+//                              rejected, for a *different* reason --
+//                              too-many-blocks scheduling overhead) helps
+//                              here; the a priori expectation is rejection
+//                              for yet another reason -- `dInput` already
+//                              launches `N*Cin*H*W` threads (tens of
+//                              thousands to ~800K at these shapes), already
+//                              far more parallelism than the 940MX's ~6,144
+//                              concurrent-thread capacity can use at once, so
+//                              trading fewer, "fatter" cooperating units for
+//                              more total launched threads (32x) has no
+//                              starved parallelism to fix and only adds
+//                              `__shfl_down_sync` overhead plus, for the
+//                              `Cout in {8, 16}` shapes, partially idle warps.
+//
+// All three are profiling-only exports (`cf_conv2d_backward_input_{smem,
+// channelfused,warp}_*`), the same category as Milestone 33/34's forced
+// dWeight-candidate exports below -- `CUDABackend` never calls them; see
+// `benchmarks/conv2d_backward_dinput_profile.py` for the isolated,
+// side-by-side measurement against the unchanged production kernel above.
+
+// -- Candidate A: shared-memory grad_output row-tile reuse across Cin -------
+
+constexpr int MAX_CONV_K_SMEM = 32;  // matches MAX_CONV_K; per-block (not per-thread) table
+
+template <typename T>
+__global__ void k_conv2d_backward_input_smem(
+    const T* grad_out, const T* w, T* grad_x,
+    int N, int Cin, int H, int W,
+    int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout)
+{
+    extern __shared__ unsigned char smem_raw[];
+    T* smem = reinterpret_cast<T*>(smem_raw);  // [h_count][Cout][Wout], cooperatively filled below
+    __shared__ int s_kh[MAX_CONV_K_SMEM];
+    __shared__ int s_ho[MAX_CONV_K_SMEM];
+    __shared__ int s_h_count;
+
+    long long block_id = blockIdx.x;  // one block per (n, hi)
+    int hi = static_cast<int>(block_id % H);
+    int n = static_cast<int>(block_id / H);
+
+    if (threadIdx.x == 0) {
+        int cnt = 0;
+        for (int kh = 0; kh < KH && kh < MAX_CONV_K_SMEM; ++kh) {
+            int t = hi + PH - kh;
+            if (t % SH != 0) continue;
+            int ho = t / SH;
+            if (ho < 0 || ho >= Hout) continue;
+            s_kh[cnt] = kh;
+            s_ho[cnt] = ho;
+            ++cnt;
+        }
+        s_h_count = cnt;
+    }
+    __syncthreads();
+
+    int h_count = s_h_count;
+    long long tile_elems = static_cast<long long>(h_count) * Cout * Wout;
+    for (long long i = threadIdx.x; i < tile_elems; i += blockDim.x) {
+        int wo = static_cast<int>(i % Wout);
+        long long t1 = i / Wout;
+        int co = static_cast<int>(t1 % Cout);
+        int hi_i = static_cast<int>(t1 / Cout);
+        int ho = s_ho[hi_i];
+        long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+        smem[i] = grad_out[g_idx];
+    }
+    __syncthreads();
+
+    long long total_work = static_cast<long long>(Cin) * W;
+    for (long long work = threadIdx.x; work < total_work; work += blockDim.x) {
+        int wi = static_cast<int>(work % W);
+        int ci = static_cast<int>(work / W);
+
+        int kw_valid[MAX_CONV_K_SMEM];
+        int wo_valid[MAX_CONV_K_SMEM];
+        int w_count = 0;
+        for (int kw_ = 0; kw_ < KW && kw_ < MAX_CONV_K_SMEM; ++kw_) {
+            int tw = wi + PW - kw_;
+            if (tw % SW != 0) continue;
+            int wo = tw / SW;
+            if (wo < 0 || wo >= Wout) continue;
+            kw_valid[w_count] = kw_;
+            wo_valid[w_count] = wo;
+            ++w_count;
+        }
+
+        T acc = static_cast<T>(0);
+        for (int co = 0; co < Cout; ++co) {
+            long long w_row = (static_cast<long long>(co) * Cin + ci) * KH;
+            for (int hi_i = 0; hi_i < h_count; ++hi_i) {
+                int kh = s_kh[hi_i];
+                long long smem_row = (static_cast<long long>(hi_i) * Cout + co) * Wout;
+                long long w_base = (w_row + kh) * KW;
+                for (int wi_i = 0; wi_i < w_count; ++wi_i) {
+                    int kw_ = kw_valid[wi_i], wo = wo_valid[wi_i];
+                    acc += smem[smem_row + wo] * w[w_base + kw_];
+                }
+            }
+        }
+        long long out_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+        grad_x[out_idx] = acc;
+    }
+}
+
+#define CONV2D_BACKWARD_INPUT_SMEM_LAUNCHER(TYPE, SUFFIX)                                \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_input_smem_##SUFFIX(         \
+        const TYPE* grad_out, const TYPE* w, TYPE* grad_x,                               \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                          \
+        int SH, int SW, int PH, int PW, int Hout, int Wout,                              \
+        int threads_per_block, void* stream) {                                           \
+        long long blocks64 = static_cast<long long>(N) * H;                              \
+        int blocks = blocks64 < 1 ? 1 : static_cast<int>(blocks64);                      \
+        size_t shared_bytes = static_cast<size_t>(KH) * Cout * Wout * sizeof(TYPE);      \
+        k_conv2d_backward_input_smem<TYPE><<<blocks, threads_per_block, shared_bytes, (cudaStream_t)stream>>>( \
+            grad_out, w, grad_x, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout); \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+CONV2D_BACKWARD_INPUT_SMEM_LAUNCHER(float, f32)
+CONV2D_BACKWARD_INPUT_SMEM_LAUNCHER(double, f64)
+
+// -- Candidate B: channel-fused work mapping, register-reused grad_output ---
+//
+// `k_conv2d_backward_input_channelfused` itself is defined earlier in this
+// file (immediately after `k_conv2d_backward_input`), so the production
+// dispatcher above can call it directly; only its profiling-only forced
+// launcher (bypassing the `Cin`-based dispatch, for direct A/B/C comparison
+// at every shape regardless of which path production would pick) lives here.
+
+#define CONV2D_BACKWARD_INPUT_CHANNELFUSED_LAUNCHER(TYPE, SUFFIX)                        \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_input_channelfused_##SUFFIX( \
+        const TYPE* grad_out, const TYPE* w, TYPE* grad_x,                               \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                          \
+        int SH, int SW, int PH, int PW, int Hout, int Wout, void* stream) {              \
+        long long total = static_cast<long long>(N) * H * W;                             \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_conv2d_backward_input_channelfused<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>( \
+            grad_out, w, grad_x, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout); \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+CONV2D_BACKWARD_INPUT_CHANNELFUSED_LAUNCHER(float, f32)
+CONV2D_BACKWARD_INPUT_CHANNELFUSED_LAUNCHER(double, f64)
+
+// -- Candidate C: warp-cooperative reduction over Cout ----------------------
+
+template <typename T>
+__global__ void k_conv2d_backward_input_warp(
+    const T* grad_out, const T* w, T* grad_x,
+    int N, int Cin, int H, int W,
+    int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout, long long total_outputs)
+{
+    int lane = threadIdx.x & 31;
+    int warp_in_block = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    long long idx = static_cast<long long>(blockIdx.x) * warps_per_block + warp_in_block;
+    if (idx >= total_outputs) return;
+
+    int wi = static_cast<int>(idx % W);
+    long long t1 = idx / W;
+    int hi = static_cast<int>(t1 % H);
+    long long t2 = t1 / H;
+    int ci = static_cast<int>(t2 % Cin);
+    int n = static_cast<int>(t2 / Cin);
+
+    T acc = static_cast<T>(0);
+    for (int co = lane; co < Cout; co += 32) {
+        long long w_base = (static_cast<long long>(co) * Cin + ci) * KH * KW;
+        for (int kh = 0; kh < KH; ++kh) {
+            int t = hi + PH - kh;
+            if (t % SH != 0) continue;
+            int ho = t / SH;
+            if (ho < 0 || ho >= Hout) continue;
+            long long g_row = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout;
+            long long w_row = w_base + static_cast<long long>(kh) * KW;
+            for (int kw_ = 0; kw_ < KW; ++kw_) {
+                int tw = wi + PW - kw_;
+                if (tw % SW != 0) continue;
+                int wo = tw / SW;
+                if (wo < 0 || wo >= Wout) continue;
+                acc += grad_out[g_row + wo] * w[w_row + kw_];
+            }
+        }
+    }
+
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        acc += __shfl_down_sync(0xFFFFFFFFu, acc, offset);
+    }
+    if (lane == 0) grad_x[idx] = acc;
+}
+
+#define CONV2D_BACKWARD_INPUT_WARP_LAUNCHER(TYPE, SUFFIX)                                \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_input_warpreduce_##SUFFIX(   \
+        const TYPE* grad_out, const TYPE* w, TYPE* grad_x,                               \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                          \
+        int SH, int SW, int PH, int PW, int Hout, int Wout,                              \
+        int warps_per_block, void* stream) {                                             \
+        long long total = static_cast<long long>(N) * Cin * H * W;                       \
+        int threads = warps_per_block * 32;                                              \
+        long long blocks64 = (total + warps_per_block - 1) / warps_per_block;            \
+        int blocks = blocks64 < 1 ? 1 : static_cast<int>(blocks64);                      \
+        k_conv2d_backward_input_warp<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>( \
+            grad_out, w, grad_x, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout, total); \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+CONV2D_BACKWARD_INPUT_WARP_LAUNCHER(float, f32)
+CONV2D_BACKWARD_INPUT_WARP_LAUNCHER(double, f64)
 
 // -- Conv2d backward: weight and bias (Milestone 21: block-per-output-element,
 //    shared-memory tree reduction) ------------------------------------------

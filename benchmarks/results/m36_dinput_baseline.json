@@ -1,0 +1,239 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "4a34839b8942425339ac2f1dd7fc8b29a9d947a3",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "kernel": "k_conv2d_backward_input (production before M36)",
+  "dinput": [
+    {
+      "name": "mnist_conv1",
+      "config": {
+        "N": 64,
+        "Cin": 1,
+        "Cout": 8,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "timing_ms": {
+        "mean_ms": 0.7209792017936707,
+        "median_ms": 0.7208639979362488,
+        "min_ms": 0.7125759720802307,
+        "max_ms": 0.7411519885063171,
+        "stdev_ms": 0.005276040925460544
+      },
+      "flops": 7225344,
+      "bytes": 1806624,
+      "arithmetic_intensity": 3.999362346564642,
+      "achieved_gflops": 10.021570638965176,
+      "achieved_gbps": 2.5057921164791357,
+      "classification": "mixed_or_ambiguous",
+      "roofline_ceiling_gflops": 60.34236002925098,
+      "fraction_of_ceiling": 0.1660785331251084,
+      "classification_note": "Only 16.6% of the 60.34 GFLOP/s roofline ceiling achieved, with elapsed time (720.98us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+    },
+    {
+      "name": "mnist_conv2",
+      "config": {
+        "N": 64,
+        "Cin": 8,
+        "Cout": 16,
+        "H": 13,
+        "W": 13,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 13,
+      "Wout": 13,
+      "timing_ms": {
+        "mean_ms": 2.022919472058614,
+        "median_ms": 2.0505919456481934,
+        "min_ms": 1.9469759464263916,
+        "max_ms": 2.0858240127563477,
+        "stdev_ms": 0.046681632273348705
+      },
+      "flops": 24920064,
+      "bytes": 1042944,
+      "arithmetic_intensity": 23.8939617083947,
+      "achieved_gflops": 12.318861103571376,
+      "achieved_gbps": 0.515563775229596,
+      "classification": "mixed_or_ambiguous",
+      "roofline_ceiling_gflops": 104.5694232061303,
+      "fraction_of_ceiling": 0.11780557572062034,
+      "classification_note": "Only 11.8% of the 104.57 GFLOP/s roofline ceiling achieved, with elapsed time (2022.92us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+    },
+    {
+      "name": "large_channel",
+      "config": {
+        "N": 64,
+        "Cin": 16,
+        "Cout": 32,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "timing_ms": {
+        "mean_ms": 36.08418668111165,
+        "median_ms": 36.080543518066406,
+        "min_ms": 35.97836685180664,
+        "max_ms": 36.23161697387695,
+        "stdev_ms": 0.055388841153118235
+      },
+      "flops": 462422016,
+      "bytes": 9652224,
+      "arithmetic_intensity": 47.90833863781031,
+      "achieved_gflops": 12.815087675013494,
+      "achieved_gbps": 0.2674917987011878,
+      "classification": "mixed_or_ambiguous",
+      "roofline_ceiling_gflops": 104.5694232061303,
+      "fraction_of_ceiling": 0.12255100278933374,
+      "classification_note": "Only 12.3% of the 104.57 GFLOP/s roofline ceiling achieved, with elapsed time (36084.19us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+    },
+    {
+      "name": "large_spatial",
+      "config": {
+        "N": 32,
+        "Cin": 8,
+        "Cout": 16,
+        "H": 56,
+        "W": 56,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 56,
+      "Wout": 56,
+      "timing_ms": {
+        "mean_ms": 19.187418619791668,
+        "median_ms": 18.854528427124023,
+        "min_ms": 18.71232032775879,
+        "max_ms": 21.118207931518555,
+        "stdev_ms": 0.818561154677783
+      },
+      "flops": 231211008,
+      "bytes": 9638400,
+      "arithmetic_intensity": 23.98852589641434,
+      "achieved_gflops": 12.050136215900752,
+      "achieved_gbps": 0.502329166366239,
+      "classification": "mixed_or_ambiguous",
+      "roofline_ceiling_gflops": 104.5694232061303,
+      "fraction_of_ceiling": 0.1152357529231769,
+      "classification_note": "Only 11.5% of the 104.57 GFLOP/s roofline ceiling achieved, with elapsed time (19187.42us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+    },
+    {
+      "name": "batch_32",
+      "config": {
+        "Cin": 16,
+        "Cout": 32,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1,
+        "N": 32
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "timing_ms": {
+        "mean_ms": 18.838533528645833,
+        "median_ms": 18.374720573425293,
+        "min_ms": 17.82579231262207,
+        "max_ms": 20.427040100097656,
+        "stdev_ms": 0.901842919281011
+      },
+      "flops": 231211008,
+      "bytes": 4835328,
+      "arithmetic_intensity": 47.81702668360864,
+      "achieved_gflops": 12.273301828320184,
+      "achieved_gbps": 0.2566722081974911,
+      "classification": "mixed_or_ambiguous",
+      "roofline_ceiling_gflops": 104.5694232061303,
+      "fraction_of_ceiling": 0.11736989123605181,
+      "classification_note": "Only 11.7% of the 104.57 GFLOP/s roofline ceiling achieved, with elapsed time (18838.53us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+    },
+    {
+      "name": "batch_64",
+      "config": {
+        "Cin": 16,
+        "Cout": 32,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1,
+        "N": 64
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "timing_ms": {
+        "mean_ms": 36.556012598673504,
+        "median_ms": 36.60158348083496,
+        "min_ms": 35.5711669921875,
+        "max_ms": 36.68678283691406,
+        "stdev_ms": 0.19474354332030264
+      },
+      "flops": 462422016,
+      "bytes": 9652224,
+      "arithmetic_intensity": 47.90833863781031,
+      "achieved_gflops": 12.649684227780897,
+      "achieved_gbps": 0.2640393006197357,
+      "classification": "mixed_or_ambiguous",
+      "roofline_ceiling_gflops": 104.5694232061303,
+      "fraction_of_ceiling": 0.12096924550157909,
+      "classification_note": "Only 12.1% of the 104.57 GFLOP/s roofline ceiling achieved, with elapsed time (36556.01us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+    },
+    {
+      "name": "batch_128",
+      "config": {
+        "Cin": 16,
+        "Cout": 32,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1,
+        "N": 128
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "timing_ms": {
+        "mean_ms": 73.04443639119467,
+        "median_ms": 73.0497932434082,
+        "min_ms": 72.82211303710938,
+        "max_ms": 73.23248291015625,
+        "stdev_ms": 0.11288676757629361
+      },
+      "flops": 924844032,
+      "bytes": 19286016,
+      "arithmetic_intensity": 47.95412551768079,
+      "achieved_gflops": 12.661389117261884,
+      "achieved_gbps": 0.2640312794900952,
+      "classification": "mixed_or_ambiguous",
+      "roofline_ceiling_gflops": 104.5694232061303,
+      "fraction_of_ceiling": 0.1210811796513727,
+      "classification_note": "Only 12.1% of the 104.57 GFLOP/s roofline ceiling achieved, with elapsed time (73044.44us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+    }
+  ]
+}

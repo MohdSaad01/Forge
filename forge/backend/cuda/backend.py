@@ -279,6 +279,27 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         ] + [ctypes.c_int] * 14 + [ctypes.c_void_p]
         conv_bwd_weight_warpreduce_fn.restype = ctypes.c_int
 
+        # -- dInput candidate profiling helpers (Milestone 36) --
+        # see kernels.cu's identically-named section. Never called by
+        # `CUDABackend` itself -- only by `benchmarks/conv2d_backward_dinput_profile.py`.
+        conv_bwd_input_smem_fn = getattr(lib, f"cf_conv2d_backward_input_smem_{suffix}")
+        conv_bwd_input_smem_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 14 + [ctypes.c_void_p]
+        conv_bwd_input_smem_fn.restype = ctypes.c_int
+
+        conv_bwd_input_channelfused_fn = getattr(lib, f"cf_conv2d_backward_input_channelfused_{suffix}")
+        conv_bwd_input_channelfused_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 13 + [ctypes.c_void_p]
+        conv_bwd_input_channelfused_fn.restype = ctypes.c_int
+
+        conv_bwd_input_warpreduce_fn = getattr(lib, f"cf_conv2d_backward_input_warpreduce_{suffix}")
+        conv_bwd_input_warpreduce_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 14 + [ctypes.c_void_p]
+        conv_bwd_input_warpreduce_fn.restype = ctypes.c_int
+
         conv_bwd_bias_fn = getattr(lib, f"cf_conv2d_backward_bias_{suffix}")
         conv_bwd_bias_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 4 + [ctypes.c_void_p]
         conv_bwd_bias_fn.restype = ctypes.c_int

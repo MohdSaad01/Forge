@@ -1,0 +1,627 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "4a34839b8942425339ac2f1dd7fc8b29a9d947a3",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "shapes": [
+      {
+        "name": "mnist_conv1",
+        "config": {
+          "N": 64,
+          "Cin": 1,
+          "Cout": 8,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "supports_channelfused": true,
+        "current_ms": {
+          "mean_ms": 1.7242773413658141,
+          "median_ms": 1.7238399982452393,
+          "min_ms": 1.7101759910583496,
+          "max_ms": 1.736191987991333,
+          "stdev_ms": 0.005713040676706873
+        },
+        "smem_ms": {
+          "64": {
+            "mean_ms": 6.013968006769816,
+            "median_ms": 6.013744115829468,
+            "min_ms": 5.999872207641602,
+            "max_ms": 6.026944160461426,
+            "stdev_ms": 0.006453960434352984
+          },
+          "128": {
+            "mean_ms": 6.5063584009806315,
+            "median_ms": 6.4547998905181885,
+            "min_ms": 6.123712062835693,
+            "max_ms": 7.1694722175598145,
+            "stdev_ms": 0.24718871133027256
+          },
+          "256": {
+            "mean_ms": 17.67431983947754,
+            "median_ms": 17.67300796508789,
+            "min_ms": 17.665376663208008,
+            "max_ms": 17.68716812133789,
+            "stdev_ms": 0.006047708497005143
+          }
+        },
+        "channelfused_ms": {
+          "mean_ms": 2.1419541438420615,
+          "median_ms": 2.14136004447937,
+          "min_ms": 2.1356160640716553,
+          "max_ms": 2.15116810798645,
+          "stdev_ms": 0.0037658035373246473
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 14.639301363627116,
+            "median_ms": 14.639088153839111,
+            "min_ms": 14.637215614318848,
+            "max_ms": 14.643872261047363,
+            "stdev_ms": 0.001674729328393828
+          },
+          "4": {
+            "mean_ms": 14.624676259358724,
+            "median_ms": 14.624559879302979,
+            "min_ms": 14.621664047241211,
+            "max_ms": 14.628767967224121,
+            "stdev_ms": 0.0018602916348429387
+          },
+          "8": {
+            "mean_ms": 14.608004283905029,
+            "median_ms": 14.607840061187744,
+            "min_ms": 14.604031562805176,
+            "max_ms": 14.61308765411377,
+            "stdev_ms": 0.0020193777135648584
+          }
+        },
+        "best_smem_block_size": 64,
+        "best_smem_ms": 6.013968006769816,
+        "best_warpreduce_warps_per_block": 8,
+        "best_warpreduce_ms": 14.608004283905029,
+        "best_candidate": "channelfused",
+        "best_candidate_ms": 2.1419541438420615,
+        "best_candidate_speedup_vs_current": 0.80500198677127,
+        "current_vs_smem_speedup": 0.2867120908233675,
+        "current_vs_channelfused_speedup": 0.80500198677127,
+        "current_vs_warpreduce_speedup": 0.11803647560985506
+      },
+      {
+        "name": "mnist_conv2",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 13,
+        "Wout": 13,
+        "supports_channelfused": true,
+        "current_ms": {
+          "mean_ms": 5.200425593058268,
+          "median_ms": 5.20196795463562,
+          "min_ms": 5.161312103271484,
+          "max_ms": 5.263487815856934,
+          "stdev_ms": 0.021516714887430555
+        },
+        "smem_ms": {
+          "64": {
+            "mean_ms": 7.5995136260986325,
+            "median_ms": 7.598367929458618,
+            "min_ms": 7.589951992034912,
+            "max_ms": 7.619872093200684,
+            "stdev_ms": 0.007340630256596069
+          },
+          "128": {
+            "mean_ms": 7.760626141230265,
+            "median_ms": 7.760976076126099,
+            "min_ms": 7.75494384765625,
+            "max_ms": 7.765791893005371,
+            "stdev_ms": 0.0028468749511432316
+          },
+          "256": {
+            "mean_ms": 14.317238362630208,
+            "median_ms": 14.316912174224854,
+            "min_ms": 14.310943603515625,
+            "max_ms": 14.32483196258545,
+            "stdev_ms": 0.0031033706625074194
+          }
+        },
+        "channelfused_ms": {
+          "mean_ms": 2.4402954737345377,
+          "median_ms": 2.439855933189392,
+          "min_ms": 2.4340479373931885,
+          "max_ms": 2.4488000869750977,
+          "stdev_ms": 0.004169617127811405
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 24.829761187235516,
+            "median_ms": 24.829567909240723,
+            "min_ms": 24.82588768005371,
+            "max_ms": 24.833152770996094,
+            "stdev_ms": 0.0018134436328028295
+          },
+          "4": {
+            "mean_ms": 24.790357208251955,
+            "median_ms": 24.789711952209473,
+            "min_ms": 24.786048889160156,
+            "max_ms": 24.796192169189453,
+            "stdev_ms": 0.002611448562661011
+          },
+          "8": {
+            "mean_ms": 24.799459139506023,
+            "median_ms": 24.79911994934082,
+            "min_ms": 24.7923526763916,
+            "max_ms": 24.81177520751953,
+            "stdev_ms": 0.004408351216136729
+          }
+        },
+        "best_smem_block_size": 64,
+        "best_smem_ms": 7.5995136260986325,
+        "best_warpreduce_warps_per_block": 4,
+        "best_warpreduce_ms": 24.790357208251955,
+        "best_candidate": "channelfused",
+        "best_candidate_ms": 2.4402954737345377,
+        "best_candidate_speedup_vs_current": 2.1310639014953914,
+        "current_vs_smem_speedup": 0.6843103189128716,
+        "current_vs_channelfused_speedup": 2.1310639014953914,
+        "current_vs_warpreduce_speedup": 0.2097761459978965
+      },
+      {
+        "name": "large_channel",
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "supports_channelfused": true,
+        "current_ms": {
+          "mean_ms": 91.06614430745442,
+          "median_ms": 91.0869140625,
+          "min_ms": 90.32211303710938,
+          "max_ms": 91.43456268310547,
+          "stdev_ms": 0.24796827357405068
+        },
+        "smem_ms": {
+          "64": {
+            "mean_ms": 166.5386713663737,
+            "median_ms": 166.537841796875,
+            "min_ms": 166.40585327148438,
+            "max_ms": 166.6514892578125,
+            "stdev_ms": 0.054684685807821105
+          },
+          "128": {
+            "mean_ms": 120.16130879720052,
+            "median_ms": 120.158447265625,
+            "min_ms": 120.01891326904297,
+            "max_ms": 120.28057861328125,
+            "stdev_ms": 0.05301026753117819
+          },
+          "256": {
+            "mean_ms": 121.89126892089844,
+            "median_ms": 121.89100646972656,
+            "min_ms": 121.80524444580078,
+            "max_ms": 121.97663879394531,
+            "stdev_ms": 0.045235523021652416
+          }
+        },
+        "channelfused_ms": {
+          "mean_ms": 36.44877128601074,
+          "median_ms": 36.439247131347656,
+          "min_ms": 36.36249542236328,
+          "max_ms": 36.6049919128418,
+          "stdev_ms": 0.05510903480611838
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 419.4645233154297,
+            "median_ms": 419.4626922607422,
+            "min_ms": 419.4066467285156,
+            "max_ms": 419.5592041015625,
+            "stdev_ms": 0.03353812150649281
+          },
+          "4": {
+            "mean_ms": 419.5647216796875,
+            "median_ms": 419.5577392578125,
+            "min_ms": 419.5079650878906,
+            "max_ms": 419.6480712890625,
+            "stdev_ms": 0.03258890914622205
+          },
+          "8": {
+            "mean_ms": 419.6582021077474,
+            "median_ms": 419.65480041503906,
+            "min_ms": 419.6169738769531,
+            "max_ms": 419.7290954589844,
+            "stdev_ms": 0.02486692038711129
+          }
+        },
+        "best_smem_block_size": 128,
+        "best_smem_ms": 120.16130879720052,
+        "best_warpreduce_warps_per_block": 2,
+        "best_warpreduce_ms": 419.4645233154297,
+        "best_candidate": "channelfused",
+        "best_candidate_ms": 36.44877128601074,
+        "best_candidate_speedup_vs_current": 2.498469525704044,
+        "current_vs_smem_speedup": 0.7578657824137819,
+        "current_vs_channelfused_speedup": 2.498469525704044,
+        "current_vs_warpreduce_speedup": 0.21710094476565386
+      },
+      {
+        "name": "large_spatial",
+        "config": {
+          "N": 32,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 56,
+          "W": 56,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 56,
+        "Wout": 56,
+        "supports_channelfused": true,
+        "current_ms": {
+          "mean_ms": 47.01858774820963,
+          "median_ms": 47.02132797241211,
+          "min_ms": 46.97024154663086,
+          "max_ms": 47.06358337402344,
+          "stdev_ms": 0.021522836679343755
+        },
+        "smem_ms": {
+          "64": {
+            "mean_ms": 92.86837590535482,
+            "median_ms": 92.86495971679688,
+            "min_ms": 92.76195526123047,
+            "max_ms": 92.94073486328125,
+            "stdev_ms": 0.045808219512657566
+          },
+          "128": {
+            "mean_ms": 66.82820154825846,
+            "median_ms": 66.83665466308594,
+            "min_ms": 66.72736358642578,
+            "max_ms": 66.9098892211914,
+            "stdev_ms": 0.04315208610648917
+          },
+          "256": {
+            "mean_ms": 67.97138290405273,
+            "median_ms": 67.96753692626953,
+            "min_ms": 67.92176055908203,
+            "max_ms": 68.02953338623047,
+            "stdev_ms": 0.029607999602590997
+          }
+        },
+        "channelfused_ms": {
+          "mean_ms": 21.11634782155355,
+          "median_ms": 21.114944458007812,
+          "min_ms": 21.075456619262695,
+          "max_ms": 21.18988800048828,
+          "stdev_ms": 0.029501471655088266
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 235.5516159057617,
+            "median_ms": 235.5510711669922,
+            "min_ms": 235.53961181640625,
+            "max_ms": 235.56214904785156,
+            "stdev_ms": 0.006297977217196128
+          },
+          "4": {
+            "mean_ms": 235.44073893229168,
+            "median_ms": 235.44064331054688,
+            "min_ms": 235.42877197265625,
+            "max_ms": 235.45199584960938,
+            "stdev_ms": 0.005801300751330984
+          },
+          "8": {
+            "mean_ms": 235.3173863728841,
+            "median_ms": 235.3172149658203,
+            "min_ms": 235.30184936523438,
+            "max_ms": 235.3368682861328,
+            "stdev_ms": 0.009451943315895633
+          }
+        },
+        "best_smem_block_size": 128,
+        "best_smem_ms": 66.82820154825846,
+        "best_warpreduce_warps_per_block": 8,
+        "best_warpreduce_ms": 235.3173863728841,
+        "best_candidate": "channelfused",
+        "best_candidate_ms": 21.11634782155355,
+        "best_candidate_speedup_vs_current": 2.226643932253169,
+        "current_vs_smem_speedup": 0.703574039984545,
+        "current_vs_channelfused_speedup": 2.226643932253169,
+        "current_vs_warpreduce_speedup": 0.19980923837775397
+      }
+    ],
+    "batch_sweep": [
+      {
+        "name": "batch_32",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 32
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "supports_channelfused": true,
+        "current_ms": {
+          "mean_ms": 45.68173103332519,
+          "median_ms": 45.68190383911133,
+          "min_ms": 45.563167572021484,
+          "max_ms": 45.76918411254883,
+          "stdev_ms": 0.04553760558627772
+        },
+        "smem_ms": {
+          "64": {
+            "mean_ms": 83.56108322143555,
+            "median_ms": 83.56813049316406,
+            "min_ms": 83.49161529541016,
+            "max_ms": 83.62467193603516,
+            "stdev_ms": 0.0360989812831962
+          },
+          "128": {
+            "mean_ms": 60.230245463053386,
+            "median_ms": 60.23001480102539,
+            "min_ms": 60.135711669921875,
+            "max_ms": 60.32387161254883,
+            "stdev_ms": 0.04403086277254279
+          },
+          "256": {
+            "mean_ms": 61.03710708618164,
+            "median_ms": 61.038063049316406,
+            "min_ms": 60.992671966552734,
+            "max_ms": 61.0871696472168,
+            "stdev_ms": 0.02646929853747441
+          }
+        },
+        "channelfused_ms": {
+          "mean_ms": 19.17266254425049,
+          "median_ms": 19.1669921875,
+          "min_ms": 19.08620834350586,
+          "max_ms": 19.26233673095703,
+          "stdev_ms": 0.03708535793615661
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 209.69834594726564,
+            "median_ms": 209.32160186767578,
+            "min_ms": 209.29177856445312,
+            "max_ms": 220.61514282226562,
+            "stdev_ms": 2.0619286705579203
+          },
+          "4": {
+            "mean_ms": 209.37314097086588,
+            "median_ms": 209.3746566772461,
+            "min_ms": 209.3426513671875,
+            "max_ms": 209.4272918701172,
+            "stdev_ms": 0.018413962896247776
+          },
+          "8": {
+            "mean_ms": 209.41816050211588,
+            "median_ms": 209.41712188720703,
+            "min_ms": 209.38426208496094,
+            "max_ms": 209.4674530029297,
+            "stdev_ms": 0.017540374904862738
+          }
+        },
+        "best_smem_block_size": 128,
+        "best_smem_ms": 60.230245463053386,
+        "best_warpreduce_warps_per_block": 4,
+        "best_warpreduce_ms": 209.37314097086588,
+        "best_candidate": "channelfused",
+        "best_candidate_ms": 19.17266254425049,
+        "best_candidate_speedup_vs_current": 2.3826493022495856,
+        "current_vs_smem_speedup": 0.7584516829065127,
+        "current_vs_channelfused_speedup": 2.3826493022495856,
+        "current_vs_warpreduce_speedup": 0.21818333918810423
+      },
+      {
+        "name": "batch_64",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 64
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "supports_channelfused": true,
+        "current_ms": {
+          "mean_ms": 91.49075826009114,
+          "median_ms": 91.11115264892578,
+          "min_ms": 90.77629089355469,
+          "max_ms": 102.27410888671875,
+          "stdev_ms": 2.0410819805876987
+        },
+        "smem_ms": {
+          "64": {
+            "mean_ms": 169.35777587890624,
+            "median_ms": 166.57980346679688,
+            "min_ms": 166.4892120361328,
+            "max_ms": 249.88143920898438,
+            "stdev_ms": 15.208568361021525
+          },
+          "128": {
+            "mean_ms": 120.16510899861653,
+            "median_ms": 120.16950225830078,
+            "min_ms": 120.04863739013672,
+            "max_ms": 120.30016326904297,
+            "stdev_ms": 0.05591623170375839
+          },
+          "256": {
+            "mean_ms": 121.85729649861653,
+            "median_ms": 121.85134506225586,
+            "min_ms": 121.78892517089844,
+            "max_ms": 121.95148468017578,
+            "stdev_ms": 0.03653808518241499
+          }
+        },
+        "channelfused_ms": {
+          "mean_ms": 36.39587237040202,
+          "median_ms": 36.39432144165039,
+          "min_ms": 36.272064208984375,
+          "max_ms": 36.47328186035156,
+          "stdev_ms": 0.0422995995625827
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 420.09190877278644,
+            "median_ms": 419.7119903564453,
+            "min_ms": 419.6614990234375,
+            "max_ms": 430.9787902832031,
+            "stdev_ms": 2.056455174724749
+          },
+          "4": {
+            "mean_ms": 419.82904357910155,
+            "median_ms": 419.82994079589844,
+            "min_ms": 419.7774353027344,
+            "max_ms": 419.90447998046875,
+            "stdev_ms": 0.02574571218737686
+          },
+          "8": {
+            "mean_ms": 419.91112263997394,
+            "median_ms": 419.9180908203125,
+            "min_ms": 419.85498046875,
+            "max_ms": 419.96185302734375,
+            "stdev_ms": 0.0261600972125338
+          }
+        },
+        "best_smem_block_size": 128,
+        "best_smem_ms": 120.16510899861653,
+        "best_warpreduce_warps_per_block": 4,
+        "best_warpreduce_ms": 419.82904357910155,
+        "best_candidate": "channelfused",
+        "best_candidate_ms": 36.39587237040202,
+        "best_candidate_speedup_vs_current": 2.513767422002875,
+        "current_vs_smem_speedup": 0.7613754027481012,
+        "current_vs_channelfused_speedup": 2.513767422002875,
+        "current_vs_warpreduce_speedup": 0.21792384223854447
+      },
+      {
+        "name": "batch_128",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 128
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "supports_channelfused": true,
+        "current_ms": {
+          "mean_ms": 181.95251922607423,
+          "median_ms": 181.99983978271484,
+          "min_ms": 181.31671142578125,
+          "max_ms": 182.39439392089844,
+          "stdev_ms": 0.26875374403914415
+        },
+        "smem_ms": {
+          "64": {
+            "mean_ms": 332.5932250976563,
+            "median_ms": 332.5957336425781,
+            "min_ms": 332.4819641113281,
+            "max_ms": 332.753173828125,
+            "stdev_ms": 0.05786200436535915
+          },
+          "128": {
+            "mean_ms": 239.9916997273763,
+            "median_ms": 239.98748779296875,
+            "min_ms": 239.75978088378906,
+            "max_ms": 240.14767456054688,
+            "stdev_ms": 0.08278013535362566
+          },
+          "256": {
+            "mean_ms": 243.55760955810547,
+            "median_ms": 243.5406723022461,
+            "min_ms": 243.47036743164062,
+            "max_ms": 243.7894744873047,
+            "stdev_ms": 0.07267840825904728
+          }
+        },
+        "channelfused_ms": {
+          "mean_ms": 71.25764846801758,
+          "median_ms": 71.25780487060547,
+          "min_ms": 71.09149169921875,
+          "max_ms": 71.38813018798828,
+          "stdev_ms": 0.05851730124908387
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 840.1755167643229,
+            "median_ms": 840.1832580566406,
+            "min_ms": 840.01708984375,
+            "max_ms": 840.2698364257812,
+            "stdev_ms": 0.0593262721999556
+          },
+          "4": {
+            "mean_ms": 840.7070190429688,
+            "median_ms": 840.3300476074219,
+            "min_ms": 840.1930541992188,
+            "max_ms": 851.5641479492188,
+            "stdev_ms": 2.0513719076687886
+          },
+          "8": {
+            "mean_ms": 840.5260294596354,
+            "median_ms": 840.5197143554688,
+            "min_ms": 840.4030151367188,
+            "max_ms": 840.6817016601562,
+            "stdev_ms": 0.07053174576964827
+          }
+        },
+        "best_smem_block_size": 128,
+        "best_smem_ms": 239.9916997273763,
+        "best_warpreduce_warps_per_block": 2,
+        "best_warpreduce_ms": 840.1755167643229,
+        "best_candidate": "channelfused",
+        "best_candidate_ms": 71.25764846801758,
+        "best_candidate_speedup_vs_current": 2.553445463580511,
+        "current_vs_smem_speedup": 0.7581617173959228,
+        "current_vs_channelfused_speedup": 2.553445463580511,
+        "current_vs_warpreduce_speedup": 0.21656489102040047
+      }
+    ]
+  }
+}
