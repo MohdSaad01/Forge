@@ -1,0 +1,251 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "bd4d5a780c0bd3c7f1a9a1324b06c5e28f1fbc77",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "sync_per_layer_per_op": {
+      "device": "cuda",
+      "batch_size": 64,
+      "iterations": 30,
+      "warmup_iterations": 5,
+      "phase_mean_seconds": {
+        "transfer": 0.0003641333392200371,
+        "forward": 0.0037127533306678135,
+        "loss": 0.0005197366680173824,
+        "backward": 0.00996500333227838,
+        "optimizer": 0.0009351333292822044
+      },
+      "forward_by_layer_mean_seconds": {
+        "Conv2d": 0.0018463866629948218,
+        "ReLU": 0.0005868666727716724,
+        "MaxPool2d": 0.00042377333350790045,
+        "Flatten": 0.0001330900025398781,
+        "Linear": 0.0006272166695756217
+      },
+      "backward_by_op_mean_seconds": {
+        "cross_entropy": 0.00011570332959915201,
+        "+": 0.00023874999994101623,
+        "@": 0.0009436833361784618,
+        "relu": 0.0007129300094675273,
+        "reshape": 0.00010516666613208751,
+        "max_pool2d": 0.0006929466597891102,
+        "conv2d": 0.006680720010384296
+      }
+    },
+    "batch_size_sweep": [
+      {
+        "batch_size": 32,
+        "prefetch_size": 2,
+        "n_samples": 1024,
+        "steps": 32,
+        "epoch_wall_ms": 645.176200021524,
+        "samples_per_sec": 1587.1633206027097,
+        "mean_cpu_step_wall_ms": 12.710412498563528,
+        "gpu_forward_ms": 1.02904499694705,
+        "gpu_loss_ms": 2.3786889985203743,
+        "gpu_backward_ms": 12.207528188824654,
+        "gpu_optimizer_ms": 0.07632900006137788,
+        "gpu_busy_ms_per_step": 15.691591184353456,
+        "compute_stream_busy_total_ms": 502.1309178993106,
+        "compute_stream_utilization": 0.7782849365530824
+      },
+      {
+        "batch_size": 64,
+        "prefetch_size": 2,
+        "n_samples": 1024,
+        "steps": 16,
+        "epoch_wall_ms": 368.3210000162944,
+        "samples_per_sec": 2780.1835897347655,
+        "mean_cpu_step_wall_ms": 13.07354374876013,
+        "gpu_forward_ms": 2.045136034488678,
+        "gpu_loss_ms": 2.5008939877152443,
+        "gpu_backward_ms": 14.079487979412079,
+        "gpu_optimizer_ms": 0.07547600008547306,
+        "gpu_busy_ms_per_step": 18.700994001701474,
+        "compute_stream_busy_total_ms": 299.2159040272236,
+        "compute_stream_utilization": 0.8123780724259175
+      },
+      {
+        "batch_size": 128,
+        "prefetch_size": 2,
+        "n_samples": 1024,
+        "steps": 8,
+        "epoch_wall_ms": 257.100899994839,
+        "samples_per_sec": 3982.872094265542,
+        "mean_cpu_step_wall_ms": 15.169312500802334,
+        "gpu_forward_ms": 4.044323980808258,
+        "gpu_loss_ms": 2.1280640065670013,
+        "gpu_backward_ms": 17.825512051582336,
+        "gpu_optimizer_ms": 0.0746440002694726,
+        "gpu_busy_ms_per_step": 24.07254403922707,
+        "compute_stream_busy_total_ms": 192.58035231381655,
+        "compute_stream_utilization": 0.749045811654811
+      }
+    ],
+    "profiling_overhead": {
+      "plain_mean_seconds": 0.015134630004952972,
+      "instrumented_mean_seconds": 0.014592323335818946,
+      "overhead_fraction": -0.03583217224052055
+    },
+    "kernel_ranking": [
+      {
+        "op": "backward:conv2d",
+        "mean_seconds": 0.006680720010384296,
+        "flops": 56217600,
+        "bytes": 4863552,
+        "arithmetic_intensity": 11.558959377837432,
+        "achieved_gflops": 8.414901374794509,
+        "achieved_gbps": 0.7279981787053269,
+        "classification": "mixed_or_ambiguous",
+        "fraction_of_ceiling": 0.08047191154728672,
+        "percent_of_step": 50.969719013323136
+      },
+      {
+        "op": "forward:Conv2d",
+        "mean_seconds": 0.0018463866629948218,
+        "flops": 24072192,
+        "bytes": 2431776,
+        "arithmetic_intensity": 9.89901701472504,
+        "achieved_gflops": 13.03745985738173,
+        "achieved_gbps": 1.3170459084965889,
+        "classification": "mixed_or_ambiguous",
+        "fraction_of_ceiling": 0.1246775535108567,
+        "percent_of_step": 14.086776463691365
+      },
+      {
+        "op": "backward:@",
+        "mean_seconds": 0.0009436833361784618,
+        "flops": 6717440,
+        "bytes": 485376,
+        "arithmetic_intensity": 13.839662447257384,
+        "achieved_gflops": 7.118320036467881,
+        "achieved_gbps": 0.5143420270252707,
+        "classification": "mixed_or_ambiguous",
+        "fraction_of_ceiling": 0.06807267189794135,
+        "percent_of_step": 7.199714163714028
+      },
+      {
+        "op": "backward:relu",
+        "mean_seconds": 0.0007129300094675273,
+        "flops": 0,
+        "bytes": 0,
+        "arithmetic_intensity": 0.0,
+        "achieved_gflops": 0.0,
+        "achieved_gbps": 0.0,
+        "classification": "mixed_or_ambiguous",
+        "fraction_of_ceiling": 0.0,
+        "percent_of_step": 5.43921047465592
+      },
+      {
+        "op": "backward:max_pool2d",
+        "mean_seconds": 0.0006929466597891102,
+        "flops": 0,
+        "bytes": 4208640,
+        "arithmetic_intensity": 0.0,
+        "achieved_gflops": 0.0,
+        "achieved_gbps": 6.073541073537821,
+        "classification": "memory_bandwidth_bound",
+        "fraction_of_ceiling": 0.40254129053033766,
+        "percent_of_step": 5.286750003857757
+      },
+      {
+        "op": "forward:Linear",
+        "mean_seconds": 0.0006272166695756217,
+        "flops": 3358720,
+        "bytes": 242688,
+        "arithmetic_intensity": 13.839662447257384,
+        "achieved_gflops": 5.354959717943288,
+        "achieved_gbps": 0.38692849181480465,
+        "classification": "mixed_or_ambiguous",
+        "fraction_of_ceiling": 0.05120961322878711,
+        "percent_of_step": 4.785271252058178
+      },
+      {
+        "op": "forward:ReLU",
+        "mean_seconds": 0.0005868666727716724,
+        "flops": 0,
+        "bytes": 0,
+        "arithmetic_intensity": 0.0,
+        "achieved_gflops": 0.0,
+        "achieved_gbps": 0.0,
+        "classification": "mixed_or_ambiguous",
+        "fraction_of_ceiling": 0.0,
+        "percent_of_step": 4.47742599045628
+      },
+      {
+        "op": "forward:MaxPool2d",
+        "mean_seconds": 0.00042377333350790045,
+        "flops": 0,
+        "bytes": 2242560,
+        "arithmetic_intensity": 0.0,
+        "achieved_gflops": 0.0,
+        "achieved_gbps": 5.291885597039796,
+        "classification": "memory_bandwidth_bound",
+        "fraction_of_ceiling": 0.3507348401499274,
+        "percent_of_step": 3.2331257260689306
+      },
+      {
+        "op": "backward:+",
+        "mean_seconds": 0.00023874999994101623,
+        "flops": 0,
+        "bytes": 0,
+        "arithmetic_intensity": 0.0,
+        "achieved_gflops": 0.0,
+        "achieved_gbps": 0.0,
+        "classification": "mixed_or_ambiguous",
+        "fraction_of_ceiling": 0.0,
+        "percent_of_step": 1.8215133088214115
+      },
+      {
+        "op": "forward:Flatten",
+        "mean_seconds": 0.0001330900025398781,
+        "flops": 0,
+        "bytes": 0,
+        "arithmetic_intensity": 0.0,
+        "achieved_gflops": 0.0,
+        "achieved_gbps": 0.0,
+        "classification": "mixed_or_ambiguous",
+        "fraction_of_ceiling": 0.0,
+        "percent_of_step": 1.0153935537480845
+      },
+      {
+        "op": "backward:cross_entropy",
+        "mean_seconds": 0.00011570332959915201,
+        "flops": 0,
+        "bytes": 0,
+        "arithmetic_intensity": 0.0,
+        "achieved_gflops": 0.0,
+        "achieved_gbps": 0.0,
+        "classification": "mixed_or_ambiguous",
+        "fraction_of_ceiling": 0.0,
+        "percent_of_step": 0.8827441038403069
+      },
+      {
+        "op": "backward:reshape",
+        "mean_seconds": 0.00010516666613208751,
+        "flops": 0,
+        "bytes": 0,
+        "arithmetic_intensity": 0.0,
+        "achieved_gflops": 0.0,
+        "achieved_gbps": 0.0,
+        "classification": "mixed_or_ambiguous",
+        "fraction_of_ceiling": 0.0,
+        "percent_of_step": 0.8023559457646129
+      }
+    ]
+  }
+}

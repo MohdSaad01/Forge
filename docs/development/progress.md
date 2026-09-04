@@ -1997,3 +1997,59 @@ band. CPU/CUDA regression benchmark categories (`forward`, `backward`,
 **Why no ADR.** Kernel-selection logic changed behind an unchanged
 `CUDABackend.conv2d_backward` public method signature -- no public API,
 Tensor semantics, or cross-cutting architectural boundary was touched.
+
+### M35 — CUDA performance characterization and roofline-style analysis
+A measurement-only milestone (`MEASURE -> MODEL -> CLASSIFY -> RANK ->
+DECIDE`, no production CUDA changes by default): built a small roofline
+library (`benchmarks/roofline.py` -- documented FLOP/byte-traffic
+conventions, arithmetic intensity, a four-way bottleneck classifier) and
+five new characterization scripts (`benchmarks/m35_hardware.py`,
+`m35_kernels.py`, `m35_transfer_stream_alloc.py`, `m35_mnist.py`,
+`m35_report.py`), all reusing Forge's existing kernels and existing
+benchmark scripts directly rather than adding new instrumentation or
+duplicate methodology -- practical compute/bandwidth ceilings come from
+Forge's own `cf_matmul_f32`/`cf_add_f32` at large sizes (no new
+hand-tuned microkernels added to `kernels.cu`), and the transfer/stream/
+allocator characterization calls `transfer_bench`/`pipeline_profile`/
+`stream_dependency_bench`/`allocator_bench` directly. See
+`docs/performance/m35-roofline-characterization.md` for the full report.
+
+**Measured practical ceilings (940MX):** 104.57 GFLOP/s (compute, `cf_matmul_f32`
+large square GEMM, ~11% of the 953.1 GFLOP/s theoretical peak) and 15.09 GB/s
+(bandwidth, `cf_add_f32` large streaming add, ~94% of the 16.02 GB/s
+theoretical peak) -- clearly distinguished from the theoretical spec
+throughout.
+
+**Finding.** In a real MNIST training step, `conv2d` backward (dInput+dWeight
+combined) is 50.97% of CUDA time and sits at only ~8% of its practical
+roofline ceiling -- by a wide margin the top optimization-headroom candidate
+(`runtime_fraction * (1 - fraction_of_ceiling)`), ahead of `conv2d` forward
+(14.09%, ~12.5% of ceiling) and matmul backward (7.20%). GEMM itself already
+reaches 85-108 GFLOP/s (81-100%+ of the measured ceiling) at every tested
+shape -- compute-bound and already near-optimal for this hardware/kernel.
+Elementwise/reduction/optimizer ops are memory-bandwidth-bound at medium/
+large sizes (12-15 GB/s, near the 15.09 GB/s ceiling) and latency-bound at
+small sizes, as expected. The M34 256-1152-weight-element region (previously
+untested) now has data: im2col+GEMM is already faster than the direct kernel
+across the whole region (0.60-0.81x), suggesting the existing conservative
+256-element production threshold is not leaving performance on the table in
+that range -- the threshold itself is left unchanged per the brief. D2H
+async transfers pay a fresh `cudaHostAlloc` per call (Forge always allocates
+a new pinned destination buffer), making D2H submission (~1.3ms) far more
+expensive than H2D submission (~85us, which reuses an existing pinned source)
+at a comparable size -- a real, measured asymmetry, flagged as a candidate
+for a future milestone, not fixed here.
+
+**Decision: no production optimization implemented**, per the brief's own
+default. `conv2d` backward is named as the clear M36 candidate (Outcome A:
+large runtime contribution, far below its practical ceiling) -- but *which*
+specific algorithmic change is not chosen here; M35 is characterization
+only.
+
+**Tests.** 1,237 tests total (1,203 pre-existing + 34 new,
+`tests/test_benchmarks_roofline.py`, deterministic FLOP/byte/AI/
+classification unit tests with no CUDA dependency), all passing after a
+clean CUDA rebuild on the 940MX. No `forge/` production code changed.
+
+**Why no ADR.** No public API, Tensor semantics, or architectural boundary
+was touched -- this milestone added benchmarking/analysis code only.

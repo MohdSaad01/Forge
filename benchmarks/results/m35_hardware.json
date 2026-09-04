@@ -1,0 +1,86 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "bd4d5a780c0bd3c7f1a9a1324b06c5e28f1fbc77",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "theoretical_specs": {
+    "gpu": "NVIDIA GeForce 940MX (GM108, Maxwell) -- public specification, not runtime-queried",
+    "sm_count": 3,
+    "cuda_cores_per_sm": 128,
+    "cuda_cores_total": 384,
+    "memory_bus_bits": 64,
+    "sm_clock_mhz": 1241.0,
+    "mem_clock_mhz": 1001.0,
+    "theoretical_fp32_gflops": 953.088,
+    "theoretical_memory_gbps": 16.016,
+    "note": "Derived from public GM108 core-count specs + this run's nvidia-smi max clocks. Not an achievable Forge target -- see practical_ceilings for measured numbers."
+  },
+  "compute_ceiling_sweep": {
+    "sweep": [
+      {
+        "dim": 512,
+        "timing": {
+          "mean_s": 0.0025670549551645916,
+          "median_s": 0.002567392110824585,
+          "min_s": 0.0025584321022033693,
+          "max_s": 0.002573215961456299,
+          "stdev_s": 4.261097983617739e-06
+        },
+        "achieved_gflops": 104.5694232061303
+      },
+      {
+        "dim": 1024,
+        "timing": {
+          "mean_s": 0.0216727232615153,
+          "median_s": 0.02171116828918457,
+          "min_s": 0.021321535110473633,
+          "max_s": 0.021807552337646485,
+          "stdev_s": 0.00012523337791915673
+        },
+        "achieved_gflops": 99.08693162770786
+      },
+      {
+        "dim": 2048,
+        "timing": {
+          "mean_s": 0.17775188903808595,
+          "median_s": 0.17801251220703124,
+          "min_s": 0.17684051513671875,
+          "max_s": 0.17838319396972657,
+          "stdev_s": 0.0005047826100045795
+        },
+        "achieved_gflops": 96.65083885729598
+      }
+    ],
+    "practical_compute_gflops": 104.5694232061303,
+    "best_dim": 512
+  },
+  "bandwidth_ceiling_measurement": {
+    "elements": 20000000,
+    "bytes_moved": 240000000,
+    "timing": {
+      "mean_s": 0.015906685829162596,
+      "median_s": 0.01590544033050537,
+      "min_s": 0.01589900779724121,
+      "max_s": 0.015926688194274903,
+      "stdev_s": 7.212877580349257e-06
+    },
+    "practical_bandwidth_gbps": 15.08799523531136
+  },
+  "ceilings": {
+    "practical_compute_gflops": 104.5694232061303,
+    "practical_bandwidth_gbps": 15.08799523531136
+  }
+}

@@ -26,6 +26,16 @@ benchmarks/
                                  characterization (Milestone 31; not a benchmark category -- see
                                  docs/performance/pipeline-profiling.md)
     memory.py                   cuda_memory_extra() -- CUDA memory-stats reporting for BenchmarkResult.extra (Milestone 22)
+    roofline.py                 FLOP/byte/AI/classification model library, no CUDA dependency (Milestone 35;
+                                 see docs/performance/m35-roofline-characterization.md)
+    m35_hardware.py               hardware characterization + practical compute/bandwidth ceilings (Milestone 35)
+    m35_kernels.py                 elementwise/reduction/GEMM/Conv2d/MaxPool2d/Dropout/optimizer roofline sweep,
+                                    M34 256-1152 threshold region (Milestone 35)
+    m35_transfer_stream_alloc.py    transfer/stream-dependency/allocator characterization, reusing
+                                     transfer_bench/pipeline_profile/stream_dependency_bench/allocator_bench directly (Milestone 35)
+    m35_mnist.py                     full MNIST workload characterization, batch-size scaling, profiling overhead (Milestone 35)
+    m35_report.py                     ranking/Amdahl/optimization-headroom + plots + docs/performance/
+                                       m35-roofline-characterization.md generator (Milestone 35; needs matplotlib, a dev extra)
     run.py                    CLI entry point
     __main__.py                `python -m benchmarks`
     results/latest.json         most recent full run's structured output (not test data)

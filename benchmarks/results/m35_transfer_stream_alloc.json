@@ -1,0 +1,194 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "bd4d5a780c0bd3c7f1a9a1324b06c5e28f1fbc77",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "transfers": {
+      "pageable_sync": {
+        "tiny": {
+          "h2d": {
+            "mean_s": 8.036000072024763e-05,
+            "bytes": 4096,
+            "gbps": 0.050970631698463456
+          },
+          "d2h": {
+            "mean_s": 6.908500799909234e-05,
+            "bytes": 4096,
+            "gbps": 0.05928927445523079
+          }
+        },
+        "small": {
+          "h2d": {
+            "mean_s": 0.000446099994587712,
+            "bytes": 400000,
+            "gbps": 0.89665995259579
+          },
+          "d2h": {
+            "mean_s": 0.00045231500116642563,
+            "bytes": 400000,
+            "gbps": 0.8843394514187762
+          }
+        },
+        "medium": {
+          "h2d": {
+            "mean_s": 0.0050250650034286085,
+            "bytes": 4000000,
+            "gbps": 0.7960096033127522
+          },
+          "d2h": {
+            "mean_s": 0.00592905999510549,
+            "bytes": 4000000,
+            "gbps": 0.6746431986355422
+          }
+        }
+      },
+      "pinned_async_h2d": {
+        "small": {
+          "bytes": 4096,
+          "mean_ms": 0.17181226851729056,
+          "effective_gbps": 0.02383997391657624
+        },
+        "medium": {
+          "bytes": 400000,
+          "mean_ms": 0.2721856012940407,
+          "effective_gbps": 1.4695854523468421
+        },
+        "large": {
+          "bytes": 4000000,
+          "mean_ms": 2.577886923154195,
+          "effective_gbps": 1.551658439349142
+        }
+      },
+      "pinned_async_d2h": {
+        "small": {
+          "bytes": 4096,
+          "mean_ms": 0.007343999932830533,
+          "effective_gbps": 0.5577342098941599
+        },
+        "medium": {
+          "bytes": 400000,
+          "mean_ms": 0.5572159881393115,
+          "effective_gbps": 0.7178544918204943
+        },
+        "large": {
+          "bytes": 4000000,
+          "mean_ms": 3.2977599779764812,
+          "effective_gbps": 1.2129445522758804
+        }
+      },
+      "submission_vs_completion": {
+        "h2d_submission_s": 8.268333234203358e-05,
+        "d2h_submission_s": 0.0012704633312144626
+      }
+    },
+    "streams": {
+      "same_stream_baseline_s": 4.804233341322591e-05,
+      "cross_stream_dependency_s": 8.558033325243741e-05,
+      "multi_input_dependency_s": 0.00045561566677254937,
+      "event_creation_s": 2.5704500149004163e-06,
+      "cross_stream_allocator_reuse_s": 0.00022591000015381724,
+      "cross_stream_overhead_s": 3.75379998392115e-05,
+      "multi_input_overhead_s": 0.0004075733333593235,
+      "cross_stream_overhead_fraction_of_op": 0.7813525524735941
+    },
+    "allocator": {
+      "per_size": [
+        {
+          "scale": "tiny",
+          "nbytes": 4096,
+          "direct": {
+            "mean_seconds": 5.41599903954193e-06,
+            "median_seconds": 5.399982910603285e-06,
+            "min_seconds": 5.199981387704611e-06,
+            "max_seconds": 1.0400020983070135e-05,
+            "stdev_seconds": 3.751639161833962e-07,
+            "iterations": 200
+          },
+          "cached": {
+            "mean_seconds": 2.0229993970133363e-06,
+            "median_seconds": 2.00001522898674e-06,
+            "min_seconds": 1.8999562598764896e-06,
+            "max_seconds": 2.900022082030773e-06,
+            "stdev_seconds": 1.1505299744558595e-07,
+            "iterations": 200,
+            "cache_hit_count_delta": 200,
+            "cache_miss_count_delta": 0
+          },
+          "speedup_x": 2.677212384510773
+        },
+        {
+          "scale": "small",
+          "nbytes": 65536,
+          "direct": {
+            "mean_seconds": 5.383500829339027e-06,
+            "median_seconds": 5.399982910603285e-06,
+            "min_seconds": 5.199981387704611e-06,
+            "max_seconds": 5.89998671784997e-06,
+            "stdev_seconds": 8.898083187748192e-08,
+            "iterations": 200
+          },
+          "cached": {
+            "mean_seconds": 2.022500557359308e-06,
+            "median_seconds": 2.00001522898674e-06,
+            "min_seconds": 1.8999562598764896e-06,
+            "max_seconds": 2.700020559132099e-06,
+            "stdev_seconds": 9.320374004096766e-08,
+            "iterations": 200,
+            "cache_hit_count_delta": 200,
+            "cache_miss_count_delta": 0
+          },
+          "speedup_x": 2.661804373674949
+        },
+        {
+          "scale": "medium",
+          "nbytes": 1048576,
+          "direct": {
+            "mean_seconds": 0.0004508645023452118,
+            "median_seconds": 0.0004046499961987138,
+            "min_seconds": 0.0003727999865077436,
+            "max_seconds": 0.0011266000219620764,
+            "stdev_seconds": 0.00010729181452188742,
+            "iterations": 200
+          },
+          "cached": {
+            "mean_seconds": 3.883999597746879e-06,
+            "median_seconds": 4.100031219422817e-06,
+            "min_seconds": 2.100015990436077e-06,
+            "max_seconds": 2.5999965146183968e-05,
+            "stdev_seconds": 2.4351980279149774e-06,
+            "iterations": 200,
+            "cache_hit_count_delta": 200,
+            "cache_miss_count_delta": 0
+          },
+          "speedup_x": 116.08253064875697
+        }
+      ],
+      "multi_size": {
+        "sizes_bytes": [
+          4096,
+          65536,
+          1048576
+        ],
+        "requests_per_size": 200,
+        "total_requests": 600,
+        "cache_hit_count_delta": 600,
+        "cache_miss_count_delta": 0,
+        "cached_bytes_after": 1118208
+      }
+    }
+  }
+}
