@@ -54,6 +54,39 @@ __declspec(dllexport) int cf_synchronize() {
     return static_cast<int>(cudaDeviceSynchronize());
 }
 
+// -- pinned (page-locked) host memory and async transfers (Milestone 29) --------
+//
+// `cf_host_alloc`/`cf_host_free` are real `cudaHostAlloc`/`cudaFreeHost` calls
+// -- genuine page-locked host memory, never ordinary NumPy/malloc memory
+// wearing a "pinned" label (see `forge/backend/cuda/pinned.py`).
+// `cudaHostAllocDefault` (portable, non-mapped, non-write-combined) is the
+// simplest correct choice for Forge's use case: a plain page-locked buffer
+// `cudaMemcpyAsync` can transfer without staging. `cf_memcpy_h2d_async`/
+// `cf_memcpy_d2h_async` are real `cudaMemcpyAsync` calls, each taking an
+// explicit `cudaStream_t` (`NULL` meaning CUDA's default stream, the same
+// convention every kernel-launcher below already uses) -- never a
+// synchronous `cudaMemcpy` in disguise, and never followed by an implicit
+// `cudaDeviceSynchronize()` here (that decision belongs to the caller, see
+// `CUDABackend.from_array_async`/`to_numpy_async`).
+
+__declspec(dllexport) int cf_host_alloc(void** out_ptr, size_t nbytes) {
+    return static_cast<int>(cudaHostAlloc(out_ptr, nbytes, cudaHostAllocDefault));
+}
+
+__declspec(dllexport) int cf_host_free(void* ptr) {
+    return static_cast<int>(cudaFreeHost(ptr));
+}
+
+__declspec(dllexport) int cf_memcpy_h2d_async(void* dst, const void* src, size_t nbytes, void* stream) {
+    return static_cast<int>(
+        cudaMemcpyAsync(dst, src, nbytes, cudaMemcpyHostToDevice, static_cast<cudaStream_t>(stream)));
+}
+
+__declspec(dllexport) int cf_memcpy_d2h_async(void* dst, const void* src, size_t nbytes, void* stream) {
+    return static_cast<int>(
+        cudaMemcpyAsync(dst, src, nbytes, cudaMemcpyDeviceToHost, static_cast<cudaStream_t>(stream)));
+}
+
 // -- CUDA streams and events (Milestone 27; cross-stream waits in Milestone 28) --
 //
 // Real `cudaStream_t`/`cudaEvent_t` handles, exported as opaque `void*` so

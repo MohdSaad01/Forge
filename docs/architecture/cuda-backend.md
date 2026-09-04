@@ -2030,12 +2030,12 @@ driver 582.53, CUDA Toolkit 12.6):
   fact that small workloads, and even the "medium" 512x512 matmul, run
   slower on this CUDA backend than on CPU) is in
   `docs/performance/benchmarking.md` (Milestone 11), not repeated here.
-- **Single stream, no asynchronous execution (Milestone 26)**: Forge issues
-  every kernel launch and memory copy on CUDA's default stream and
-  synchronizes after every operation -- see **CUDA Execution and
-  Synchronization Semantics** above for the full audit. No user-visible CUDA
-  streams, multiple/concurrent stream execution, CUDA events as a public
-  API, asynchronous/nonblocking `Tensor` operations, stream-aware allocator
-  reuse, or CUDA Graphs exist or were introduced by this milestone -- see
-  that section's **Future Stream-Aware Design** for exactly what each of
-  these would require if ever added.
+- **Single stream, no asynchronous execution, was true through Milestone
+  26**; Milestones 27-29 built directly on top of it (real CUDA streams and
+  opt-in asynchronous compute in Milestone 27, automatic cross-stream
+  dependencies in Milestone 28, pinned host memory and opt-in asynchronous
+  H2D/D2H transfers in Milestone 29) without changing this document's
+  default-stream, fully-synchronous behavior -- see `docs/architecture/
+  cuda-streams.md` and `docs/architecture/cuda-transfers.md` for the full
+  contracts. CUDA events remain internal-only (no public `forge.cuda.Event`);
+  no CUDA Graphs, multi-GPU, or unified memory exist.

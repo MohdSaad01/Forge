@@ -48,6 +48,20 @@ class CPUBackend(Backend):
     device_type = "cpu"
 
     def from_array(self, data: Any, dtype: "np.dtype | None") -> np.ndarray:
+        # Milestone 29: a pinned-memory-backed array (`forge.backend.cuda.
+        # pinned._PinnedArray`, produced by `forge.cuda.PinnedMemory(...).
+        # numpy()`) is returned as-is rather than copied, so `Tensor(pinned.
+        # numpy(...), device="cpu")` stays usable as a `non_blocking=True`
+        # host-to-device transfer source -- copying it here would silently
+        # sever the `_pinned_owner` back-reference `CUDABackend.
+        # from_array_async` (`forge/backend/cuda/backend.py`) checks for,
+        # turning every such Tensor into an unusable pageable copy. This
+        # duck-typed check adds no CUDA dependency to the CPU backend (it is
+        # `None`/absent for every ordinary array) and changes nothing about
+        # the "always copy" contract for every other input.
+        if isinstance(data, np.ndarray) and getattr(data, "_pinned_owner", None) is not None:
+            if dtype is None or np.dtype(dtype) == data.dtype:
+                return data
         return np.array(data, dtype=dtype)
 
     def to_numpy(self, storage: Any) -> np.ndarray:

@@ -1541,3 +1541,113 @@ allocator.md`, the Milestone 28 note in `docs/architecture/cuda-backend.md`'s
 new: same-stream baseline 56.43 us/op, cross-stream dependency 79.04 us/op,
 ~1.40x overhead; default-stream M20 MNIST throughput unaffected at 19.07
 ms/iteration, within the M26 baseline range).
+
+### M29 — Async CUDA transfers and pinned memory
+Adds the lower-level primitives real asynchronous host<->device transfer
+requires: real CUDA pinned (page-locked) host memory, real `cudaMemcpyAsync`
+bindings, and an explicit `Tensor.to(device, non_blocking=True)` opt-in --
+without changing `.to()`'s existing default (`non_blocking=False`) contract
+at all.
+
+**Pinned memory.** `forge.cuda.PinnedMemory` (`forge/backend/cuda/pinned.py`)
+wraps one real `cudaHostAlloc`/`cudaFreeHost` allocation -- direct, uncached
+lifecycle per the milestone brief's Section 25 (no pinned caching allocator
+without profiling justification). `PinnedMemory.numpy()` returns a
+`_PinnedArray` (`np.ndarray` subclass) carrying a strong `_pinned_owner`
+back-reference to the `PinnedMemory` instance -- the entire lifetime
+mechanism: as long as any array (or a `Tensor` built from it) stays
+reachable, ordinary CPython refcounting keeps the pinned allocation alive,
+and `free()`/`__del__` waits (`CUDAEvent.synchronize()`) for any in-flight
+transfer's recorded completion event before the real `cudaFreeHost` call
+(Invariant 1). `forge.cuda.pinned_memory_stats()` is a small, separate
+dataclass (`pinned_active_bytes`/`pinned_peak_bytes`/
+`pinned_allocation_count`/`pinned_free_count`) -- deliberately not folded
+into `CUDAMemoryStats`, since pinned host bytes are a conceptually distinct
+resource from device `reserved_bytes`/`cached_bytes`/`pending_bytes`.
+
+**Async H2D/D2H.** `kernels.cu` gained `cf_host_alloc`/`cf_host_free` and
+`cf_memcpy_h2d_async`/`cf_memcpy_d2h_async` (real `cudaMemcpyAsync`, an
+explicit stream argument, never followed by `cudaDeviceSynchronize()`).
+`CUDABackend.from_array_async`/`to_numpy_async` (`backend.py`) submit on the
+current Forge stream (`self._stream_handle()`, the same ambient mechanism
+every other method already uses) and return immediately. H2D requires the
+source array to already be pinned (`_pinned_owner` set) -- a pageable source
+raises `CUDAError` rather than being silently staged through a hidden
+pinned buffer (**Policy: Option A**, chosen over silent fallback or hidden
+staging, both explicitly disfavored by the milestone brief's Section 13/14).
+D2H always succeeds: Forge allocates the pinned destination buffer itself.
+
+**Cross-stream dependencies needed zero new mechanism.** `CUDAStorage.
+__init__` already sets `last_stream = current_stream()` unconditionally, so
+an async H2D result's stream provenance is correct with no new code; a
+later cross-stream consumer is handled by M28's existing `_stream_guard`.
+`to_numpy_async` calls `_stream_guard((storage,), ...)` before submitting
+its copy, so a cross-stream D2H also reuses the exact same M28 mechanism.
+Verified with a `cf_synchronize`-spy (zero `cudaDeviceSynchronize()` calls)
+in both directions: `tests/test_cuda_transfer_dependencies.py`.
+
+**Host-read synchronization: a synchronizing `_data` property.**
+`Tensor._data` (`forge/tensor/tensor.py`) was converted from a plain
+attribute to a property backed by `Tensor._storage`, gated by `Tensor.
+_pending` (a `forge.backend.cuda.transfer.PendingTransfer` -- the smallest
+possible completion handle, one `CUDAEvent`, no futures/promises
+subsystem). Every existing Tensor method that reads `self._data` --
+`.numpy()`, `__repr__`, every op's forward/backward, `backward()`,
+persistence -- already passes through this one chokepoint, so none needed
+individual changes. On first access, the pending transfer is synchronized
+and the tensor's storage is detached from pinned memory (`np.array(...,
+copy=True)`) -- otherwise NumPy's ufunc subclass propagation
+(`__array_finalize__`) would make every array *derived* from the result
+also retain a `_pinned_owner` reference, keeping a potentially large pinned
+buffer alive indefinitely. `forge/backend/cpu.py`'s `CPUBackend.from_array`
+gained one narrow exception (return a `_PinnedArray` as-is, never copy it)
+so that `Tensor(pinned.numpy(...), device="cpu")` -- the natural way to
+build a pinned H2D source -- does not itself silently lose the pinned
+buffer via the constructor's normal always-copy path.
+
+**Allocator, autograd, optimizer, persistence needed zero code changes** --
+verified directly, not just argued: the Section-35-mandated allocator race
+test (`tests/test_cuda_transfer_allocator.py::
+test_async_h2d_release_never_hands_the_still_in_flight_block_to_another_stream`),
+an autograd test using an async-transferred constant operand in a
+differentiable computation, and a persistence test training on an
+async-transferred input then calling `save_model()` with no explicit sync.
+
+**One hardware-observed quirk (documented, not a Forge bug):** on the
+940MX/driver 582.53, an out-of-memory `cudaHostAlloc` request has been
+observed to leave the process's CUDA context unable to serve small
+subsequent `cudaMalloc` calls -- reproduced directly (it broke an unrelated,
+pre-existing allocator test when both ran in the same pytest process). The
+regression test for this failure path now runs in an isolated subprocess,
+keeping the real, hardware-verified `cudaHostAlloc` failure test intact
+while containing the quirk's blast radius to a throwaway process.
+
+**Tests.** 1,113 tests total (1,072 pre-existing + 41 new), all passing on
+the 940MX; 39 of the 41 new tests are CUDA-hardware-gated (2 are
+CUDA-unavailable-path tests that run everywhere), across `tests/
+test_cuda_pinned_memory.py`, `test_cuda_pinned_memory_availability.py`,
+`test_cuda_async_transfer.py`, `test_cuda_transfer_dependencies.py`,
+`test_cuda_transfer_allocator.py`, `test_cuda_transfer_stress.py`, and
+`test_cuda_transfer_persistence.py`. Every pre-existing test passes
+completely unmodified except one intentional, narrowly-scoped fix
+(`CPUBackend.from_array`'s pinned-array exception, above) that changes
+behavior for exactly zero pre-existing call sites (it only ever triggers
+for a `_PinnedArray`, which no pre-Milestone-29 code path ever produces).
+New coverage: pinned allocation/free/lifetime/leak/failure handling, NumPy
+interoperability, H2D/D2H async correctness against synchronous references
+(small/large/odd-shaped/float32/float64), the nonblocking pageable-source
+policy, cross-stream H2D->compute and compute->D2H with no
+`cudaDeviceSynchronize()`, the mandatory allocator race test, a 30-iteration
+4-stream stress test with before/after leak checks on both device and
+pinned memory counters, and persistence safety.
+
+See `docs/architecture/cuda-transfers.md` (new) for the full design and
+contract, updates to `docs/architecture/cuda-streams.md` (Sections 5/19),
+`docs/architecture/cuda-backend.md`, and `docs/architecture/
+cuda-memory-allocator.md`, and the **Milestone 29** section in
+`docs/performance/benchmarking.md` (`benchmarks/async_transfer_bench.py`,
+new: pinned H2D ~1.8-1.9x faster than pageable at 4 MB, async submission
+~30-60x faster than full completion, H2D transfer/compute overlap
+0.97x-1.24x, D2H transfer/compute overlap 0.86x-0.91x (memory-bandwidth
+contention, reported as measured); default-stream M20 MNIST throughput
+unaffected at 19.66-19.83 ms/iteration, within the M26-28 baseline range).

@@ -1009,12 +1009,12 @@ batch=64, 5 warmup + 30 steady-state iteration configuration used since
 Milestone 21 -- default-stream mode throughout, since it never calls
 `forge.cuda.stream()`):
 
-| Metric | M26 (post-sync-audit) | M27, run 1 | M27, run 2 | M28 |
-|---|---:|---:|---:|---:|
-| Mean/median iteration time (CUDA) | 18.56-19.53 ms | 23.03 ms | 27.47 ms | 19.07 ms |
+| Metric | M26 (post-sync-audit) | M27, run 1 | M27, run 2 | M28 | M29 |
+|---|---:|---:|---:|---:|---:|
+| Mean/median iteration time (CUDA) | 18.56-19.53 ms | 23.03 ms | 27.47 ms | 19.07 ms | 19.66-19.83 ms |
 
-M28's number falls back within the M26 baseline range and below both of
-M27's own runs -- consistent with the already-documented WDDM
+M28's (and M29's) numbers fall back within the M26 baseline range and below
+both of M27's own runs -- consistent with the already-documented WDDM
 driver-scheduling variance (Milestone 21's benchmarking notes) across
 separate runs on this hardware, not a systematic regression. This is the
 expected result: every storage's `last_stream` stays `None` throughout
@@ -1022,3 +1022,88 @@ default-stream execution, so `_stream_guard`'s Milestone 28 producer-
 collection loop degenerates to the identical no-op it already was in M27
 (Section 26 of the M28 brief: "same-stream performance does not materially
 regress").
+
+## Milestone 29: Pinned memory and asynchronous transfer overhead
+
+### Purpose
+
+Measure the actual benefit of pinned host memory + `cudaMemcpyAsync` over
+the pre-existing pageable/synchronous `.to()` path, confirm
+`non_blocking=True` genuinely returns before the transfer completes (not a
+disguised synchronous call), and demonstrate real transfer/compute overlap
+where the hardware permits it -- see `docs/architecture/cuda-transfers.md`
+for the full design these numbers support.
+
+    python -m benchmarks.async_transfer_bench
+
+Not part of `python -m benchmarks`'s category list (matching
+`stream_bench.py`/`stream_dependency_bench.py`'s "diagnostic script"
+precedent). `timing.py`'s synchronize-bracketed methodology throughout;
+overlap comparisons are a median of 7 trials, matching `stream_bench.py`.
+
+### Measured example (940MX, real hardware, driver 582.53)
+
+**Pinned (async, then `forge.cuda.synchronize()`) vs. pageable (synchronous) H2D:**
+
+| Size | Bytes | Pageable | Pinned (submit + sync) |
+|---|---:|---:|---:|
+| tiny | 4,096 | 0.08-0.14 ms | 0.09-0.15 ms |
+| small | 400,000 | 0.44-0.69 ms (0.58-0.92 GB/s) | 0.33-0.57 ms (0.70-1.23 GB/s) |
+| medium | 4,000,000 | 4.76-5.03 ms (0.80-0.84 GB/s) | 2.51-2.71 ms (1.48-1.59 GB/s) |
+
+At 4 MB, avoiding the driver's internal pageable-to-pinned staging copy
+makes the pinned path consistently ~1.8-1.9x faster across runs. At the
+tiny scale, fixed per-call (Python + driver launch) overhead dominates and
+pinned shows no measurable advantage -- an honest result, not a bug.
+Neither number claims PCIe bus saturation; see `docs/architecture/
+cuda-transfers.md`'s **Benchmark methodology and results** section.
+
+**Async submission latency vs. synchronized completion** (4 MB H2D):
+
+| Measurement | Median |
+|---|---:|
+| submission only (`cudaMemcpyAsync` queued, host returns) | 0.04-0.09 ms |
+| full completion (submission + `forge.cuda.synchronize()`) | 2.46-2.65 ms |
+
+A ~30-60x gap directly confirms `non_blocking=True` does not secretly
+synchronize before returning to Python.
+
+**H2D transfer / compute overlap** (8 MB H2D on one stream, concurrently
+with 400 chained 20,000-element adds on another):
+
+| Measurement | Median |
+|---|---:|
+| sequential | 22.6-37.1 ms |
+| concurrent | 21.8-30.0 ms |
+| speedup | 0.97x-1.24x |
+
+**D2H transfer / compute overlap** (same shapes, D2H instead of H2D):
+
+| Measurement | Median |
+|---|---:|
+| sequential | 25.4-26.1 ms |
+| concurrent | 27.9-30.3 ms |
+| speedup | 0.86x-0.91x |
+
+H2D overlap is real but modest, consistent with Milestone 27's own finding
+that the 940MX's 3 SMs leave little headroom for independent-kernel
+overlap once one workload is already substantial. D2H overlap measured
+*below* 1.0x in every run -- both the D2H copy and the compute are
+memory-bandwidth-bound, and appear to contend for the same memory
+controller/PCIe path on this hardware rather than overlap productively.
+Reported as measured, per the milestone brief's explicit instruction not to
+tune the numbers to look better than they are; every value produced by the
+concurrent configuration was independently verified bit-exact against a
+synchronous reference by `tests/test_cuda_transfer_dependencies.py` and
+`tests/test_cuda_async_transfer.py` regardless of the timing result.
+
+### Default-stream regression check
+
+`benchmarks/mnist_bench.py`'s default-stream (fully synchronous, no
+`forge.cuda.stream()` involved) CUDA training measurement after this
+milestone's changes: mean 19.83 ms / median 19.66 ms per iteration (3,227
+samples/sec) -- within the M26 baseline range (18.56-19.53 ms) and
+consistent with M28's own 19.07 ms, confirming pinned memory/async
+transfer support adds no overhead to the pre-existing synchronous path (no
+CUDA tensor construction, transfer, or compute in this benchmark ever calls
+any of the new async code paths).

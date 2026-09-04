@@ -43,7 +43,9 @@ from ...exceptions import CUDAError
 from ..base import Backend
 from . import allocator as _allocator
 from . import build as _build
+from . import pinned as _pinned
 from . import stream as _stream
+from . import transfer as _transfer
 
 _COMPUTE_DTYPES = (np.dtype(np.float32), np.dtype(np.float64))
 _SUFFIX = {np.dtype(np.float32): "f32", np.dtype(np.float64): "f64"}
@@ -79,6 +81,16 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
 
     lib.cf_synchronize.argtypes = []
     lib.cf_synchronize.restype = ctypes.c_int
+
+    # -- pinned host memory and async transfers (Milestone 29) -- see pinned.py --
+    lib.cf_host_alloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
+    lib.cf_host_alloc.restype = ctypes.c_int
+    lib.cf_host_free.argtypes = [ctypes.c_void_p]
+    lib.cf_host_free.restype = ctypes.c_int
+    for name in ("cf_memcpy_h2d_async", "cf_memcpy_d2h_async"):
+        fn = getattr(lib, name)
+        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+        fn.restype = ctypes.c_int
 
     # -- CUDA streams and events (Milestone 27) -- see stream.py --
     lib.cf_stream_create.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
@@ -505,6 +517,93 @@ class CUDABackend(Backend):
             code = self._lib.cf_memcpy_d2h(host.ctypes.data_as(ctypes.c_void_p), storage.ptr, ctypes.c_size_t(host.nbytes))
             self._check(code, "device-to-host transfer")
         return host
+
+    # -- asynchronous transfer (Milestone 29) -------------------------------
+    #
+    # `from_array_async`/`to_numpy_async` back `Tensor.to(..., non_blocking=
+    # True)` (`forge/tensor/tensor.py`). Both submit a real `cudaMemcpyAsync`
+    # on the current Forge stream (`self._stream_handle()`) and return to
+    # Python immediately -- neither calls `_maybe_synchronize`/
+    # `cudaDeviceSynchronize()` after the copy, which is the entire point
+    # (Section 10/54 of the milestone brief: never synchronize the whole
+    # device after an async submission). See `docs/architecture/
+    # cuda-transfers.md` for the full contract these implement.
+
+    def from_array_async(self, host_array: np.ndarray, dtype: "np.dtype | None") -> CUDAStorage:
+        """H2D async: `host_array` must already be pinned host memory (Section 13, Option A).
+
+        Raises `CUDAError` if `host_array` was not allocated via
+        `forge.cuda.PinnedMemory` -- Forge deliberately never silently stages
+        ordinary pageable memory through a hidden pinned buffer (Section 14):
+        that would turn one explicit, predictable allocation into a hidden
+        one on every call. The resulting `CUDAStorage` is constructed with
+        `last_stream` set to whatever stream this copy was actually issued on
+        (`CUDAStorage.__init__` already does this unconditionally -- see
+        `backend.py`'s class docstring), which is exactly the metadata
+        `CUDABackend._stream_guard` needs to make a later cross-stream
+        consumer wait for this transfer automatically (Section 16/17) -- no
+        new dependency mechanism required.
+        """
+        pinned_owner = getattr(host_array, "_pinned_owner", None)
+        if pinned_owner is None:
+            raise CUDAError(
+                "non_blocking=True host-to-device transfers require pinned host memory: the "
+                "source Tensor's data must come from forge.cuda.PinnedMemory(...).numpy(), not "
+                "ordinary (pageable) memory. Use non_blocking=False for a pageable source, or "
+                "build the source Tensor from a PinnedMemory-backed array."
+            )
+        target_dtype = np.dtype(dtype) if dtype is not None else host_array.dtype
+        if target_dtype != host_array.dtype:
+            raise CUDAError(
+                "Converting dtype during an async host-to-device transfer is not supported in "
+                f"this milestone (source dtype '{host_array.dtype}', requested '{target_dtype}')."
+            )
+        if target_dtype not in _TRANSFERABLE_DTYPES:
+            supported = ", ".join(str(d) for d in _TRANSFERABLE_DTYPES)
+            raise CUDAError(f"Unsupported dtype for a CUDA tensor: '{target_dtype}'. Supported: {supported}.")
+        if not host_array.flags["C_CONTIGUOUS"]:
+            raise CUDAError("non_blocking=True host-to-device transfer requires a C-contiguous pinned array.")
+
+        stream_handle = self._stream_handle()
+        ptr = self._alloc(host_array.nbytes)
+        if host_array.nbytes > 0:
+            code = self._lib.cf_memcpy_h2d_async(
+                ptr, host_array.ctypes.data_as(ctypes.c_void_p), ctypes.c_size_t(host_array.nbytes), stream_handle
+            )
+            self._check(code, "async host-to-device transfer (submission)")
+            event = _stream.CUDAEvent(self._lib)
+            event.record(stream_handle)
+            pinned_owner._mark_pending(event)
+        return CUDAStorage(ptr, host_array.shape, target_dtype, self._lib)
+
+    def to_numpy_async(self, storage: Any) -> "tuple[np.ndarray, _transfer.PendingTransfer]":
+        """D2H async: allocates a fresh pinned destination buffer, returns it *before* the copy completes.
+
+        The returned array must not be read from the host until the returned
+        `PendingTransfer.synchronize()` has been called -- callers within
+        Forge never do this directly; `Tensor._data`'s property getter does
+        it automatically on first host access (Section 18/19). `_stream_guard`
+        establishes any needed cross-stream dependency (Section 23: `storage`
+        may have been last produced on a different stream than the one this
+        copy is issued on) before the copy is submitted, exactly like every
+        other kernel-launching `CUDABackend` method.
+        """
+        if not isinstance(storage, CUDAStorage):
+            raise CUDAError(f"CUDABackend.to_numpy_async() expects a CUDAStorage, got {type(storage).__name__}.")
+        self._stream_guard((storage,), "to_numpy_async (device-to-host transfer)")
+        stream_handle = self._stream_handle()
+
+        pinned = _pinned.PinnedMemory(storage.nbytes, self._lib)
+        host_array = pinned.numpy(shape=storage.shape, dtype=storage.dtype)
+        if storage.nbytes > 0:
+            code = self._lib.cf_memcpy_d2h_async(
+                host_array.ctypes.data_as(ctypes.c_void_p), storage.ptr, ctypes.c_size_t(storage.nbytes), stream_handle
+            )
+            self._check(code, "async device-to-host transfer (submission)")
+        event = _stream.CUDAEvent(self._lib)
+        event.record(stream_handle)
+        pinned._mark_pending(event)
+        return host_array, _transfer.PendingTransfer(event)
 
     # -- compute-dtype validation -------------------------------------------
 

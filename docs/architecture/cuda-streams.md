@@ -148,9 +148,16 @@ self-evident in the Python source rather than relying only on the implicit
 legacy-stream ordering described above, and it waits for only that one
 storage's producing stream, not the whole device.
 
-**No nonblocking `.to()` was introduced.** `Tensor.to("cuda")`/`.to("cpu")`
-remain fully host-blocking, exactly as before this milestone (Section 24 of
-the brief explicitly rules nonblocking transfers out of scope).
+**No nonblocking `.to()` was introduced (Milestone 27/28).** `Tensor.
+to("cuda")`/`.to("cpu")` remained fully host-blocking through Milestone 28
+(Section 24 of the M27 brief explicitly ruled nonblocking transfers out of
+scope then). **Milestone 29 added it as an explicit opt-in**:
+`Tensor.to(device, non_blocking=True)`, built on real pinned host memory and
+`cudaMemcpyAsync` -- the default (`non_blocking=False`) remains exactly this
+section's original contract, byte-for-byte. See `docs/architecture/
+cuda-transfers.md` for the full design (pinned memory lifecycle, the
+pageable-source policy, and how host-read synchronization is made safe
+without a device-wide barrier).
 
 ## 6. Tensor / storage lifetime vs. GPU execution lifetime
 
@@ -503,19 +510,30 @@ not expect dramatic overlap on every kernel/GPU").
   **Milestone 28: Automatic Cross-Stream Dependencies**, **Why one
   `last_stream` field is still enough**, below for why this remains
   sufficient even for multi-consumer/multi-producer graphs.
+- **Milestone 26-28's "`cf_memcpy_h2d`/`_d2h`/`_d2d` remain synchronous"
+  bullet is now specifically about the *default*, `non_blocking=False`
+  path only.** Milestone 29 added real `cudaMemcpyAsync` bindings
+  (`cf_memcpy_h2d_async`/`cf_memcpy_d2h_async`) and an explicit
+  `Tensor.to(..., non_blocking=True)` opt-in built on pinned host memory --
+  see `docs/architecture/cuda-transfers.md` for the full contract. `.to()`'s
+  default (`non_blocking=False`) behavior is completely unchanged.
 
 ## 19. Future stream/event design
 
-Explicitly out of scope through Milestone 28, listed so a future milestone
-does not have to rediscover it:
+Explicitly out of scope through Milestone 28 (Milestone 29 addressed the
+"Nonblocking `.to()`" item below -- see `docs/architecture/cuda-transfers.md`;
+the rest remains open for a future milestone):
 
 - **`Trainer`-internal stream use**: a designated training stream with
   synchronization only at public method boundaries (Option B from Section
   23 of the M27 brief), enabling overlap between data loading/transfer and
   compute.
-- **Nonblocking `.to()`**: pinned host memory + `cudaMemcpyAsync`, with an
+- ~~**Nonblocking `.to()`**: pinned host memory + `cudaMemcpyAsync`, with an
   explicit story for when the destination tensor's data is guaranteed
-  ready.
+  ready.~~ Done in Milestone 29 -- `Tensor.to(..., non_blocking=True)`, see
+  `docs/architecture/cuda-transfers.md`. An async DataLoader/prefetch
+  pipeline *consuming* this remains future work (that document's **Future
+  Async Data Pipeline Design** section).
 - **A public CUDA event API**: `forge.cuda.Event` for user-level fine-grained
   synchronization, rather than the internal-only `CUDAEvent` Forge has
   through Milestone 28. The M28 brief explicitly left this optional

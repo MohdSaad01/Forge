@@ -818,3 +818,23 @@ test_empty_cache_remains_safe_after_cross_stream_dependencies` and
 `::test_repeated_cross_stream_dependencies_do_not_grow_cuda_allocation` (100
 repeated cross-stream release/reallocate cycles with no growth in
 `allocated_bytes`).
+
+## Milestone 29: Unaffected by Pinned Memory / Async Transfers
+
+An asynchronous H2D transfer's destination device memory is allocated
+through this exact allocator (`CUDABackend._alloc`, unmodified) and its
+resulting `CUDAStorage.last_stream` is set by the same unconditional
+`CUDAStorage.__init__` logic every other storage uses -- so releasing it
+before the transfer completes goes through the *existing* `release_pending()`
+path with zero new allocator code. See `docs/architecture/cuda-transfers.md`'s
+**Allocator Integration** section and the mandatory race test,
+`tests/test_cuda_transfer_allocator.py::
+test_async_h2d_release_never_hands_the_still_in_flight_block_to_another_stream`.
+
+Pinned *host* memory is tracked entirely separately (`forge/backend/cuda/
+pinned.py`'s own small counter, not this module) and is never cached --
+direct `cudaHostAlloc`/`cudaFreeHost` per allocation, deliberately simpler
+than this module's ready/pending free-list model (Section 25 of the
+Milestone 29 brief: build a pinned caching allocator only if profiling
+demonstrates it is necessary). `forge.cuda.empty_cache()` remains
+device-allocator-only and does not touch pinned allocations.

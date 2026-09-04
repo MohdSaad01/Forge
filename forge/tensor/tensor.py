@@ -33,6 +33,15 @@ _GRAD_CAPABLE_DTYPES = (DType.FLOAT32, DType.FLOAT64)
 class Tensor:
     """A typed multidimensional numerical value associated with a device."""
 
+    # Milestone 29: set (only by `Tensor.to(..., non_blocking=True)`'s D2H
+    # path) to a `forge.backend.cuda.transfer.PendingTransfer` while a CPU
+    # tensor's data has been submitted for an asynchronous device-to-host
+    # copy that may not have completed yet. `None` (the class-level default,
+    # true for every CPU/CUDA tensor built any other way) means "nothing to
+    # wait for" -- see the `_data` property below, the single chokepoint that
+    # actually waits on it.
+    _pending: "Any | None" = None
+
     def __init__(
         self,
         data: Any,
@@ -125,6 +134,44 @@ class Tensor:
         requires_grad = is_grad_enabled() and any(t._requires_grad for t in inputs)
         grad_fn = Node(inputs, backward_fn, name) if requires_grad else None
         return Tensor._wrap(array, self._device, requires_grad=requires_grad, grad_fn=grad_fn)
+
+    # -- Backend storage access (Milestone 29: pending-transfer sync gate) ------
+
+    @property
+    def _data(self) -> Any:
+        """The underlying backend storage -- a NumPy array (CPU) or `CUDAStorage` (CUDA).
+
+        A property, not a plain attribute, specifically so `self._pending`
+        (set only by `Tensor.to(..., non_blocking=True)`'s device-to-host
+        path) has exactly one place to enforce Invariant 4 ("host access
+        cannot observe an incomplete D2H transfer"): every existing method
+        that reads `self._data` -- `.numpy()`, `__repr__`, every binary/
+        reduction op's forward and backward, `backward()`, persistence via
+        `Backend.to_numpy(param._data)` -- already passes through here
+        unchanged, so none of them needed to learn about pending transfers
+        individually. The wait is targeted (only this tensor's own transfer,
+        via `PendingTransfer.synchronize()` -- never a device-wide
+        synchronization) and paid at most once: `self._pending` is cleared
+        immediately after, so a second read is a plain attribute access.
+        """
+        if self._pending is not None:
+            self._pending.synchronize()
+            self._pending = None
+            # Detach from the transfer's pinned buffer now that it is safe to
+            # read: this tensor's *permanent* storage becomes an ordinary
+            # pageable copy, so nothing derived from it (further CPU ops,
+            # anything this array gets sliced/added/reshaped into) keeps a
+            # potentially large pinned allocation alive any longer than the
+            # transfer itself needed -- pinned memory is a transfer-time
+            # optimization, never permanent Tensor state (Section 21/27/45 of
+            # the milestone brief; see docs/architecture/cuda-transfers.md).
+            self._storage = np.array(self._storage, copy=True)
+        return self._storage
+
+    @_data.setter
+    def _data(self, value: Any) -> None:
+        self._storage = value
+        self._pending = None
 
     # -- Introspection --------------------------------------------------
 
@@ -477,7 +524,7 @@ class Tensor:
 
     # -- Device transfer -----------------------------------------------------
 
-    def to(self, device: "str | Device") -> "Tensor":
+    def to(self, device: "str | Device", non_blocking: bool = False) -> "Tensor":
         """Explicitly move this tensor's data to another device, copying it.
 
         Never happens implicitly as a side effect of another operation (see
@@ -491,16 +538,60 @@ class Tensor:
         `docs/architecture/cuda-backend.md`), but `.to()` still never carries
         `requires_grad` across the copy, and never fakes it by quietly
         keeping the source tensor's graph alive.
+
+        `non_blocking` (Milestone 29, default `False`) opts into asynchronous
+        CPU<->CUDA transfer semantics -- see `docs/architecture/
+        cuda-transfers.md` for the full contract. `False` (the default)
+        preserves the exact Milestone 8-28 behavior unchanged: a fully
+        host-synchronous copy, regardless of source/target device. `True`
+        requires the transfer to actually be a `cpu<->cuda` direction
+        (raises `UnsupportedDeviceError` otherwise, including for a CUDA<->
+        CUDA or CPU<->CPU no-op -- the latter never reaches this check since
+        `target == self._device` already returned above) and:
+
+        - **CPU -> CUDA**: requires `self`'s data to already be pinned host
+          memory (`forge.cuda.PinnedMemory(...).numpy()`) -- raises
+          `forge.CUDAError` otherwise (Section 13's Option A: fail clearly,
+          never silently stage pageable memory through a hidden pinned
+          buffer). The transfer is submitted on the current Forge CUDA
+          stream (`forge.cuda.current_stream()`) and does not block the host
+          before returning.
+        - **CUDA -> CPU**: always succeeds; the returned Tensor's backing
+          data is a fresh pinned buffer that may not be fully written yet.
+          The host is never blocked here -- instead, the very first read of
+          the result (`.numpy()`, printing, arithmetic, `.backward()`, ...)
+          transparently synchronizes just that transfer (see the `_data`
+          property above).
         """
         target = Device.parse(device)
         if target == self._device:
             return self
 
-        target_backend = get_backend(target)
-        source_backend = get_backend(self._device)
-        host_array = source_backend.to_numpy(self._data)
-        new_storage = target_backend.from_array(host_array, host_array.dtype)
-        return Tensor._wrap(new_storage, target, requires_grad=False)
+        if not non_blocking:
+            target_backend = get_backend(target)
+            source_backend = get_backend(self._device)
+            host_array = source_backend.to_numpy(self._data)
+            new_storage = target_backend.from_array(host_array, host_array.dtype)
+            return Tensor._wrap(new_storage, target, requires_grad=False)
+
+        if self._device.type == "cpu" and target.type == "cuda":
+            from ..backend.cuda.backend import get_cuda_backend
+
+            new_storage = get_cuda_backend().from_array_async(self._data, self._data.dtype)
+            return Tensor._wrap(new_storage, target, requires_grad=False)
+
+        if self._device.type == "cuda" and target.type == "cpu":
+            from ..backend.cuda.backend import get_cuda_backend
+
+            host_array, pending = get_cuda_backend().to_numpy_async(self._data)
+            result = Tensor._wrap(host_array, target, requires_grad=False)
+            result._pending = pending
+            return result
+
+        raise UnsupportedDeviceError(
+            f"non_blocking=True is only supported for cpu<->cuda transfers, not "
+            f"'{self._device}' -> '{target}'."
+        )
 
     def _move_storage_(self, device: "str | Device") -> None:
         """In-place device transfer, preserving this object's identity (Milestone 9).

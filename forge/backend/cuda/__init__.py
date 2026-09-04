@@ -1,4 +1,4 @@
-"""Forge's CUDA backend (Milestone 8; memory accounting in Milestone 22; caching allocator in Milestone 25; streams in Milestone 27).
+"""Forge's CUDA backend (Milestone 8; memory accounting in Milestone 22; caching allocator in Milestone 25; streams in Milestone 27; pinned memory/async transfers in Milestone 29).
 
 Not imported by `forge.backend` at package-import time -- only pulled in
 lazily by `forge.backend.get_backend()` when a `"cuda"` device is actually
@@ -7,16 +7,19 @@ any import-time failure) for a CPU-only session. See
 `docs/architecture/cuda-backend.md`.
 
 `.allocator` (Milestone 25), `.memory` (Milestone 22, now a thin re-export
-of `.allocator`), and `.stream` (Milestone 27) are the exception to that
-laziness: pure Python at import time -- no `ctypes` call is made, no `nvcc`
-invoked, no device probed, until a `CUDAStream`/`CUDAEvent` is actually
-constructed or a `CUDABackend` method actually runs -- so they are safe to
-import unconditionally. See `forge/cuda/__init__.py`, the public entry point.
+of `.allocator`), `.stream` (Milestone 27), `.pinned` and `.transfer`
+(Milestone 29) are the exception to that laziness: pure Python at import
+time -- no `ctypes` call is made, no `nvcc` invoked, no device probed, until
+a `CUDAStream`/`CUDAEvent`/`PinnedMemory` is actually constructed or a
+`CUDABackend` method actually runs -- so they are safe to import
+unconditionally. See `forge/cuda/__init__.py`, the public entry point.
 """
 
 from .allocator import CUDAMemoryStats, memory_stats, reset_peak_memory_stats
 from .backend import CUDABackend, CUDAStorage, get_cuda_backend, is_cuda_available
+from .pinned import PinnedMemory, PinnedMemoryStats, pinned_memory_stats
 from .stream import CUDAStream, current_stream, set_stream, stream_context
+from .transfer import PendingTransfer
 
 __all__ = [
     "CUDABackend",
@@ -30,4 +33,8 @@ __all__ = [
     "current_stream",
     "set_stream",
     "stream_context",
+    "PinnedMemory",
+    "PinnedMemoryStats",
+    "pinned_memory_stats",
+    "PendingTransfer",
 ]

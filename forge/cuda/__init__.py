@@ -9,7 +9,13 @@ forge.cuda.synchronize()              # block until all issued CUDA work on this
 forge.cuda.memory_stats()             # -> CUDAMemoryStats (active/reserved/cached/pending, see below)
 forge.cuda.reset_peak_memory_stats()  # resets peak only, live allocations untouched
 forge.cuda.empty_cache()              # returns every non-active (cached + pending) block to the driver
+forge.cuda.PinnedMemory(nbytes)       # real page-locked host memory (Milestone 29)
+forge.cuda.pinned_memory_stats()      # -> PinnedMemoryStats (pinned host bytes, separate from device stats)
 ```
+
+See `docs/architecture/cuda-transfers.md` for the full Milestone 29 pinned-memory
+and asynchronous host<->device transfer contract (`Tensor.to(...,
+non_blocking=True)`, `forge/tensor/tensor.py`).
 
 Thin, explicit wrappers around `forge.backend.cuda` (`synchronize()` around
 `CUDABackend.synchronize()`; `Stream`/`current_stream`/`set_stream`/`stream`
@@ -59,6 +65,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from ..backend.cuda.allocator import CUDAMemoryStats
+from ..backend.cuda.pinned import PinnedMemory as _PinnedMemoryImpl
+from ..backend.cuda.pinned import PinnedMemoryStats as _PinnedMemoryStats
 from ..backend.cuda.stream import CUDAStream
 from ..exceptions import CUDAError
 from . import profiler
@@ -70,8 +78,9 @@ def _require_cuda() -> None:
     if not is_cuda_available():
         raise CUDAError(
             "forge.cuda.Stream()/current_stream()/set_stream()/stream()/synchronize()/"
-            "memory_stats()/reset_peak_memory_stats()/empty_cache() require a working CUDA "
-            "backend; CUDA is not available on this machine."
+            "memory_stats()/reset_peak_memory_stats()/empty_cache()/PinnedMemory()/"
+            "pinned_memory_stats() require a working CUDA backend; CUDA is not available on "
+            "this machine."
         )
 
 
@@ -89,6 +98,44 @@ class Stream(CUDAStream):
     def __init__(self) -> None:
         _require_cuda()
         super().__init__()
+
+
+class PinnedMemory(_PinnedMemoryImpl):
+    """Real, page-locked CUDA host memory. See `forge.backend.cuda.pinned.PinnedMemory` for the full contract.
+
+    ```python
+    mem = forge.cuda.PinnedMemory(nbytes)
+    array = mem.numpy(shape=(1024,), dtype=np.float32)  # zero-copy NumPy view
+    tensor = forge.Tensor(array, device="cpu")
+    cuda_tensor = tensor.to("cuda", non_blocking=True)   # true async H2D -- see Tensor.to()
+    mem.free()  # explicit release; also runs on __del__, waiting for any in-flight transfer first
+    ```
+
+    A thin subclass gating construction with the same `_require_cuda()` check
+    every other `forge.cuda` entry point uses, matching the `Stream` pattern
+    above -- `PinnedMemoryImpl.__init__` itself already raises
+    `forge.CUDAError` once CUDA is genuinely unavailable (it needs the
+    compiled kernel library to call `cudaHostAlloc`), but this makes the
+    error message consistent with every other `forge.cuda` constructor.
+    """
+
+    def __init__(self, nbytes: int) -> None:
+        _require_cuda()
+        super().__init__(nbytes)
+
+
+def pinned_memory_stats() -> "_PinnedMemoryStats":
+    """Return a snapshot of Forge's pinned-host allocation accounting.
+
+    Separate from `memory_stats()` (device memory) -- see
+    `forge.backend.cuda.pinned.PinnedMemoryStats`'s docstring for why pinned
+    host bytes are not folded into `CUDAMemoryStats`. Raises
+    `forge.CUDAError` if CUDA is not available on this machine.
+    """
+    from ..backend.cuda.pinned import pinned_memory_stats as _pinned_memory_stats
+
+    _require_cuda()
+    return _pinned_memory_stats()
 
 
 # -- streams (Milestone 27) --------------------------------------------------
@@ -234,4 +281,6 @@ __all__ = [
     "empty_cache",
     "CUDAMemoryStats",
     "profiler",
+    "PinnedMemory",
+    "pinned_memory_stats",
 ]
