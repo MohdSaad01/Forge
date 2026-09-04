@@ -1,0 +1,340 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "08241582da03e46f3436c86f4ce0851ce0fca9b8",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "shapes": [
+      {
+        "name": "mnist_conv1",
+        "config": {
+          "N": 64,
+          "Cin": 1,
+          "Cout": 8,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "production_backward_ms": {
+          "mean_ms": 3.126806386311849,
+          "median_ms": 3.101807951927185,
+          "min_ms": 3.083872079849243,
+          "max_ms": 3.186079978942871,
+          "stdev_ms": 0.043300223168213525
+        },
+        "experimental_backward_ms": {
+          "mean_ms": 4.683240540822347,
+          "median_ms": 4.717519998550415,
+          "min_ms": 4.614528179168701,
+          "max_ms": 4.7427520751953125,
+          "stdev_ms": 0.05595822252477437
+        },
+        "speedup": 0.6676587202934491,
+        "production_memory": {
+          "peak_allocated_bytes": 5620640,
+          "peak_reserved_bytes": 5620640,
+          "cache_hit_count_delta": 57,
+          "cache_miss_count_delta": 3,
+          "reserved_bytes_after_empty_cache": 5419616,
+          "allocated_bytes_after_empty_cache": 5419616
+        },
+        "experimental_memory": {
+          "peak_allocated_bytes": 9032608,
+          "peak_reserved_bytes": 9032608,
+          "cache_hit_count_delta": 95,
+          "cache_miss_count_delta": 5,
+          "reserved_bytes_after_empty_cache": 5419616,
+          "allocated_bytes_after_empty_cache": 5419616
+        },
+        "extra_peak_reserved_mb": 3.25390625
+      },
+      {
+        "name": "mnist_conv2",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "production_backward_ms": {
+          "mean_ms": 4.106629371643066,
+          "median_ms": 4.106800079345703,
+          "min_ms": 4.0860161781311035,
+          "max_ms": 4.1227521896362305,
+          "stdev_ms": 0.010205213146580622
+        },
+        "experimental_backward_ms": {
+          "mean_ms": 3.680243198076884,
+          "median_ms": 3.6793280839920044,
+          "min_ms": 3.6660799980163574,
+          "max_ms": 3.696352005004883,
+          "stdev_ms": 0.0077836280891033964
+        },
+        "speedup": 1.1158581513822214,
+        "production_memory": {
+          "peak_allocated_bytes": 9164736,
+          "peak_reserved_bytes": 9164736,
+          "cache_hit_count_delta": 57,
+          "cache_miss_count_delta": 3,
+          "reserved_bytes_after_empty_cache": 8813952,
+          "allocated_bytes_after_empty_cache": 8813952
+        },
+        "experimental_memory": {
+          "peak_allocated_bytes": 12971968,
+          "peak_reserved_bytes": 12971968,
+          "cache_hit_count_delta": 95,
+          "cache_miss_count_delta": 5,
+          "reserved_bytes_after_empty_cache": 8813952,
+          "allocated_bytes_after_empty_cache": 8813952
+        },
+        "extra_peak_reserved_mb": 3.630859375
+      },
+      {
+        "name": "large_channel",
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "production_backward_ms": {
+          "mean_ms": 78.69391250610352,
+          "median_ms": 79.60744094848633,
+          "min_ms": 74.26812744140625,
+          "max_ms": 80.52953338623047,
+          "stdev_ms": 2.1886621073997232
+        },
+        "experimental_backward_ms": {
+          "mean_ms": 50.23901710510254,
+          "median_ms": 50.39499092102051,
+          "min_ms": 49.70579147338867,
+          "max_ms": 50.59775924682617,
+          "stdev_ms": 0.2940513487222555
+        },
+        "speedup": 1.5663903682962568,
+        "production_memory": {
+          "peak_allocated_bytes": 59206784,
+          "peak_reserved_bytes": 59206784,
+          "cache_hit_count_delta": 57,
+          "cache_miss_count_delta": 3,
+          "reserved_bytes_after_empty_cache": 55976960,
+          "allocated_bytes_after_empty_cache": 55976960
+        },
+        "experimental_memory": {
+          "peak_allocated_bytes": 94530688,
+          "peak_reserved_bytes": 94530688,
+          "cache_hit_count_delta": 95,
+          "cache_miss_count_delta": 5,
+          "reserved_bytes_after_empty_cache": 55976960,
+          "allocated_bytes_after_empty_cache": 55976960
+        },
+        "extra_peak_reserved_mb": 33.6875
+      },
+      {
+        "name": "large_spatial",
+        "config": {
+          "N": 32,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 56,
+          "W": 56,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "production_backward_ms": {
+          "mean_ms": 40.42884915669759,
+          "median_ms": 40.47894287109375,
+          "min_ms": 39.878177642822266,
+          "max_ms": 40.640254974365234,
+          "stdev_ms": 0.1872041860551945
+        },
+        "experimental_backward_ms": {
+          "mean_ms": 34.05620803833008,
+          "median_ms": 34.153743743896484,
+          "min_ms": 33.8199348449707,
+          "max_ms": 34.24291229248047,
+          "stdev_ms": 0.1570546905344812
+        },
+        "speedup": 1.1871212764261698,
+        "production_memory": {
+          "peak_allocated_bytes": 97718912,
+          "peak_reserved_bytes": 97718912,
+          "cache_hit_count_delta": 57,
+          "cache_miss_count_delta": 3,
+          "reserved_bytes_after_empty_cache": 94502976,
+          "allocated_bytes_after_empty_cache": 94502976
+        },
+        "experimental_memory": {
+          "peak_allocated_bytes": 133042816,
+          "peak_reserved_bytes": 133042816,
+          "cache_hit_count_delta": 95,
+          "cache_miss_count_delta": 5,
+          "reserved_bytes_after_empty_cache": 94502976,
+          "allocated_bytes_after_empty_cache": 94502976
+        },
+        "extra_peak_reserved_mb": 33.6875
+      }
+    ],
+    "batch_sweep": [
+      {
+        "name": "batch_32",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 32
+        },
+        "production_backward_ms": {
+          "mean_ms": 39.81793492635091,
+          "median_ms": 40.17180824279785,
+          "min_ms": 37.29753494262695,
+          "max_ms": 40.551937103271484,
+          "stdev_ms": 0.9633340561156655
+        },
+        "experimental_backward_ms": {
+          "mean_ms": 25.4610476175944,
+          "median_ms": 25.511295318603516,
+          "min_ms": 24.94927978515625,
+          "max_ms": 25.578847885131836,
+          "stdev_ms": 0.1568578058532426
+        },
+        "speedup": 1.5638765350266044,
+        "production_memory": {
+          "peak_allocated_bytes": 110610240,
+          "peak_reserved_bytes": 110610240,
+          "cache_hit_count_delta": 57,
+          "cache_miss_count_delta": 3,
+          "reserved_bytes_after_empty_cache": 108986048,
+          "allocated_bytes_after_empty_cache": 108986048
+        },
+        "experimental_memory": {
+          "peak_allocated_bytes": 128272192,
+          "peak_reserved_bytes": 128272192,
+          "cache_hit_count_delta": 95,
+          "cache_miss_count_delta": 5,
+          "reserved_bytes_after_empty_cache": 108986048,
+          "allocated_bytes_after_empty_cache": 108986048
+        },
+        "extra_peak_reserved_mb": 16.84375
+      },
+      {
+        "name": "batch_64",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 64
+        },
+        "production_backward_ms": {
+          "mean_ms": 79.27809829711914,
+          "median_ms": 80.3047981262207,
+          "min_ms": 74.51107025146484,
+          "max_ms": 81.24185943603516,
+          "stdev_ms": 2.220575010836245
+        },
+        "experimental_backward_ms": {
+          "mean_ms": 50.953117752075194,
+          "median_ms": 50.85990524291992,
+          "min_ms": 50.411041259765625,
+          "max_ms": 51.75408172607422,
+          "stdev_ms": 0.47849514665870796
+        },
+        "speedup": 1.5559027944642376,
+        "production_memory": {
+          "peak_allocated_bytes": 155586496,
+          "peak_reserved_bytes": 155586496,
+          "cache_hit_count_delta": 57,
+          "cache_miss_count_delta": 3,
+          "reserved_bytes_after_empty_cache": 152356672,
+          "allocated_bytes_after_empty_cache": 152356672
+        },
+        "experimental_memory": {
+          "peak_allocated_bytes": 190910400,
+          "peak_reserved_bytes": 190910400,
+          "cache_hit_count_delta": 95,
+          "cache_miss_count_delta": 5,
+          "reserved_bytes_after_empty_cache": 152356672,
+          "allocated_bytes_after_empty_cache": 152356672
+        },
+        "extra_peak_reserved_mb": 33.6875
+      },
+      {
+        "name": "batch_128",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 128
+        },
+        "production_backward_ms": {
+          "mean_ms": 160.90010884602864,
+          "median_ms": 162.5338134765625,
+          "min_ms": 150.40322875976562,
+          "max_ms": 168.15280151367188,
+          "stdev_ms": 5.700958026751958
+        },
+        "experimental_backward_ms": {
+          "mean_ms": 101.36712849934896,
+          "median_ms": 100.77479934692383,
+          "min_ms": 100.52252960205078,
+          "max_ms": 103.23596954345703,
+          "stdev_ms": 1.0209378579903525
+        },
+        "speedup": 1.5873006489185697,
+        "production_memory": {
+          "peak_allocated_bytes": 245520448,
+          "peak_reserved_bytes": 245520448,
+          "cache_hit_count_delta": 57,
+          "cache_miss_count_delta": 3,
+          "reserved_bytes_after_empty_cache": 239079360,
+          "allocated_bytes_after_empty_cache": 239079360
+        },
+        "experimental_memory": {
+          "peak_allocated_bytes": 316168256,
+          "peak_reserved_bytes": 316168256,
+          "cache_hit_count_delta": 95,
+          "cache_miss_count_delta": 5,
+          "reserved_bytes_after_empty_cache": 239079360,
+          "allocated_bytes_after_empty_cache": 239079360
+        },
+        "extra_peak_reserved_mb": 67.375
+      }
+    ]
+  }
+}

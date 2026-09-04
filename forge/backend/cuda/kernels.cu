@@ -1433,6 +1433,153 @@ __global__ void k_conv2d_backward_bias_reduce(const T* grad_out, T* grad_b, int 
 CONV2D_BACKWARD_BIAS_LAUNCHER(float, f32)
 CONV2D_BACKWARD_BIAS_LAUNCHER(double, f64)
 
+// -- dWeight im2col + existing tiled GEMM candidate (Milestone 34, profiling-only) --
+//
+// M33 rejected cooperative reduction as a `dWeight` optimization and named
+// im2col + GEMM (reusing the existing M11 `k_matmul` tiled GEMM above) as
+// the next structurally-different candidate worth measuring
+// (`docs/performance/conv2d-backward-profiling.md`'s M33 **Limitations**
+// section). This section adds exactly the two gather kernels needed to
+// reformulate `dWeight` as one GEMM call against `k_matmul` -- no second
+// GEMM implementation (the milestone brief explicitly forbids one; see
+// Section 43) and no change to `k_conv2d_backward_weight`/
+// `k_conv2d_backward_weight_reduce` (still production code, both byte-for-
+// byte unchanged).
+//
+// Forge's actual `dWeight` orientation (verified against `CPUBackend.
+// conv2d_backward`, `forge/backend/cpu.py`, which already computes this
+// exact GEMM on the CPU via NumPy/BLAS) is
+// `grad_weight_mat = grad_out_rows.T @ cols_rows`, i.e. `(Cout, M) @ (M, K)
+// -> (Cout, K)` where `M = N*Hout*Wout` (the reduction dimension) and
+// `K = Cin*KH*KW` -- **not** the `Xcol^T @ dYmat -> (K, Cout)` orientation a
+// literal reading of the milestone brief's Section 5 formula would suggest
+// (that produces the transpose of what Forge's `(Cout, Cin, KH, KW)` weight
+// layout needs). `cf_matmul_*` computes `C[M,N] = A[M,K] @ B[K,N]`
+// (row-major, M/K/N as *that* GEMM's own dimensions -- distinct from this
+// comment's `M`/`K` above), so this candidate calls it as
+// `cf_matmul(A=dYcolT, B=Xcol, GEMM_M=Cout, GEMM_K=N*Hout*Wout, GEMM_N=Cin*KH*KW)`,
+// producing `(Cout, Cin*KH*KW)` directly -- already exactly `grad_weight`'s
+// contiguous layout, reinterpreted with zero copy (Section 6's "final
+// reshape" costs nothing here).
+//
+// Two gather kernels build the GEMM's operands:
+//
+// - `k_im2col_conv2d`: `Xcol`, shape `(M, K) = (N*Hout*Wout, Cin*KH*KW)`,
+//   row-major -- one thread per `(m, k)` output element, identical
+//   padding/stride/boundary handling to `k_conv2d_forward` above (zero for
+//   an out-of-bounds `(hi, wi)`).
+// - `k_conv2d_grad_output_permute`: `dYcolT`, shape `(Cout, M)`, row-major --
+//   one thread per `(co, m)` output element. This is *not* a generic 2D
+//   transpose (`k_transpose` above): `grad_output`'s actual memory layout is
+//   `(N, Cout, Hout, Wout)` (`N` outermost, `Cout` next), so producing
+//   `(Cout, N*Hout*Wout)` -- `Cout` outermost -- is a true 4D-to-2D gather,
+//   not a reshape. This permute is exactly the "reshape/copy" cost the
+//   milestone brief (Sections 8/17/20) asks to measure separately from
+//   im2col construction and GEMM time.
+//
+// Milestone 34 decision: **adopted** for `dWeight` at/above a weight-element
+// threshold (measured 1.12-1.59x faster end-to-end than the existing
+// per-thread kernel at every representative shape >= 1,152 weight elements;
+// slower below the existing 256-element `CONV2D_WEIGHT_REDUCE_THRESHOLD`
+// boundary -- see `docs/performance/conv2d-backward-profiling.md`'s
+// **Milestone 34** section). Reached from `CUDABackend.conv2d_backward`
+// only indirectly, through `forge.backend.cuda.experimental_conv_im2col.
+// dweight_im2col_gemm` (Python) -- these two kernels stay separate exported
+// symbols rather than being folded into `cf_conv2d_backward_weight_*`
+// because the full pipeline (im2col -> permute -> GEMM, three launches with
+// two temporary device buffers) needs Python-level buffer management the
+// existing single-launch C dispatcher signature has no room for.
+// `k_conv2d_backward_weight`/`k_conv2d_backward_weight_reduce` remain
+// production code below the threshold, byte-for-byte unchanged.
+
+template <typename T>
+__global__ void k_im2col_conv2d(
+    const T* x, T* col,
+    int N, int Cin, int H, int W,
+    int KH, int KW, int SH, int SW, int PH, int PW,
+    int Hout, int Wout)
+{
+    long long K = static_cast<long long>(Cin) * KH * KW;
+    long long total = static_cast<long long>(N) * Hout * Wout * K;
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (idx >= total) return;
+
+    long long m = idx / K;
+    long long k = idx % K;
+
+    int kw_ = static_cast<int>(k % KW);
+    long long k1 = k / KW;
+    int kh = static_cast<int>(k1 % KH);
+    int ci = static_cast<int>(k1 / KH);
+
+    int wo = static_cast<int>(m % Wout);
+    long long m1 = m / Wout;
+    int ho = static_cast<int>(m1 % Hout);
+    int n = static_cast<int>(m1 / Hout);
+
+    int hi = ho * SH - PH + kh;
+    int wi = wo * SW - PW + kw_;
+
+    T v = static_cast<T>(0);
+    if (hi >= 0 && hi < H && wi >= 0 && wi < W) {
+        long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+        v = x[x_idx];
+    }
+    col[idx] = v;
+}
+
+#define IM2COL_CONV2D_LAUNCHER(TYPE, SUFFIX)                                             \
+    extern "C" __declspec(dllexport) int cf_im2col_conv2d_##SUFFIX(                      \
+        const TYPE* x, TYPE* col,                                                        \
+        int N, int Cin, int H, int W, int KH, int KW,                                    \
+        int SH, int SW, int PH, int PW, int Hout, int Wout, void* stream) {              \
+        long long K = static_cast<long long>(Cin) * KH * KW;                             \
+        long long total = static_cast<long long>(N) * Hout * Wout * K;                   \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_im2col_conv2d<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(             \
+            x, col, N, Cin, H, W, KH, KW, SH, SW, PH, PW, Hout, Wout);                    \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+IM2COL_CONV2D_LAUNCHER(float, f32)
+IM2COL_CONV2D_LAUNCHER(double, f64)
+
+template <typename T>
+__global__ void k_conv2d_grad_output_permute(
+    const T* grad_out, T* dycolT, int N, int Cout, int Hout, int Wout)
+{
+    long long M = static_cast<long long>(N) * Hout * Wout;
+    long long total = static_cast<long long>(Cout) * M;
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (idx >= total) return;
+
+    long long m = idx % M;
+    int co = static_cast<int>(idx / M);
+
+    int wo = static_cast<int>(m % Wout);
+    long long m1 = m / Wout;
+    int ho = static_cast<int>(m1 % Hout);
+    int n = static_cast<int>(m1 / Hout);
+
+    long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+    dycolT[idx] = grad_out[g_idx];
+}
+
+#define GRAD_OUTPUT_PERMUTE_LAUNCHER(TYPE, SUFFIX)                                       \
+    extern "C" __declspec(dllexport) int cf_conv2d_grad_output_permute_##SUFFIX(         \
+        const TYPE* grad_out, TYPE* dycolT, int N, int Cout, int Hout, int Wout, void* stream) { \
+        long long total = static_cast<long long>(Cout) * N * Hout * Wout;                \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_conv2d_grad_output_permute<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>( \
+            grad_out, dycolT, N, Cout, Hout, Wout);                                      \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+GRAD_OUTPUT_PERMUTE_LAUNCHER(float, f32)
+GRAD_OUTPUT_PERMUTE_LAUNCHER(double, f64)
+
 // -- MaxPool2d forward ----------------------------------------------------------
 //
 // Ties within a window break to the first maximum encountered in row-major

@@ -1,0 +1,508 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "08241582da03e46f3436c86f4ce0851ce0fca9b8",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "shapes": [
+      {
+        "name": "mnist_conv1",
+        "config": {
+          "N": 64,
+          "Cin": 1,
+          "Cout": 8,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 72,
+        "M": 50176,
+        "K": 9,
+        "Cout": 8,
+        "gemm_dims": {
+          "A_rows_M": 8,
+          "A_cols_K": 50176,
+          "B_cols_N": 9
+        },
+        "xcol_shape": [
+          50176,
+          9
+        ],
+        "xcol_mb": 1.72265625,
+        "dycolT_shape": [
+          8,
+          50176
+        ],
+        "dycolT_mb": 1.53125,
+        "current_ms": {
+          "mean_ms": 2.1834837277730306,
+          "median_ms": 2.158479928970337,
+          "min_ms": 2.149791955947876,
+          "max_ms": 2.2481279373168945,
+          "stdev_ms": 0.039566698846425094
+        },
+        "im2col_ms": {
+          "mean_ms": 0.47433280050754545,
+          "median_ms": 0.47417598962783813,
+          "min_ms": 0.47353601455688477,
+          "max_ms": 0.47542399168014526,
+          "stdev_ms": 0.0005319096209893357
+        },
+        "permute_ms": {
+          "mean_ms": 0.26969706614812217,
+          "median_ms": 0.2696639895439148,
+          "min_ms": 0.2688319981098175,
+          "max_ms": 0.27059200406074524,
+          "stdev_ms": 0.0004547656317523307
+        },
+        "gemm_ms": {
+          "mean_ms": 3.0447306632995605,
+          "median_ms": 3.0589760541915894,
+          "min_ms": 3.0016000270843506,
+          "max_ms": 3.0622398853302,
+          "stdev_ms": 0.0245908728259878
+        },
+        "measured_total_ms": {
+          "mean_ms": 3.713484795888265,
+          "median_ms": 3.7110079526901245,
+          "min_ms": 3.703104019165039,
+          "max_ms": 3.7342400550842285,
+          "stdev_ms": 0.008155026217333173
+        },
+        "summed_total_experimental_ms": 3.788760529955228,
+        "current_vs_experimental_speedup": 1.7351906413424223
+      },
+      {
+        "name": "mnist_conv2",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 1152,
+        "M": 10816,
+        "K": 72,
+        "Cout": 16,
+        "gemm_dims": {
+          "A_rows_M": 16,
+          "A_cols_K": 10816,
+          "B_cols_N": 72
+        },
+        "xcol_shape": [
+          10816,
+          72
+        ],
+        "xcol_mb": 2.970703125,
+        "dycolT_shape": [
+          16,
+          10816
+        ],
+        "dycolT_mb": 0.66015625,
+        "current_ms": {
+          "mean_ms": 1.7434784054756165,
+          "median_ms": 1.7438240051269531,
+          "min_ms": 1.734879970550537,
+          "max_ms": 1.7497279644012451,
+          "stdev_ms": 0.003105228830082043
+        },
+        "im2col_ms": {
+          "mean_ms": 0.7851776043574016,
+          "median_ms": 0.7851200103759766,
+          "min_ms": 0.7843520045280457,
+          "max_ms": 0.7868800163269043,
+          "stdev_ms": 0.0006926912415752425
+        },
+        "permute_ms": {
+          "mean_ms": 0.11680106793840726,
+          "median_ms": 0.11670400202274323,
+          "min_ms": 0.11590400338172913,
+          "max_ms": 0.11856000125408173,
+          "stdev_ms": 0.0004797042986378742
+        },
+        "gemm_ms": {
+          "mean_ms": 0.7374090631802876,
+          "median_ms": 0.7373600006103516,
+          "min_ms": 0.7334079742431641,
+          "max_ms": 0.7428159713745117,
+          "stdev_ms": 0.002587295228340852
+        },
+        "measured_total_ms": {
+          "mean_ms": 1.6314517339070638,
+          "median_ms": 1.6319520473480225,
+          "min_ms": 1.624127984046936,
+          "max_ms": 1.6370879411697388,
+          "stdev_ms": 0.002975416823568648
+        },
+        "summed_total_experimental_ms": 1.6393877354760966,
+        "current_vs_experimental_speedup": 0.9402971268972361
+      },
+      {
+        "name": "large_channel",
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 4608,
+        "M": 50176,
+        "K": 144,
+        "Cout": 32,
+        "gemm_dims": {
+          "A_rows_M": 32,
+          "A_cols_K": 50176,
+          "B_cols_N": 144
+        },
+        "xcol_shape": [
+          50176,
+          144
+        ],
+        "xcol_mb": 27.5625,
+        "dycolT_shape": [
+          32,
+          50176
+        ],
+        "dycolT_mb": 6.125,
+        "current_ms": {
+          "mean_ms": 43.49675979614258,
+          "median_ms": 44.41520118713379,
+          "min_ms": 39.249183654785156,
+          "max_ms": 45.815486907958984,
+          "stdev_ms": 2.0724711000155716
+        },
+        "im2col_ms": {
+          "mean_ms": 7.349821901321411,
+          "median_ms": 7.308320045471191,
+          "min_ms": 7.223904132843018,
+          "max_ms": 7.429664134979248,
+          "stdev_ms": 0.07355626620211332
+        },
+        "permute_ms": {
+          "mean_ms": 1.0484330773353576,
+          "median_ms": 1.0482560396194458,
+          "min_ms": 1.0474879741668701,
+          "max_ms": 1.0501760244369507,
+          "stdev_ms": 0.0006509265178957707
+        },
+        "gemm_ms": {
+          "mean_ms": 4.948076804478963,
+          "median_ms": 4.933727979660034,
+          "min_ms": 4.901887893676758,
+          "max_ms": 5.006432056427002,
+          "stdev_ms": 0.03558525535503375
+        },
+        "measured_total_ms": {
+          "mean_ms": 13.465585009257,
+          "median_ms": 13.468095779418945,
+          "min_ms": 13.430912017822266,
+          "max_ms": 13.500831604003906,
+          "stdev_ms": 0.015773167141299158
+        },
+        "summed_total_experimental_ms": 13.346331783135732,
+        "current_vs_experimental_speedup": 0.30683508026083645
+      },
+      {
+        "name": "large_spatial",
+        "config": {
+          "N": 32,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 56,
+          "W": 56,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 1152,
+        "M": 100352,
+        "K": 72,
+        "Cout": 16,
+        "gemm_dims": {
+          "A_rows_M": 16,
+          "A_cols_K": 100352,
+          "B_cols_N": 72
+        },
+        "xcol_shape": [
+          100352,
+          72
+        ],
+        "xcol_mb": 27.5625,
+        "dycolT_shape": [
+          16,
+          100352
+        ],
+        "dycolT_mb": 6.125,
+        "current_ms": {
+          "mean_ms": 21.46973965962728,
+          "median_ms": 21.4335994720459,
+          "min_ms": 21.272127151489258,
+          "max_ms": 21.979488372802734,
+          "stdev_ms": 0.14962761939620003
+        },
+        "im2col_ms": {
+          "mean_ms": 7.294483168919881,
+          "median_ms": 7.3088319301605225,
+          "min_ms": 7.2244157791137695,
+          "max_ms": 7.312096118927002,
+          "stdev_ms": 0.03059111796406458
+        },
+        "permute_ms": {
+          "mean_ms": 1.0314485351244609,
+          "median_ms": 1.0314239859580994,
+          "min_ms": 1.030784010887146,
+          "max_ms": 1.0324159860610962,
+          "stdev_ms": 0.0004797256624533815
+        },
+        "gemm_ms": {
+          "mean_ms": 6.596052249272664,
+          "median_ms": 6.590464115142822,
+          "min_ms": 6.568448066711426,
+          "max_ms": 6.643487930297852,
+          "stdev_ms": 0.022334320710021026
+        },
+        "measured_total_ms": {
+          "mean_ms": 14.83904317220052,
+          "median_ms": 14.84007978439331,
+          "min_ms": 14.816736221313477,
+          "max_ms": 14.869855880737305,
+          "stdev_ms": 0.01103166120726909
+        },
+        "summed_total_experimental_ms": 14.921983953317007,
+        "current_vs_experimental_speedup": 0.6950239821201473
+      }
+    ],
+    "batch_sweep": [
+      {
+        "name": "batch_32",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 32
+        },
+        "weight_elements": 4608,
+        "M": 25088,
+        "K": 144,
+        "Cout": 32,
+        "gemm_dims": {
+          "A_rows_M": 32,
+          "A_cols_K": 25088,
+          "B_cols_N": 144
+        },
+        "xcol_shape": [
+          25088,
+          144
+        ],
+        "xcol_mb": 13.78125,
+        "dycolT_shape": [
+          32,
+          25088
+        ],
+        "dycolT_mb": 3.0625,
+        "current_ms": {
+          "mean_ms": 21.728242047627766,
+          "median_ms": 22.294960021972656,
+          "min_ms": 19.706655502319336,
+          "max_ms": 22.380704879760742,
+          "stdev_ms": 1.0809200445366833
+        },
+        "im2col_ms": {
+          "mean_ms": 3.616504510243734,
+          "median_ms": 3.616368055343628,
+          "min_ms": 3.615488052368164,
+          "max_ms": 3.6178879737854004,
+          "stdev_ms": 0.0006060829333088453
+        },
+        "permute_ms": {
+          "mean_ms": 0.5138154625892639,
+          "median_ms": 0.5139680206775665,
+          "min_ms": 0.5130239725112915,
+          "max_ms": 0.5145919919013977,
+          "stdev_ms": 0.0005004866854371903
+        },
+        "gemm_ms": {
+          "mean_ms": 2.4827221473058065,
+          "median_ms": 2.4792640209198,
+          "min_ms": 2.449536085128784,
+          "max_ms": 2.646048069000244,
+          "stdev_ms": 0.03542996228562235
+        },
+        "measured_total_ms": {
+          "mean_ms": 6.7484725634256995,
+          "median_ms": 6.761088132858276,
+          "min_ms": 6.643519878387451,
+          "max_ms": 6.778592109680176,
+          "stdev_ms": 0.035824965218341796
+        },
+        "summed_total_experimental_ms": 6.613042120138805,
+        "current_vs_experimental_speedup": 0.3043523772260628
+      },
+      {
+        "name": "batch_64",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 64
+        },
+        "weight_elements": 4608,
+        "M": 50176,
+        "K": 144,
+        "Cout": 32,
+        "gemm_dims": {
+          "A_rows_M": 32,
+          "A_cols_K": 50176,
+          "B_cols_N": 144
+        },
+        "xcol_shape": [
+          50176,
+          144
+        ],
+        "xcol_mb": 27.5625,
+        "dycolT_shape": [
+          32,
+          50176
+        ],
+        "dycolT_mb": 6.125,
+        "current_ms": {
+          "mean_ms": 43.443838882446286,
+          "median_ms": 44.42751884460449,
+          "min_ms": 39.13840103149414,
+          "max_ms": 44.67087936401367,
+          "stdev_ms": 2.0433362038037313
+        },
+        "im2col_ms": {
+          "mean_ms": 7.349899752934774,
+          "median_ms": 7.42792010307312,
+          "min_ms": 7.224319934844971,
+          "max_ms": 7.430848121643066,
+          "stdev_ms": 0.09896211345639333
+        },
+        "permute_ms": {
+          "mean_ms": 1.048425590991974,
+          "median_ms": 1.0483999848365784,
+          "min_ms": 1.0474560260772705,
+          "max_ms": 1.0499839782714844,
+          "stdev_ms": 0.0006834397787229383
+        },
+        "gemm_ms": {
+          "mean_ms": 4.974159987767537,
+          "median_ms": 4.97380805015564,
+          "min_ms": 4.95088005065918,
+          "max_ms": 5.001503944396973,
+          "stdev_ms": 0.013363093393792887
+        },
+        "measured_total_ms": {
+          "mean_ms": 13.539186096191406,
+          "median_ms": 13.547231674194336,
+          "min_ms": 13.427167892456055,
+          "max_ms": 13.59660816192627,
+          "stdev_ms": 0.03638207801649108
+        },
+        "summed_total_experimental_ms": 13.372485331694286,
+        "current_vs_experimental_speedup": 0.30781085824110976
+      },
+      {
+        "name": "batch_128",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 128
+        },
+        "weight_elements": 4608,
+        "M": 100352,
+        "K": 144,
+        "Cout": 32,
+        "gemm_dims": {
+          "A_rows_M": 32,
+          "A_cols_K": 100352,
+          "B_cols_N": 144
+        },
+        "xcol_shape": [
+          100352,
+          144
+        ],
+        "xcol_mb": 55.125,
+        "dycolT_shape": [
+          32,
+          100352
+        ],
+        "dycolT_mb": 12.25,
+        "current_ms": {
+          "mean_ms": 86.7362543741862,
+          "median_ms": 88.35801696777344,
+          "min_ms": 77.8927993774414,
+          "max_ms": 88.84620666503906,
+          "stdev_ms": 3.879688035906004
+        },
+        "im2col_ms": {
+          "mean_ms": 14.951077365875244,
+          "median_ms": 14.958784103393555,
+          "min_ms": 14.726176261901855,
+          "max_ms": 14.96127986907959,
+          "stdev_ms": 0.04248916589749972
+        },
+        "permute_ms": {
+          "mean_ms": 2.1045759836832683,
+          "median_ms": 2.1045119762420654,
+          "min_ms": 2.102911949157715,
+          "max_ms": 2.108544111251831,
+          "stdev_ms": 0.0010341406742471074
+        },
+        "gemm_ms": {
+          "mean_ms": 10.01831251780192,
+          "median_ms": 9.999775886535645,
+          "min_ms": 9.943743705749512,
+          "max_ms": 10.594783782958984,
+          "stdev_ms": 0.11119861521087669
+        },
+        "measured_total_ms": {
+          "mean_ms": 27.07972787221273,
+          "median_ms": 27.06516742706299,
+          "min_ms": 27.04262351989746,
+          "max_ms": 27.376480102539062,
+          "stdev_ms": 0.05903559750949245
+        },
+        "summed_total_experimental_ms": 27.07396586736043,
+        "current_vs_experimental_speedup": 0.312141284664674
+      }
+    ]
+  }
+}

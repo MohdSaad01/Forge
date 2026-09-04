@@ -1939,3 +1939,61 @@ shape; `conv2d_backward` remains ~75% of total CUDA training-step compute
 time. No further Conv2d-backward optimization is currently justified by
 measurement -- the next real gains, if any, likely require a structurally
 different approach (e.g. im2col+GEMM) outside this milestone's scope.
+
+### M34 — CUDA Conv2d dWeight via im2col + existing tiled GEMM (accepted)
+M33 named im2col + GEMM (reusing the existing M11 shared-memory-tiled
+`k_matmul`, completely unmodified) as the next structurally different
+`dWeight` candidate. This milestone built that experimental path (two new
+gather kernels -- `k_im2col_conv2d`, `k_conv2d_grad_output_permute` -- plus
+one ordinary `cf_matmul_*` call), verified its GEMM orientation against
+`CPUBackend.conv2d_backward` (catching that a literal `Xcol^T @ dYmat`
+reading would have been transposed relative to Forge's actual `(Cout, Cin,
+KH, KW)` weight layout), and benchmarked it against the existing per-thread
+kernel at the same 7 M32/M33 representative shapes, both in isolation
+(`benchmarks/conv2d_backward_weight_im2col_profile.py`, new) and as the
+complete `conv2d_backward` (`benchmarks/conv2d_backward_im2col_pipeline_
+profile.py`, new, also measuring allocator/peak-memory behavior). See
+`docs/performance/conv2d-backward-profiling.md`'s **Milestone 34** section
+for the full report.
+
+**Finding.** 1.12-1.59x faster end-to-end than the existing kernel at every
+shape with >= 1,152 weight elements (6 of 7 shapes), with 3-68MB peak-memory
+overhead (well inside the 940MX's 2GB budget) and a 95% steady-state
+allocator cache-hit rate (matching production). Slower only at the smallest
+tested shape (`mnist_conv1`, 72 elements, already on M21's block-reduce
+path) -- traced to `k_matmul`'s fixed 16x16 tiling having almost no reuse
+benefit when `Cout`/`Cin*KH*KW` are near or below 16.
+
+**Decision: accepted, as a minimal shape-based hybrid dispatch.**
+`CUDABackend.conv2d_backward` (`backend.py`) now dispatches `dWeight` to the
+new `forge.backend.cuda.experimental_conv_im2col.dweight_im2col_gemm` at/above
+`_CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD = 256` weight elements (reusing --
+not re-deriving -- `kernels.cu`'s existing `CONV2D_WEIGHT_REDUCE_THRESHOLD`
+boundary) and keeps the original single-kernel call below it. `dInput`/
+`dBias` and the existing GEMM (`k_matmul`) are completely unmodified.
+Documented caveat: no shape between 256 and 1,152 weight elements was
+tested, so the threshold is a conservative reuse of the existing production
+boundary, not a freshly-fitted crossover point.
+
+**Tests.** 1,203 tests total (1,184 pre-existing + 19 new,
+`tests/test_cuda_conv2d_backward_weight_im2col_gemm.py`), all passing on the
+940MX. New coverage: the direct im2col+GEMM pipeline vs. CPU across 6
+shape/stride/padding/kernel-size combinations (float32 and float64), finite
+difference, explicit-stream, cross-stream, and repeated-use memory safety;
+plus production-dispatch coverage through the real `Tensor.conv2d`/
+`nn.Conv2d` API at shapes that cross the new threshold (existing
+`test_cuda_conv.py` shapes never did, staying below ~144 weight elements).
+
+**MNIST / pipeline / prefetch.** `mnist_profile`'s per-op CUDA `conv2d`
+backward: 9.95ms (M32/M33) -> 6.90ms, ~1.44x (the real M20 CNN's second conv
+layer now crosses the threshold). Full training step and async pipeline
+`bwd` phase: within normal run-to-run noise of M32/M33 (MNIST's real layer
+shapes keep the *absolute* savings small relative to those benchmarks' own
+measurement noise). Async prefetch: 1.129x, within the established 1.07-1.21x
+band. CPU/CUDA regression benchmark categories (`forward`, `backward`,
+`training`, `mnist`): no operation moved outside historical noise except
+`conv2d`/`mnist_cnn_full`, and only in the improving direction.
+
+**Why no ADR.** Kernel-selection logic changed behind an unchanged
+`CUDABackend.conv2d_backward` public method signature -- no public API,
+Tensor semantics, or cross-cutting architectural boundary was touched.

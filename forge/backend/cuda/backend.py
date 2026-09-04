@@ -50,6 +50,22 @@ from . import transfer as _transfer
 _COMPUTE_DTYPES = (np.dtype(np.float32), np.dtype(np.float64))
 _SUFFIX = {np.dtype(np.float32): "f32", np.dtype(np.float64): "f64"}
 
+# Milestone 34: `dWeight` production dispatch threshold, in weight elements
+# (`Cout*Cin*KH*KW`) -- reuses `kernels.cu`'s existing `CONV2D_WEIGHT_REDUCE_
+# THRESHOLD` boundary rather than introducing a second, independently-tuned
+# one. `benchmarks/conv2d_backward_weight_im2col_profile.py` measured the
+# experimental im2col + existing tiled GEMM path (`experimental_conv_
+# im2col.dweight_im2col_gemm`) 1.12-1.59x faster than the existing per-thread
+# `dWeight` kernel at every representative shape with >= 1,152 weight
+# elements (all above this threshold), and slower at the one tested shape
+# below it (`mnist_conv1`, 72 elements, where the existing block-reduce path
+# already wins per M33) -- see `docs/performance/conv2d-backward-
+# profiling.md`'s **Milestone 34** section for the full evidence and the
+# exact crossover caveat (no shape between 256 and 1,152 weight elements was
+# tested; this threshold is the existing, conservative production boundary,
+# not a newly-fitted one).
+_CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD = 256
+
 _TRANSFERABLE_DTYPES = (
     np.dtype(np.float32),
     np.dtype(np.float64),
@@ -266,6 +282,22 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         conv_bwd_bias_fn = getattr(lib, f"cf_conv2d_backward_bias_{suffix}")
         conv_bwd_bias_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 4 + [ctypes.c_void_p]
         conv_bwd_bias_fn.restype = ctypes.c_int
+
+        # -- dWeight im2col + existing tiled GEMM profiling helpers (Milestone 34) --
+        # see kernels.cu's identically-named section. Never called by
+        # `CUDABackend` itself -- only by `forge.backend.cuda.experimental_conv_im2col`
+        # and the M34 benchmark/test modules.
+        im2col_fn = getattr(lib, f"cf_im2col_conv2d_{suffix}")
+        im2col_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 12 + [ctypes.c_void_p]
+        im2col_fn.restype = ctypes.c_int
+
+        grad_output_permute_fn = getattr(lib, f"cf_conv2d_grad_output_permute_{suffix}")
+        grad_output_permute_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 4 + [ctypes.c_void_p]
+        grad_output_permute_fn.restype = ctypes.c_int
 
         pool_fwd_fn = getattr(lib, f"cf_maxpool2d_forward_{suffix}")
         pool_fwd_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 12 + [ctypes.c_void_p]
@@ -1204,12 +1236,23 @@ class CUDABackend(Backend):
         self._maybe_synchronize("conv2d backward (input)")
         grad_x = CUDAStorage(grad_x_ptr, x.shape, dtype, self._lib)
 
-        grad_w_ptr = self._alloc(Cout * Cin * KH * KW * dtype.itemsize)
-        fn_gw = getattr(self._lib, f"cf_conv2d_backward_weight_{_SUFFIX[dtype]}")
-        code = fn_gw(grad_output.ptr, x.ptr, grad_w_ptr, *shape_args, self._stream_handle())
-        self._check(code, "conv2d backward (weight)")
-        self._maybe_synchronize("conv2d backward (weight)")
-        grad_w = CUDAStorage(grad_w_ptr, weight.shape, dtype, self._lib)
+        # Milestone 34: shape-based dWeight dispatch -- im2col + the existing
+        # tiled GEMM (`k_matmul`, unmodified) at/above the weight-element
+        # threshold, the original per-thread/block-reduce kernel below it.
+        # See `_CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD`'s comment above for the
+        # measured evidence this dispatch is based on.
+        weight_elements = Cout * Cin * KH * KW
+        if weight_elements >= _CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD:
+            from .experimental_conv_im2col import dweight_im2col_gemm
+
+            grad_w = dweight_im2col_gemm(self, grad_output, x, weight.shape, stride, padding)
+        else:
+            grad_w_ptr = self._alloc(Cout * Cin * KH * KW * dtype.itemsize)
+            fn_gw = getattr(self._lib, f"cf_conv2d_backward_weight_{_SUFFIX[dtype]}")
+            code = fn_gw(grad_output.ptr, x.ptr, grad_w_ptr, *shape_args, self._stream_handle())
+            self._check(code, "conv2d backward (weight)")
+            self._maybe_synchronize("conv2d backward (weight)")
+            grad_w = CUDAStorage(grad_w_ptr, weight.shape, dtype, self._lib)
 
         grad_b = None
         if bias is not None:

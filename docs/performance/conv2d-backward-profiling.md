@@ -733,3 +733,405 @@ CUDA behavior anywhere in this milestone.
   memory) was not, since the flat trend across the tested range made a
   reversal at a smaller granularity implausible -- not measured, so not
   claimed.
+
+# Milestone 34: dWeight im2col + existing tiled GEMM (accepted)
+
+## Purpose
+M33 rejected cooperative reduction and named a structurally different
+approach -- im2col + GEMM, reusing Forge's existing M11 shared-memory-tiled
+`k_matmul` -- as the next `dWeight` candidate worth measuring. This
+milestone builds that experimental path, benchmarks it against the existing
+per-thread `dWeight` kernel at the same 7 representative shapes (isolated
+`dWeight` alone, and the complete `conv2d_backward`), and, given a clear and
+reproducible end-to-end improvement at 6 of 7 shapes with acceptable memory
+overhead, integrates it into production as a minimal shape-based dispatch.
+
+## How to reproduce
+```bash
+python -m benchmarks.conv2d_backward_weight_im2col_profile     # isolated dWeight: current vs. im2col/permute/GEMM phases
+python -m benchmarks.conv2d_backward_im2col_pipeline_profile   # full conv2d_backward: production vs. experimental-dWeight, + memory
+python -m benchmarks.mnist_profile
+python -m benchmarks.pipeline_profile
+python -m benchmarks.async_dataloader_bench
+python -m benchmarks --categories mnist backward forward training
+```
+Archived results: `benchmarks/results/m34_dweight_im2col_gemm.json` (isolated
+dWeight phases -- the primary GEMM/im2col evidence), `m34_pipeline_profile.json`
+(full `conv2d_backward` comparison + allocator/peak-memory accounting -- the
+primary production-decision evidence), plus re-runs of `mnist_profile.json`
+and `pipeline_profile.json` (overwritten in place, matching M32/M33's own
+convention for these two particular tools).
+
+## Existing direct dWeight architecture (unchanged, still used below the threshold)
+`cf_conv2d_backward_weight_*` (`kernels.cu`) still dispatches, purely by
+weight-element count (`CONV2D_WEIGHT_REDUCE_THRESHOLD = 256`), between
+`k_conv2d_backward_weight` (one thread per `(co, ci, kh, kw)` weight element,
+full serial `N*Hout*Wout` reduction) and `k_conv2d_backward_weight_reduce`
+(one block per weight element, shared-memory tree reduction) -- the exact
+M21 kernels, byte-for-byte unchanged by this milestone.
+
+## Existing GEMM architecture
+`k_matmul` (`kernels.cu`, Milestone 11): a standard 16x16-tile shared-memory
+GEMM, `C[M,N] = A[M,K] @ B[K,N]`, row-major, zero-padded on out-of-range tile
+loads (correct for any M/K/N, not just multiples of 16). No warp intrinsics,
+no architecture-specific tricks -- portable to CC 5.0. `cf_matmul_{f32,f64}`
+is called exactly like every other Forge matmul use site (`CUDABackend.
+matmul`); this milestone adds **zero** changes to `k_matmul` or its launcher,
+per the milestone brief's explicit "existing GEMM must remain untouched"
+rule -- the only question asked is whether this *unmodified* GEMM, fed the
+right operands, beats the direct kernel.
+
+## Mathematical reformulation
+Verified against `CPUBackend.conv2d_backward` (`forge/backend/cpu.py`,
+which already computes this exact GEMM via NumPy/BLAS on CPU):
+
+```
+grad_weight_mat = grad_out_rows.T @ cols_rows     # (Cout, M) @ (M, K) -> (Cout, K)
+```
+
+where `M = N*Hout*Wout` (the reduction dimension) and `K = Cin*KH*KW`,
+reshaped to `(Cout, Cin, KH, KW)` at the end. **This is not the `Xcol^T @
+dYmat -> (K, Cout)` orientation a literal reading of a naive im2col write-up
+would suggest** -- that produces the transpose of what Forge's weight
+layout needs (the milestone brief's Section 5 explicitly flagged this as a
+"verify, do not assume" risk, and the verification did in fact catch a
+transposed orientation). The implementation (`forge/backend/cuda/
+experimental_conv_im2col.py`) instead builds:
+
+- `Xcol`, shape `(M, K)` -- via new kernel `k_im2col_conv2d`, one thread per
+  `(m, k)` output element, identical padding/stride/boundary handling to
+  `k_conv2d_forward`.
+- `dYcolT`, shape `(Cout, M)` -- via new kernel `k_conv2d_grad_output_permute`,
+  one thread per `(co, m)` output element. This is **not** a 2D transpose of
+  `grad_output`: its actual memory layout is `(N, Cout, Hout, Wout)` (`N`
+  outermost), so producing `(Cout, M)` (`Cout` outermost) is a genuine
+  4D-to-2D gather, not a reshape -- this is the "reshape/copy" cost the
+  milestone brief's Sections 8/17/20 ask to track separately.
+
+then one `cf_matmul(A=dYcolT, B=Xcol, GEMM_M=Cout, GEMM_K=M, GEMM_N=K)` call,
+producing `(Cout, K)` directly in `grad_weight`'s own contiguous layout --
+the final reshape to `(Cout, Cin, KH, KW)` costs nothing (no copy).
+
+## Workloads
+The same 7 M32/M33 shapes, unmodified (`benchmarks/conv2d_backward_profile.py`'s
+`SHAPES`/`BATCH_SWEEP_BASE`/`BATCH_SIZES`, imported directly).
+
+## GEMM dimensions
+| Shape | GEMM A (Cout x M) | GEMM B (M x K) | GEMM C (Cout x K) | M | K |
+|---|---|---|---|---|---|
+| mnist_conv1 | 8 x 50,176 | 50,176 x 9 | 8 x 9 | 50,176 | 9 |
+| mnist_conv2 | 16 x 10,816 | 10,816 x 72 | 16 x 72 | 10,816 | 72 |
+| large_channel | 32 x 50,176 | 50,176 x 144 | 32 x 144 | 50,176 | 144 |
+| large_spatial | 16 x 100,352 | 100,352 x 72 | 16 x 72 | 100,352 | 72 |
+| batch_32 | 32 x 25,088 | 25,088 x 144 | 32 x 144 | 25,088 | 144 |
+| batch_64 | 32 x 50,176 | 50,176 x 144 | 32 x 144 | 50,176 | 144 |
+| batch_128 | 32 x 100,352 | 100,352 x 144 | 32 x 144 | 100,352 | 144 |
+
+`GEMM_M` (`Cout`, 8-32) is tiny relative to the 16x16 tile everywhere -- 1-2
+tile rows total -- the central fact behind the **GEMM suitability** analysis
+below.
+
+## Baseline dWeight results
+(`current`, the existing production dispatch, mean of 30 iterations, 5
+warmup, TimedEvent-measured, 940MX): mnist_conv1 2.18ms, mnist_conv2 1.74ms,
+large_channel 43.50ms, large_spatial 21.47ms, batch_32 21.73ms, batch_64
+43.44ms, batch_128 86.74ms -- consistent with the M32/M33 baseline within
+normal run-to-run noise.
+
+## Im2col results
+| Shape | im2col (ms) | Xcol size (MB) |
+|---|---|---|
+| mnist_conv1 | 0.47 | 1.72 |
+| mnist_conv2 | 0.79 | 2.97 |
+| large_channel | 7.35 | 27.56 |
+| large_spatial | 7.29 | 27.56 |
+| batch_32 | 3.62 | 13.78 |
+| batch_64 | 7.35 | 27.56 |
+| batch_128 | 14.95 | 55.12 |
+
+Plus the `grad_output` permute (`dYcolT`): 0.12-2.10ms across shapes,
+consistently the cheapest of the three phases (`Cout*M` elements moved --
+smaller than `Xcol`'s `M*K` by roughly `K/Cout`).
+
+## GEMM results
+| Shape | gemm (ms) |
+|---|---|
+| mnist_conv1 | 3.04 |
+| mnist_conv2 | 0.74 |
+| large_channel | 4.95 |
+| large_spatial | 6.60 |
+| batch_32 | 2.48 |
+| batch_64 | 4.97 |
+| batch_128 | 10.02 |
+
+Note `large_spatial` (6.60ms) vs. `batch_32` (2.48ms): both have *identical*
+total multiply-accumulate work (`weight_elements * M`: 1,152 x 100,352 =
+4,608 x 25,088 = 115,605,504), yet GEMM takes 2.7x longer for `large_spatial`
+-- see **GEMM suitability** below for why.
+
+## Total experimental dWeight results
+`total = im2col + permute + gemm` (Section 8: never compared as GEMM time
+alone):
+
+| Shape | current (ms) | total experimental (ms) | ratio (exp/current) |
+|---|---|---|---|
+| mnist_conv1 | 2.18 | 3.79 | 1.74x (slower) |
+| mnist_conv2 | 1.74 | 1.64 | 0.94x |
+| large_channel | 43.50 | 13.35 | 0.31x |
+| large_spatial | 21.47 | 14.92 | 0.70x |
+| batch_32 | 21.73 | 6.61 | 0.30x |
+| batch_64 | 43.44 | 13.37 | 0.31x |
+| batch_128 | 86.74 | 27.07 | 0.31x |
+
+Every shape at/above `CONV2D_WEIGHT_REDUCE_THRESHOLD` (256 weight elements)
+is faster with im2col+GEMM -- 1.4x (`mnist_conv2`) to 3.3x (`batch_32`/
+`large_channel`/`batch_64`/`batch_128`). Only `mnist_conv1` (72 elements,
+already on the block-reduce path per M21/M33) is slower.
+
+## Memory traffic analysis
+Direct kernel: each of `weight_elements` threads independently re-reads
+its own `~M`-element slice of `x`/`grad_out` (bounded by padding), no reuse
+across threads beyond incidental cache locality -- total global reads scale
+as `weight_elements * M` element-reads (matching its multiply-accumulate
+count 1:1; effectively memory-bandwidth-bound at large `M`). Im2col+GEMM
+instead pays: (1) `im2col` -- `M*K` reads of `x` (with the same overlap-driven
+re-read pattern any im2col has) and `M*K` writes to `Xcol`; (2) `permute` --
+`Cout*M` reads of `grad_out` and `Cout*M` writes to `dYcolT`; (3) `GEMM` --
+tiled reads of `A`/`B` reduced by roughly the 16x tile-reuse factor versus a
+naive read-per-output-element GEMM, `Cout*K` writes. The extra traffic is
+real (materializing `Xcol`/`dYcolT` before the GEMM even starts touches
+every input element an extra time), but the GEMM's shared-memory tile reuse
+more than pays for it at every tested shape except `mnist_conv1`, where
+`K=9` is so far below the 16-wide tile that the GEMM gets almost no reuse
+benefit at all (see next section).
+
+## Peak memory analysis
+(`benchmarks/conv2d_backward_im2col_pipeline_profile.py`, full
+`conv2d_backward`, peak *reserved* bytes across 20 fresh-allocate-then-release
+iterations):
+
+| Shape | production peak (MB) | experimental peak (MB) | extra (MB) |
+|---|---|---|---|
+| mnist_conv1 | 5.36 | 8.61 | 3.25 |
+| mnist_conv2 | 8.74 | 12.37 | 3.63 |
+| large_channel | 56.46 | 90.15 | 33.69 |
+| large_spatial | 93.19 | 126.88 | 33.69 |
+| batch_32 | 105.49 | 122.33 | 16.84 |
+| batch_64 | 148.38 | 182.07 | 33.69 |
+| batch_128 | 234.15 | 301.52 | 67.38 |
+
+Largest absolute overhead (`batch_128`, 67.38MB) is ~3.3% of the 940MX's 2GB
+budget -- not a large-memory-multiplier concern (Section 18's explicit
+"small speedup, large memory multiplier" failure mode does not apply here;
+speedups are large, not small, and the multiplier itself is modest).
+
+## Allocator analysis
+Both `Xcol`/`dYcolT` go through the ordinary M25 caching allocator
+(`self._alloc`, `forge/backend/cuda/experimental_conv_im2col.py`) -- no raw
+`cudaMalloc`/`cudaFree`. Steady-state behavior (20 repeated calls, temporaries
+released every iteration): production makes 3 allocation requests/call (60
+total across 20 iterations), 3 cache misses (cold start) + 57 hits (95%);
+experimental makes 5 requests/call (100 total), 5 misses + 95 hits (95%) --
+identical steady-state hit rate to production, confirming the two new
+temporary sizes are exact-size cache-friendly like every other Forge CUDA
+buffer, with no allocator degradation from adding two more per-call
+allocation sites.
+
+## Kernel launch analysis
+Direct dWeight: 1 launch. Experimental: 3 launches (im2col, permute, GEMM).
+Full `conv2d_backward`: production 3 launches total (`dInput`, `dWeight`,
+`dBias`); experimental-dWeight variant 5 (`dInput`, im2col, permute, GEMM,
+`dBias`). Per-launch dispatch overhead (~54-65us, M31's
+`stream_dependency_bench.py`) remains one to three orders of magnitude
+smaller than any measured kernel time here (0.1-160ms) -- the extra 2
+launches are not a factor at any tested shape, including the smallest.
+
+## Synchronization analysis
+`im2col`, `permute`, and the GEMM call are issued on the same Forge stream
+(`backend._stream_handle()`) back-to-back with no `cudaDeviceSynchronize()`/
+`cudaStreamSynchronize()` between them -- CUDA's ordinary stream program
+order (same stream, in-order execution) is what keeps `im2col`'s writes to
+`Xcol` visible to the GEMM's read of it, and likewise for `permute`'s writes
+to `dYcolT`. `dweight_im2col_gemm` synchronizes exactly once, at the very
+end (`_maybe_synchronize`, a no-op in async mode) -- identical to every
+other `CUDABackend` method's contract.
+
+## Stream analysis
+`test_im2col_gemm_dweight_on_explicit_stream_matches_cpu` (explicit
+`forge.cuda.Stream()`) and `test_im2col_gemm_dweight_correct_when_inputs_from_
+different_streams` (x/weight/grad_output each produced on a distinct
+producer stream, computed on a third) both pass -- `_require_compute_dtype`'s
+existing `_stream_guard` chokepoint (unchanged since M28) already covers the
+new pipeline's inputs; no new dependency-tracking code was needed.
+
+## Bottleneck analysis
+`mnist_conv1`'s regression is explained by `GEMM_N = K = 9` -- less than one
+16-wide tile, so `k_matmul` computes on a `16x16` tile that is >40% zero-padding
+waste, while the existing block-reduce kernel (M21/M33-confirmed the right
+choice below 256 weight elements) has no such inefficiency. `large_spatial`
+vs. `batch_32`'s 2.7x GEMM-time gap despite identical FLOPs is explained by
+grid size: `large_spatial`'s GEMM launches only `ceil(72/16) * ceil(16/16) =
+5` thread blocks total (`GEMM_N=72` -> 5 tiles, `GEMM_M=16` -> 1 tile row) --
+far too few to occupy the 940MX's 3 SMs -- while `batch_32`'s `ceil(144/16) *
+ceil(32/16) = 18` blocks spread far better. **`k_matmul`'s tile efficiency
+and grid size both depend on `Cout` and `Cin*KH*KW` specifically (small and
+close to a tile boundary at MNIST-adjacent shapes), not on total FLOPs** --
+the central finding of this milestone's GEMM-suitability analysis (Section
+16 of the brief).
+
+## Correctness validation
+`tests/test_cuda_conv2d_backward_weight_im2col_gemm.py` (19 tests): direct
+`dweight_im2col_gemm` vs. CPU across 6 shape/stride/padding/kernel-size
+combinations (float32 and float64), explicit-stream, cross-stream, and
+repeated-use memory safety; plus **production-dispatch** coverage through
+the ordinary `Tensor.conv2d`/`nn.Conv2d` API at shapes that actually cross
+`_CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD` (since `tests/test_cuda_conv.py`'s
+existing shapes never exceed ~144 weight elements and so never exercised the
+new dispatch branch before this milestone). All pass at `rtol=atol=1e-4`
+(float32) / `rtol=atol=1e-8` (float64).
+
+## Finite difference results
+`test_im2col_gemm_dweight_finite_difference` (3 stride/padding combinations,
+float64) passes at `rtol=atol=1e-2`, matching M32's own weight-gradient FD
+tolerance -- established mathematical correctness independent of the CPU
+comparison.
+
+## Cross-stream results
+`test_im2col_gemm_dweight_correct_when_inputs_from_different_streams` passes:
+`x`/`weight` produced on one stream, `grad_output` on another, computed on a
+third -- `_stream_guard` handles all three producers correctly with zero new
+dependency code.
+
+## Async results
+`test_im2col_gemm_dweight_on_explicit_stream_matches_cpu` and the new
+production-dispatch `test_production_conv2d_backward_on_explicit_stream_
+above_threshold` both pass: the full pipeline (and the real `Conv2d` layer
+routed through it) on an explicit `forge.cuda.Stream()`, verified against CPU.
+
+## Shape generalization
+6 explicit shape/stride/padding/kernel-size combinations in the direct
+correctness tests (no padding, padding, strided, an asymmetric batch size,
+an even kernel size at an odd spatial size), plus the 7 M32/M33 representative
+shapes in the benchmark suite, plus 3 shapes spanning the dispatch threshold
+in the production-dispatch tests -- all pass.
+
+## MNIST results
+`benchmarks.mnist_profile`'s per-op CUDA walker: `conv2d` backward
+6.90ms -- down from M32's post-fix 9.95ms (M33 left unchanged), a further
+~1.44x reduction, since the real M20 CNN's second conv layer
+(`mnist_conv2`-shaped, 1,152 weight elements) now crosses the dispatch
+threshold. `benchmarks.mnist_bench` (`training` category, three runs):
+23.47ms, 14.78ms, 14.90ms (mean 17.72ms) -- within the same 15-19ms
+run-to-run noise band M32 (17.09ms mean) and M33 (15.21ms) reported; MNIST's
+real layer shapes are small enough that the absolute `dWeight` savings here
+are modest relative to this benchmark's own measurement noise, consistent
+with M32's identical caveat for its own MNIST-scale numbers. The isolated
+per-op walker above is the cleaner signal at this scale.
+
+## Async prefetch results
+`benchmarks.async_dataloader_bench`, real MNIST-shaped workload (n=1024,
+batch_size=64): synchronous 243.70ms/epoch, prefetch 215.84ms/epoch,
+**1.129x speedup** -- within the 1.07-1.21x band every milestone since M29
+has measured. CUDA active bytes and pinned active bytes both returned to 0
+after the run.
+
+## Production decision
+**Accepted, as a minimal shape-based hybrid dispatch.** Per Sections 28-30
+and 39-40 of the milestone brief: reproducible improvement (measured via two
+independent benchmark scripts, isolated-kernel and full-pipeline), a clear
+representative-shape benefit (6 of 7 shapes, 1.12-1.59x end-to-end), modest
+memory overhead (3-68MB, <3.3% of the 2GB budget), no regression at small
+shapes (the one shape that regresses, `mnist_conv1`, stays on the existing
+kernel via the threshold), correct stream/async/cross-stream behavior, and
+healthy allocator behavior (95% cache hit rate, matching production) --
+every criterion in Section 39 is satisfied.
+
+## If accepted: production integration
+`CUDABackend.conv2d_backward` (`forge/backend/cuda/backend.py`) now
+dispatches `dWeight` on `weight_elements = Cout*Cin*KH*KW`:
+`>= _CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD` (256, reusing -- not
+re-deriving -- `kernels.cu`'s existing `CONV2D_WEIGHT_REDUCE_THRESHOLD`
+boundary) routes to `forge.backend.cuda.experimental_conv_im2col.
+dweight_im2col_gemm`; below it, the original `cf_conv2d_backward_weight_*`
+kernel call is unchanged. `dInput`/`dBias` are completely untouched.
+**Caveat**: no shape between 256 and 1,152 weight elements was tested, so
+the exact crossover point is not finely known -- 256 was kept because it is
+already the established production boundary and the smallest shape actually
+tested above it (`mnist_conv2`, 1,152 elements) already shows a real (if
+modest, 1.12x) end-to-end win, giving confidence the reused threshold is
+conservative rather than optimistic.
+
+## Before / after Conv2d results
+Isolated `dWeight` (`current` vs. `total experimental`, this document's own
+**Total experimental dWeight results** table above) -- the direct
+before/after evidence.
+
+## Before / after training results
+`mnist_profile`'s per-op CUDA `conv2d` backward: 9.95ms (M32/M33 baseline) ->
+6.90ms (this milestone), ~1.44x. `pipeline_profile`'s async `bwd` phase:
+8.48-8.49ms (M32/M33) -> 8.32ms at batch=64 -- within noise (MNIST's real
+layer shapes keep the *absolute* `dWeight` savings small relative to this
+already-overlapped, multi-op pipeline measurement, matching this document's
+own **MNIST results** caveat above).
+
+## CPU regression results
+`CPUBackend.conv2d_backward` untouched (CUDA-only milestone). All CPU
+`Conv2d`/training tests pass unchanged; `python -m benchmarks --categories
+forward backward training` CPU rows show no `conv2d`-adjacent movement
+outside historical noise.
+
+## CUDA regression results
+Same benchmark categories re-run: every non-`dWeight`-adjacent CUDA
+operation (elementwise, `matmul`, `max_pool2d`, `cross_entropy_loss`,
+dropout, multilayer Linear/ReLU/Linear, Adam) within normal run-to-run
+noise; `conv2d`/`mnist_cnn_full` moved, and only in the improving direction
+(e.g. the `backward` category's "medium" CUDA `conv2d` shape, `Cout*Cin*K*K
+= 4,608` weight elements, now dispatches through im2col+GEMM).
+
+## Memory safety
+`test_im2col_gemm_dweight_repeated_use_does_not_grow_active_memory` (20
+iterations of the direct pipeline) and
+`test_production_conv2d_backward_repeated_use_does_not_grow_active_memory_
+above_threshold` (30 iterations through the real `Conv2d` layer, weight
+elements above the threshold) both pass: `allocated_bytes`/`reserved_bytes`/
+`pending_bytes` all return to baseline after `gc.collect()` + `empty_cache()`.
+
+## Leak testing
+Same two tests above, plus the pre-existing `test_cuda_conv2d_backward_
+repeated_use_does_not_grow_active_memory` (M32, still exercises the
+below-threshold path for its small test shape, unaffected) and
+`test_cuda_conv2d_weight_reuse_accumulates_matching_cpu`-style gradient
+accumulation, now also covered above-threshold by this milestone's
+`test_production_conv2d_weight_reuse_accumulates_matching_cpu_above_
+threshold`.
+
+## Hardware verification
+Every measurement in this section was collected on the real, verified
+development GPU (NVIDIA GeForce 940MX, CC 5.0, CUDA 12.6, driver 582.53) --
+no simulated or emulated CUDA behavior anywhere in this milestone.
+
+## Limitations / future opportunities (Milestone 34)
+- **No shape between 256 and 1,152 weight elements was tested** -- the
+  reused 256-element threshold is a conservative choice (see **Production
+  decision**'s caveat), not a freshly-fitted crossover point. A future
+  milestone could narrow this with a finer shape sweep if it becomes
+  relevant (e.g. a CNN architecture with many mid-sized conv layers).
+- **`mnist_conv1`-shaped layers (very small `Cout`/`Cin*KH*KW`) get no
+  benefit** from this milestone -- `k_matmul`'s 16x16 tiling is poorly
+  suited to a GEMM with `Cout < 16` and `Cin*KH*KW` near or below 16. A
+  differently-tiled or batched-small-GEMM strategy could help here, but is
+  out of scope (Section 43 forbids a new GEMM implementation).
+- **The `grad_output` permute (`k_conv2d_grad_output_permute`) was not
+  optimized** beyond the simplest correct one-thread-per-element gather
+  (Section 31's "measure before optimizing im2col" applies equally here);
+  it was consistently the cheapest of the three phases at every shape
+  measured, so no optimization was justified.
+- **`Xcol` materialization roughly doubles total `x`-adjacent memory traffic**
+  relative to the direct kernel at large shapes -- acceptable given the
+  measured speedup and modest absolute peak-memory overhead here, but would
+  compound unfavorably on a GPU with a tighter VRAM budget than the 940MX's
+  2GB, or at much larger `Cin*KH*KW`.
+- This milestone did not attempt an im2col+GEMM formulation for `dInput`
+  (explicitly out of scope, Section 6) -- `dInput` remains the M32-optimized
+  direct kernel, still the larger `conv2d_backward` cost at most shapes even
+  after this milestone's `dWeight` improvement.

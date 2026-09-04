@@ -977,6 +977,73 @@ asserted in prose.
 changed -- the only new code is profiling-only kernel surface, already
 covered by the same "no ADR" reasoning Milestone 31's timing events used.
 
+## CUDA Conv2d backward: dWeight im2col + existing tiled GEMM (Milestone 34, accepted)
+M33 rejected cooperative reduction and named im2col + GEMM -- reusing the
+existing M11 shared-memory-tiled `k_matmul`, completely unmodified -- as the
+next structurally different `dWeight` candidate. This milestone built that
+path, measured it 1.12-1.59x faster than the existing per-thread kernel
+end-to-end within `conv2d_backward` at 6 of 7 representative shapes (all
+with >= 1,152 weight elements), with 3-68MB peak-memory overhead (well
+inside the 940MX's 2GB budget), and integrated it into production as a
+minimal shape-based dispatch -- see `docs/performance/conv2d-backward-
+profiling.md`'s **Milestone 34** section for the complete profiling
+evidence this decision is based on.
+
+**New module.** `forge/backend/cuda/experimental_conv_im2col.py`: `im2col()`
+and `grad_output_permute()` each wrap one new gather kernel (`kernels.cu`'s
+matching "dWeight im2col + existing tiled GEMM candidate" section --
+`k_im2col_conv2d`, `k_conv2d_grad_output_permute`); `dweight_im2col_gemm()`
+composes both plus one ordinary `cf_matmul_*` call into the complete
+`dWeight` reformulation, verified against `CPUBackend.conv2d_backward`'s own
+GEMM orientation (`grad_out_rows.T @ cols_rows`, **not** the `Xcol^T @
+dYmat` orientation a literal im2col write-up would suggest -- see that
+module's docstring for the full derivation). Both temporaries (`Xcol`,
+`dYcolT`) go through the ordinary M25 caching allocator; all three kernel
+launches (im2col, permute, GEMM) are issued on the current Forge stream with
+no synchronization between them -- ordinary CUDA stream program order keeps
+each stage's writes visible to the next, and `_require_compute_dtype`'s
+existing `_stream_guard` chokepoint covers cross-stream inputs with zero new
+dependency code.
+
+**Production dispatch.** `CUDABackend.conv2d_backward` (`backend.py`) now
+branches on `weight_elements = Cout*Cin*KH*KW`:
+`>= _CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD` (256 -- reuses, rather than
+re-derives, `kernels.cu`'s existing `CONV2D_WEIGHT_REDUCE_THRESHOLD`
+boundary) calls `dweight_im2col_gemm`; below it, the original
+`cf_conv2d_backward_weight_*` single-kernel call is unchanged.
+`dInput`/`dBias` are completely untouched by this milestone. The two new
+gather kernels stay separate exported symbols from `cf_conv2d_backward_
+weight_*` because the full pipeline needs Python-level buffer management
+(two temporary allocations between three launches) the existing single-call
+C dispatcher signature has no room for -- `CUDABackend.conv2d_backward`
+itself is the shape-based dispatch point, matching Section 40 of the
+milestone brief ("existing `CUDABackend.conv2d_backward` -> shape-based
+dispatch -> direct or im2col+GEMM dWeight").
+
+**Why accepted (unlike Milestone 33's cooperative-reduction candidates).**
+The measured mechanism is different in kind, not degree: M33's cooperative
+candidates concentrated the *same* per-thread work behind fewer independent
+memory streams, trading away memory-level parallelism the per-thread kernel
+already had for free. Im2col+GEMM instead changes the algorithm's shared-memory
+reuse structure entirely (`k_matmul`'s 16x16 tiling reads each `Xcol`/`dYcolT`
+tile from global memory once per tile, shared across 16 threads, rather than
+once per output element) -- a genuine reduction in total memory traffic per
+useful FLOP at large enough `GEMM_N`/`GEMM_M`, not merely a different way of
+scheduling the same traffic. The one shape where this milestone's approach
+also loses (`mnist_conv1`, `Cout=8`/`Cin*KH*KW=9`) fails for a *different,
+identifiable* reason -- `k_matmul`'s fixed 16-wide tile has almost no
+elements to reuse when the matrix itself is smaller than one tile -- and
+that shape already has a dedicated better path (M21's block-reduce kernel),
+so the hybrid dispatch costs nothing there.
+
+**Why no ADR.** This changes kernel-selection logic behind an unchanged
+`Backend`/`CUDABackend` public method signature (`conv2d_backward`'s
+contract -- inputs, outputs, semantics -- is identical) -- the same
+"internals behind an unchanged boundary" reasoning Milestone 21/32's own
+`dWeight`/`dInput` kernel rewrites used, extended here to a rewrite that
+happens to span more than one kernel launch. No public API, Tensor
+semantics, or cross-cutting architectural decision was touched.
+
 ## CUDA Memory Statistics (Milestone 22)
 Milestone 22 is observability, not optimization: it instruments the
 `cudaMalloc`/`cudaFree` boundary that already existed (`CUDABackend._alloc`,
