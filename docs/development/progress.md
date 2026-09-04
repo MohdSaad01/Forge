@@ -1873,3 +1873,69 @@ remove) -- both measured, neither is this milestone's bottleneck.
 `conv2d_backward` cost at most non-MNIST shapes and is documented as the
 natural next optimization target, deliberately not pursued here per the
 milestone brief's "start with one optimization" rule.
+
+### M33 — CUDA Conv2d dWeight cooperative reduction (investigated, rejected)
+M32 left `dWeight`'s per-thread reduction (`k_conv2d_backward_weight`,
+one thread per weight element, full serial `N x Hout x Wout` sum) as the
+largest single `conv2d_backward` cost at 6 of 7 representative shapes (now
+dominant everywhere except `mnist_conv2`, where it is within 4% of
+`dInput`). This milestone built a dedicated `dWeight` profiler
+(`benchmarks/conv2d_backward_weight_profile.py`, new) and two genuinely
+different cooperative-reduction candidates, forced independent of the M21
+hybrid threshold (`CONV2D_WEIGHT_REDUCE_THRESHOLD = 256`) via new
+profiling-only kernel exports, to test whether the serial reduction is
+under-parallelized. See `docs/performance/conv2d-backward-profiling.md`'s
+**Milestone 33** section for the full report.
+
+**Candidates tested.** (1) block-per-weight-element, shared-memory tree
+reduction (`k_conv2d_backward_weight_reduce` -- the same kernel M21 already
+uses below the threshold, forced here above it too) at 64/128/256
+threads/block. (2) warp-per-weight-element, `__shfl_down_sync` reduction,
+multiple weights packed per block (new `k_conv2d_backward_weight_warp`) at
+2/4/8 warps/block (64-256 threads/block, 2-8 weight elements/block).
+
+**Finding.** Both candidates measured 3-4x *slower* than the existing
+per-thread kernel at every shape with >= 1,152 weight elements (all 6 of
+the 7 shapes currently on the per-thread path), essentially flat across
+every block-size/warps-per-block value tested -- strong evidence the loss
+is dominated by the sheer number of concurrent block/warp *launches*
+needed (thousands, scheduled across the 940MX's 3 SMs) rather than by
+either candidate's own intra-group reduction overhead, and that the
+existing per-thread kernel already achieves excellent memory-level
+parallelism at these weight-element counts (thousands of independent
+resident threads, several times the 940MX's 384 cores). Below the
+threshold (`mnist_conv1`, 72 elements), the existing block-reduction path
+remains the clear winner (~3.9x faster than a forced per-thread run),
+confirming the M21 hybrid dispatch is still exactly right.
+
+**Decision.** Per the milestone brief's explicit stop condition ("if
+cooperative reduction does not provide a meaningful end-to-end improvement,
+do not force it into Forge"): **rejected**. `CUDABackend.conv2d_backward`,
+`cf_conv2d_backward_weight_*`'s dispatch, and both existing production
+kernels are byte-for-byte unchanged. The two candidate kernels and their
+forced-dispatch exports remain in `kernels.cu` as documented,
+correctness-tested, profiling-only code (same category as M31's
+`cf_event_create_timed`) so this evidence stays reproducible.
+
+**Tests.** 1,184 tests total (1,162 pre-existing + 22 new,
+`tests/test_cuda_conv2d_backward_weight_cooperative.py`), all passing on
+the 940MX. New coverage: both candidate kernels (plus the forced per-thread
+export) validated against `CPUBackend`'s weight gradient across three
+shapes/dtype-relevant configs, block-size/warps-per-block sweeps, and a
+repeated-use memory-safety test.
+
+**Re-measured, unchanged (as expected -- no production code moved).**
+Isolated `dInput`/`dWeight`/`dBias` (`conv2d_backward_profile.py`): within
+run-to-run noise of the M32 baseline at all 7 shapes. Async pipeline
+backward phase: 8.48ms -> 8.49ms. MNIST training step (CUDA): 15.2ms.
+Async prefetch speedup: 1.212x -> 1.178x (within the 1.07-1.21x band every
+milestone since M29 has measured). CPU/CUDA regression benchmark
+categories (`forward`, `backward`, `training`, `mnist`): no operation moved
+outside historical noise.
+
+**New bottleneck ranking.** Unchanged from M32's post-fix ranking:
+`dWeight` (or `dInput`, near-tied) dominates `conv2d_backward` at every
+shape; `conv2d_backward` remains ~75% of total CUDA training-step compute
+time. No further Conv2d-backward optimization is currently justified by
+measurement -- the next real gains, if any, likely require a structurally
+different approach (e.g. im2col+GEMM) outside this milestone's scope.

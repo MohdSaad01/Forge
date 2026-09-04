@@ -1,0 +1,368 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "bc80934af21e1140946425ae9a4d2f3e9fcd3233",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "shapes": [
+      {
+        "name": "mnist_conv1",
+        "config": {
+          "N": 64,
+          "Cin": 1,
+          "Cout": 8,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "weight_elements": 72,
+        "dweight_reduction_size": 50176,
+        "forward_ms": {
+          "mean_ms": 0.6680960019429525,
+          "median_ms": 0.6673119962215424,
+          "min_ms": 0.6661760210990906,
+          "max_ms": 0.6932479739189148,
+          "stdev_ms": 0.0047860784610557925
+        },
+        "d_input_ms": {
+          "mean_ms": 0.7222613294919332,
+          "median_ms": 0.7216960191726685,
+          "min_ms": 0.7155200242996216,
+          "max_ms": 0.7479360103607178,
+          "stdev_ms": 0.005909491241705064
+        },
+        "d_weight_ms": {
+          "mean_ms": 2.177549870808919,
+          "median_ms": 2.1585919857025146,
+          "min_ms": 2.147007942199707,
+          "max_ms": 2.242719888687134,
+          "stdev_ms": 0.03754902041352478
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.22542826731999716,
+          "median_ms": 0.22456000000238419,
+          "min_ms": 0.22249600291252136,
+          "max_ms": 0.25542399287223816,
+          "stdev_ms": 0.005790260717209789
+        },
+        "backward_total_ms": 3.1252394676208497,
+        "d_input_pct_of_backward": 23.110591587459023,
+        "d_weight_pct_of_backward": 69.67625659951818,
+        "d_bias_pct_of_backward": 7.213151813022791
+      },
+      {
+        "name": "mnist_conv2",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 13,
+        "Wout": 13,
+        "weight_elements": 1152,
+        "dweight_reduction_size": 10816,
+        "forward_ms": {
+          "mean_ms": 1.382092793782552,
+          "median_ms": 1.3809280395507812,
+          "min_ms": 1.3788479566574097,
+          "max_ms": 1.409567952156067,
+          "stdev_ms": 0.005364465719348422
+        },
+        "d_input_ms": {
+          "mean_ms": 2.0090890606244405,
+          "median_ms": 2.0208159685134888,
+          "min_ms": 1.948032021522522,
+          "max_ms": 2.0751678943634033,
+          "stdev_ms": 0.03184805724557383
+        },
+        "d_weight_ms": {
+          "mean_ms": 1.839685336748759,
+          "median_ms": 1.8474559783935547,
+          "min_ms": 1.7865920066833496,
+          "max_ms": 1.8751360177993774,
+          "stdev_ms": 0.023466922517281236
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.09668799961606661,
+          "median_ms": 0.0958079993724823,
+          "min_ms": 0.09308800101280212,
+          "max_ms": 0.12272000312805176,
+          "stdev_ms": 0.005111785429588083
+        },
+        "backward_total_ms": 3.945462396989266,
+        "d_input_pct_of_backward": 50.921510800801244,
+        "d_weight_pct_of_backward": 46.627876574177975,
+        "d_bias_pct_of_backward": 2.4506126250207845
+      },
+      {
+        "name": "large_channel",
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "weight_elements": 4608,
+        "dweight_reduction_size": 50176,
+        "forward_ms": {
+          "mean_ms": 25.796713638305665,
+          "median_ms": 25.82924747467041,
+          "min_ms": 24.810815811157227,
+          "max_ms": 25.857824325561523,
+          "stdev_ms": 0.18633967451660893
+        },
+        "d_input_ms": {
+          "mean_ms": 36.50296529134115,
+          "median_ms": 36.597023010253906,
+          "min_ms": 35.47590255737305,
+          "max_ms": 36.69862365722656,
+          "stdev_ms": 0.30409488281722136
+        },
+        "d_weight_ms": {
+          "mean_ms": 43.730977376302086,
+          "median_ms": 44.23824119567871,
+          "min_ms": 39.14665603637695,
+          "max_ms": 44.484798431396484,
+          "stdev_ms": 1.5376915311705504
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.7214101294676463,
+          "median_ms": 0.7207039892673492,
+          "min_ms": 0.7138879895210266,
+          "max_ms": 0.7524160146713257,
+          "stdev_ms": 0.007080459950050356
+        },
+        "backward_total_ms": 80.95535279711088,
+        "d_input_pct_of_backward": 45.09024299211486,
+        "d_weight_pct_of_backward": 54.018636032505505,
+        "d_bias_pct_of_backward": 0.891120975379644
+      },
+      {
+        "name": "large_spatial",
+        "config": {
+          "N": 32,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 56,
+          "W": 56,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 56,
+        "Wout": 56,
+        "weight_elements": 1152,
+        "dweight_reduction_size": 100352,
+        "forward_ms": {
+          "mean_ms": 13.245736567179362,
+          "median_ms": 13.554064273834229,
+          "min_ms": 12.23465633392334,
+          "max_ms": 13.584896087646484,
+          "stdev_ms": 0.5653640439083586
+        },
+        "d_input_ms": {
+          "mean_ms": 19.234455490112303,
+          "median_ms": 18.999600410461426,
+          "min_ms": 18.715200424194336,
+          "max_ms": 20.013280868530273,
+          "stdev_ms": 0.44277150395438186
+        },
+        "d_weight_ms": {
+          "mean_ms": 21.49002685546875,
+          "median_ms": 21.423295974731445,
+          "min_ms": 21.18671989440918,
+          "max_ms": 22.050111770629883,
+          "stdev_ms": 0.25152842536982706
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.7462976018587748,
+          "median_ms": 0.7452479898929596,
+          "min_ms": 0.7413439750671387,
+          "max_ms": 0.7721279859542847,
+          "stdev_ms": 0.00541509540205493
+        },
+        "backward_total_ms": 41.47077994743983,
+        "d_input_pct_of_backward": 46.380742089948875,
+        "d_weight_pct_of_backward": 51.819683359476876,
+        "d_bias_pct_of_backward": 1.799574550574246
+      }
+    ],
+    "batch_sweep": [
+      {
+        "name": "batch_32",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 32
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "weight_elements": 4608,
+        "dweight_reduction_size": 25088,
+        "forward_ms": {
+          "mean_ms": 12.774521668752035,
+          "median_ms": 12.927152156829834,
+          "min_ms": 11.662015914916992,
+          "max_ms": 12.960512161254883,
+          "stdev_ms": 0.4061860951202111
+        },
+        "d_input_ms": {
+          "mean_ms": 18.843063608805338,
+          "median_ms": 18.372288703918457,
+          "min_ms": 17.76201629638672,
+          "max_ms": 20.630239486694336,
+          "stdev_ms": 1.0145246469097358
+        },
+        "d_weight_ms": {
+          "mean_ms": 22.01122328440348,
+          "median_ms": 22.23911952972412,
+          "min_ms": 19.67024040222168,
+          "max_ms": 24.545440673828125,
+          "stdev_ms": 1.3960048435736572
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.3655861377716064,
+          "median_ms": 0.3654559999704361,
+          "min_ms": 0.35596799850463867,
+          "max_ms": 0.3877440094947815,
+          "stdev_ms": 0.004956725853011908
+        },
+        "backward_total_ms": 41.21987303098043,
+        "d_input_pct_of_backward": 45.71354112285374,
+        "d_weight_pct_of_backward": 53.399541691601215,
+        "d_bias_pct_of_backward": 0.8869171855450299
+      },
+      {
+        "name": "batch_64",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 64
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "weight_elements": 4608,
+        "dweight_reduction_size": 50176,
+        "forward_ms": {
+          "mean_ms": 26.033289591471355,
+          "median_ms": 25.847039222717285,
+          "min_ms": 23.578752517700195,
+          "max_ms": 27.21494483947754,
+          "stdev_ms": 0.7797502027335703
+        },
+        "d_input_ms": {
+          "mean_ms": 36.11109339396159,
+          "median_ms": 36.12254333496094,
+          "min_ms": 35.96531295776367,
+          "max_ms": 36.224830627441406,
+          "stdev_ms": 0.06602870246097488
+        },
+        "d_weight_ms": {
+          "mean_ms": 43.85779927571615,
+          "median_ms": 44.24495887756348,
+          "min_ms": 39.25417709350586,
+          "max_ms": 45.59347152709961,
+          "stdev_ms": 1.584662240104274
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.7210496028264364,
+          "median_ms": 0.7201120257377625,
+          "min_ms": 0.7145599722862244,
+          "max_ms": 0.7490559816360474,
+          "stdev_ms": 0.00657203373247388
+        },
+        "backward_total_ms": 80.68994227250417,
+        "d_input_pct_of_backward": 44.75290522827251,
+        "d_weight_pct_of_backward": 54.35348946910957,
+        "d_bias_pct_of_backward": 0.8936053026179206
+      },
+      {
+        "name": "batch_128",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 128
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "weight_elements": 4608,
+        "dweight_reduction_size": 100352,
+        "forward_ms": {
+          "mean_ms": 52.40335235595703,
+          "median_ms": 51.657758712768555,
+          "min_ms": 51.64988708496094,
+          "max_ms": 58.33705520629883,
+          "stdev_ms": 2.0431902420101933
+        },
+        "d_input_ms": {
+          "mean_ms": 73.1400390625,
+          "median_ms": 73.13468551635742,
+          "min_ms": 72.91436767578125,
+          "max_ms": 73.34786987304688,
+          "stdev_ms": 0.08876840323651877
+        },
+        "d_weight_ms": {
+          "mean_ms": 85.9561897277832,
+          "median_ms": 88.23502349853516,
+          "min_ms": 77.76249694824219,
+          "max_ms": 88.69462585449219,
+          "stdev_ms": 4.384310969286494
+        },
+        "d_bias_ms": {
+          "mean_ms": 1.3594026724497477,
+          "median_ms": 1.356272041797638,
+          "min_ms": 1.3529280424118042,
+          "max_ms": 1.381600022315979,
+          "stdev_ms": 0.007445369889872329
+        },
+        "backward_total_ms": 160.45563146273295,
+        "d_input_pct_of_backward": 45.58271865919977,
+        "d_weight_pct_of_backward": 53.57006727915759,
+        "d_bias_pct_of_backward": 0.8472140616426288
+      }
+    ]
+  }
+}

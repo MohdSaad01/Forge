@@ -242,6 +242,27 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         ] + [ctypes.c_int] * 13 + [ctypes.c_void_p]
         conv_bwd_weight_fn.restype = ctypes.c_int
 
+        # -- dWeight cooperative-reduction profiling helpers (Milestone 33) --
+        # see kernels.cu's identically-named section. Never called by
+        # `CUDABackend` itself -- only by `benchmarks/conv2d_backward_weight_profile.py`.
+        conv_bwd_weight_perthread_fn = getattr(lib, f"cf_conv2d_backward_weight_perthread_{suffix}")
+        conv_bwd_weight_perthread_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 13 + [ctypes.c_void_p]
+        conv_bwd_weight_perthread_fn.restype = ctypes.c_int
+
+        conv_bwd_weight_blockreduce_fn = getattr(lib, f"cf_conv2d_backward_weight_blockreduce_{suffix}")
+        conv_bwd_weight_blockreduce_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 14 + [ctypes.c_void_p]
+        conv_bwd_weight_blockreduce_fn.restype = ctypes.c_int
+
+        conv_bwd_weight_warpreduce_fn = getattr(lib, f"cf_conv2d_backward_weight_warpreduce_{suffix}")
+        conv_bwd_weight_warpreduce_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 14 + [ctypes.c_void_p]
+        conv_bwd_weight_warpreduce_fn.restype = ctypes.c_int
+
         conv_bwd_bias_fn = getattr(lib, f"cf_conv2d_backward_bias_{suffix}")
         conv_bwd_bias_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 4 + [ctypes.c_void_p]
         conv_bwd_bias_fn.restype = ctypes.c_int

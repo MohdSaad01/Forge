@@ -1257,6 +1257,141 @@ __global__ void k_conv2d_backward_weight_reduce(
 CONV2D_BACKWARD_WEIGHT_LAUNCHER(float, f32)
 CONV2D_BACKWARD_WEIGHT_LAUNCHER(double, f64)
 
+// -- dWeight cooperative-reduction profiling helpers (Milestone 33) ----------
+//
+// `cf_conv2d_backward_weight_*` (above) already dispatches between
+// `k_conv2d_backward_weight` (one thread per weight element, full serial
+// reduction) and `k_conv2d_backward_weight_reduce` (one block per weight
+// element, shared-memory tree reduction) purely by weight-element count.
+// Milestone 33 needs to measure each candidate kernel in isolation, at a
+// fixed shape, independent of that dispatch decision -- the same isolation
+// `benchmarks/conv2d_backward_profile.py` (Milestone 32) already relies on
+// for `dInput`/`dWeight`/`dBias`, extended here since `dWeight`'s two
+// candidate kernels are not otherwise independently reachable through the
+// one exported dispatcher symbol. These are profiling-only entry points
+// (the same category as Milestone 31's `cf_event_create_timed`/
+// `cf_event_elapsed_ms`) -- `CUDABackend` never calls them; production
+// dispatch remains `cf_conv2d_backward_weight_*` alone.
+// `_blockreduce`'s `threads_per_block` must be a power of two (the tree
+// reduction below assumes it, same as every other block-reduction kernel in
+// this file) and is exposed so the block-size experiment (Section 14 of the
+// milestone brief) can run without recompiling.
+
+#define CONV2D_BACKWARD_WEIGHT_FORCED_LAUNCHERS(TYPE, SUFFIX)                             \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_weight_perthread_##SUFFIX(    \
+        const TYPE* grad_out, const TYPE* x, TYPE* grad_w,                                \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
+        int SH, int SW, int PH, int PW, int Hout, int Wout, void* stream) {               \
+        long long total = static_cast<long long>(Cout) * Cin * KH * KW;                   \
+        int blocks, threads;                                                              \
+        launch_config(total, blocks, threads);                                            \
+        k_conv2d_backward_weight<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(     \
+            grad_out, x, grad_w, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout);  \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }                                                                                      \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_weight_blockreduce_##SUFFIX(   \
+        const TYPE* grad_out, const TYPE* x, TYPE* grad_w,                                \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
+        int SH, int SW, int PH, int PW, int Hout, int Wout,                               \
+        int threads_per_block, void* stream) {                                            \
+        long long total = static_cast<long long>(Cout) * Cin * KH * KW;                   \
+        int blocks = total < 1 ? 1 : static_cast<int>(total);                             \
+        k_conv2d_backward_weight_reduce<TYPE>                                             \
+            <<<blocks, threads_per_block, threads_per_block * sizeof(TYPE), (cudaStream_t)stream>>>( \
+                grad_out, x, grad_w, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout); \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+CONV2D_BACKWARD_WEIGHT_FORCED_LAUNCHERS(float, f32)
+CONV2D_BACKWARD_WEIGHT_FORCED_LAUNCHERS(double, f64)
+
+// -- dWeight warp-cooperative candidate (Milestone 33) -----------------------
+//
+// The block-per-weight candidate above (`k_conv2d_backward_weight_reduce`,
+// forced via `cf_conv2d_backward_weight_blockreduce_*`) measured 3-4x
+// *slower* than the existing per-thread kernel at every shape with >= 1,152
+// weight elements, **independent of threads/block** (64/128/256 all landed
+// within a few percent of each other at a given shape -- see the M33
+// report's **Cooperative Strategy Evaluated** section) -- evidence the cost
+// is dominated by launching/scheduling `weight_elements` *blocks* across the
+// 940MX's 3 SMs, not by each block's own tree-reduction/`__syncthreads()`
+// overhead. This candidate tests the natural fix for exactly that: pack
+// several weight elements into *one* block, each owned by one warp (32
+// lanes) that reduces its own slice of the `N * Hout * Wout` sum via
+// `__shfl_down_sync` (no shared memory, no `__syncthreads()` -- a warp is
+// always implicitly synchronized). `widx` depends only on `blockIdx.x` and
+// `threadIdx.x / 32`, identical across every lane of a warp, so the leading
+// `if (widx >= total_weights) return` and the loop's fixed (lane-independent)
+// iteration count keep every lane of a live warp fully converged through the
+// final shuffle reduction -- `__shfl_down_sync(0xFFFFFFFFu, ...)`'s
+// full-warp-mask precondition genuinely holds. `warps_per_block` (2-8 tested)
+// sets both threads/block (`warps_per_block * 32`) and weights/block,
+// shrinking the block count by that same factor versus one-block-per-weight.
+// Profiling-only, like the candidate above -- never called by `CUDABackend`.
+
+template <typename T>
+__global__ void k_conv2d_backward_weight_warp(
+    const T* grad_out, const T* x, T* grad_w,
+    int N, int Cin, int H, int W,
+    int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout, long long total_weights)
+{
+    int lane = threadIdx.x & 31;
+    int warp_in_block = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    long long widx = static_cast<long long>(blockIdx.x) * warps_per_block + warp_in_block;
+    if (widx >= total_weights) return;
+
+    int kw_ = static_cast<int>(widx % KW);
+    long long t1 = widx / KW;
+    int kh = static_cast<int>(t1 % KH);
+    long long t2 = t1 / KH;
+    int ci = static_cast<int>(t2 % Cin);
+    int co = static_cast<int>(t2 / Cin);
+
+    long long reduce_total = static_cast<long long>(N) * Hout * Wout;
+    T acc = static_cast<T>(0);
+    for (long long r = lane; r < reduce_total; r += 32) {
+        int wo = static_cast<int>(r % Wout);
+        long long r1 = r / Wout;
+        int ho = static_cast<int>(r1 % Hout);
+        int n = static_cast<int>(r1 / Hout);
+
+        int hi = ho * SH - PH + kh;
+        int wi = wo * SW - PW + kw_;
+        if (hi < 0 || hi >= H || wi < 0 || wi >= W) continue;
+
+        long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+        long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+        acc += grad_out[g_idx] * x[x_idx];
+    }
+
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        acc += __shfl_down_sync(0xFFFFFFFFu, acc, offset);
+    }
+    if (lane == 0) grad_w[widx] = acc;
+}
+
+#define CONV2D_BACKWARD_WEIGHT_WARP_LAUNCHER(TYPE, SUFFIX)                                \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_weight_warpreduce_##SUFFIX(   \
+        const TYPE* grad_out, const TYPE* x, TYPE* grad_w,                                \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
+        int SH, int SW, int PH, int PW, int Hout, int Wout,                               \
+        int warps_per_block, void* stream) {                                              \
+        long long total = static_cast<long long>(Cout) * Cin * KH * KW;                   \
+        int threads = warps_per_block * 32;                                               \
+        long long blocks64 = (total + warps_per_block - 1) / warps_per_block;             \
+        int blocks = blocks64 < 1 ? 1 : static_cast<int>(blocks64);                       \
+        k_conv2d_backward_weight_warp<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>( \
+            grad_out, x, grad_w, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout, total); \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+CONV2D_BACKWARD_WEIGHT_WARP_LAUNCHER(float, f32)
+CONV2D_BACKWARD_WEIGHT_WARP_LAUNCHER(double, f64)
+
 // -- Conv2d backward: bias (sum grad_output over batch and spatial dims) --
 
 template <typename T>

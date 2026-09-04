@@ -912,6 +912,71 @@ this changes kernel internals behind an unchanged `Backend`/`CUDABackend`
 boundary and an unchanged exported C symbol/signature -- no public API,
 abstraction boundary, or cross-cutting architectural decision was touched.
 
+## CUDA Conv2d backward: dWeight cooperative reduction (Milestone 33, rejected)
+Milestone 32 left `dWeight`'s per-thread kernel (`k_conv2d_backward_weight`,
+unchanged since Milestone 21) as the largest single `conv2d_backward` cost
+at 6 of 7 representative shapes. This milestone investigated whether a
+cooperative (multi-thread-per-weight-element) reduction could beat it at
+the weight-element counts (>= 1,152) where production currently dispatches
+to the per-thread kernel -- see `docs/performance/conv2d-backward-
+profiling.md`'s **Milestone 33** section for the full profiling report.
+
+**Investigation, not adoption.** Two cooperative candidates were added to
+`kernels.cu` purely to measure this, both reachable only through new
+profiling-only exported symbols (never called by `CUDABackend`, the same
+category as Milestone 31's `cf_event_create_timed`/`cf_event_elapsed_ms`):
+
+- `cf_conv2d_backward_weight_perthread_*` -- forces the existing per-thread
+  kernel regardless of the M21 threshold (isolation only, no new kernel).
+- `cf_conv2d_backward_weight_blockreduce_*` -- forces the existing
+  block-per-weight-element kernel (`k_conv2d_backward_weight_reduce`)
+  regardless of threshold, with a configurable `threads_per_block`
+  (64/128/256 tested).
+- `cf_conv2d_backward_weight_warpreduce_*` -- a genuinely new second
+  candidate, `k_conv2d_backward_weight_warp`: one warp (32 lanes) owns one
+  weight element's reduction via `__shfl_down_sync` (no shared memory, no
+  `__syncthreads()` -- a warp is always execution-converged), with multiple
+  weights packed into one block via `warps_per_block` (2/4/8 tested, i.e.
+  64-256 threads/block and 2-8 weight elements/block) to test whether
+  cutting the total block count (versus one-block-per-weight) mattered.
+
+**Finding.** Both candidates measured **3-4x slower** than the existing
+per-thread kernel at every shape with >= 1,152 weight elements, and that
+ratio barely moved across `threads_per_block`/`warps_per_block` -- e.g. at
+`large_channel` (4,608 weight elements, 50,176-element reduction):
+per-thread 43.9ms vs. block-reduce 137.4-138.2ms (all three block sizes)
+vs. warp-reduce 135.6-135.7ms (all three warps-per-block settings). Packing
+8 weights/block (an 8x reduction in launched blocks versus one-block-per-
+weight) made no measurable difference, which rules out block-launch/
+scheduling count as the dominant cost too. The most consistent explanation:
+the per-thread kernel, at these weight-element counts, already launches far
+more independent resident threads (thousands) than the 940MX's 384 cores,
+giving it excellent memory-level parallelism (many independent in-flight
+`grad_out`/`x` reads hiding each other's latency) for free -- both
+cooperative designs instead concentrate a fixed amount of work behind fewer
+independent memory streams, trading that MLP away for a reduction primitive
+(tree or shuffle) the per-thread kernel never needed to pay for. Below the
+M21 threshold (`mnist_conv1`, 72 elements, where per-thread parallelism is
+too thin to matter), block-reduction remains the clear winner (~3.9x faster
+than a forced per-thread run) -- confirming the existing hybrid dispatch is
+still exactly right, not stale.
+
+**Decision: rejected, per the milestone's explicit stop condition.**
+`CUDABackend.conv2d_backward`, `cf_conv2d_backward_weight_*`'s dispatch
+threshold, and both production kernels (`k_conv2d_backward_weight`,
+`k_conv2d_backward_weight_reduce`) are byte-for-byte unchanged. The two
+candidate kernels stay in `kernels.cu` as documented, tested, profiling-only
+code (`tests/test_cuda_conv2d_backward_weight_cooperative.py`, new, 22
+tests -- correctness against `CPUBackend`'s weight gradient across shapes,
+block-size/warps-per-block sweeps, and a repeated-use memory-safety check)
+so this negative result stays reproducible via
+`python -m benchmarks.conv2d_backward_weight_profile` rather than only
+asserted in prose.
+
+**Why no ADR.** No production code, public API, or architectural boundary
+changed -- the only new code is profiling-only kernel surface, already
+covered by the same "no ADR" reasoning Milestone 31's timing events used.
+
 ## CUDA Memory Statistics (Milestone 22)
 Milestone 22 is observability, not optimization: it instruments the
 `cudaMalloc`/`cudaFree` boundary that already existed (`CUDABackend._alloc`,

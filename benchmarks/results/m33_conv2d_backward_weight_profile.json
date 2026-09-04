@@ -1,0 +1,592 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "bc80934af21e1140946425ae9a4d2f3e9fcd3233",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "shapes": [
+      {
+        "name": "mnist_conv1",
+        "config": {
+          "N": 64,
+          "Cin": 1,
+          "Cout": 8,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 72,
+        "reduction_elements_per_weight": 50176,
+        "current_dispatch_path": "blockreduce(256)",
+        "current_ms": {
+          "mean_ms": 2.1882933219273886,
+          "median_ms": 2.1583679914474487,
+          "min_ms": 2.1473278999328613,
+          "max_ms": 2.2432000637054443,
+          "stdev_ms": 0.04239520903570273
+        },
+        "perthread_ms": {
+          "mean_ms": 8.247271537780762,
+          "median_ms": 8.194943904876709,
+          "min_ms": 8.154656410217285,
+          "max_ms": 8.417152404785156,
+          "stdev_ms": 0.10100231436931728
+        },
+        "blockreduce_ms": {
+          "64": {
+            "mean_ms": 2.4728319962819416,
+            "median_ms": 2.4733439683914185,
+            "min_ms": 2.4635519981384277,
+            "max_ms": 2.4768319129943848,
+            "stdev_ms": 0.0031356702197640005
+          },
+          "128": {
+            "mean_ms": 2.2016714572906495,
+            "median_ms": 2.198032021522522,
+            "min_ms": 2.191103935241699,
+            "max_ms": 2.223583936691284,
+            "stdev_ms": 0.011068833570215732
+          },
+          "256": {
+            "mean_ms": 2.1106687863667806,
+            "median_ms": 2.0847359895706177,
+            "min_ms": 2.0751359462738037,
+            "max_ms": 2.1694400310516357,
+            "stdev_ms": 0.03987144517161039
+          }
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 2.0804778734842935,
+            "median_ms": 2.080415964126587,
+            "min_ms": 2.0770559310913086,
+            "max_ms": 2.0833919048309326,
+            "stdev_ms": 0.0013672845938315472
+          },
+          "4": {
+            "mean_ms": 2.0767210642496745,
+            "median_ms": 2.0768799781799316,
+            "min_ms": 2.0729598999023438,
+            "max_ms": 2.0814080238342285,
+            "stdev_ms": 0.0018320419612564505
+          },
+          "8": {
+            "mean_ms": 2.123356811205546,
+            "median_ms": 2.123679995536804,
+            "min_ms": 2.101599931716919,
+            "max_ms": 2.129631996154785,
+            "stdev_ms": 0.004597672312808731
+          }
+        },
+        "best_blockreduce_block_size": 256,
+        "best_blockreduce_ms": 2.1106687863667806,
+        "best_warpreduce_warps_per_block": 4,
+        "best_warpreduce_ms": 2.0767210642496745,
+        "perthread_vs_best_cooperative_speedup": 3.971294787612955
+      },
+      {
+        "name": "mnist_conv2",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 1152,
+        "reduction_elements_per_weight": 10816,
+        "current_dispatch_path": "perthread",
+        "current_ms": {
+          "mean_ms": 1.7770357410113016,
+          "median_ms": 1.7764959931373596,
+          "min_ms": 1.7694079875946045,
+          "max_ms": 1.7914880514144897,
+          "stdev_ms": 0.0042364981452462
+        },
+        "perthread_ms": {
+          "mean_ms": 1.7758080124855042,
+          "median_ms": 1.7756800055503845,
+          "min_ms": 1.7687360048294067,
+          "max_ms": 1.7869759798049927,
+          "stdev_ms": 0.003976414845366647
+        },
+        "blockreduce_ms": {
+          "64": {
+            "mean_ms": 7.3858517487843836,
+            "median_ms": 7.399967908859253,
+            "min_ms": 7.272799968719482,
+            "max_ms": 7.449183940887451,
+            "stdev_ms": 0.05884477229724428
+          },
+          "128": {
+            "mean_ms": 7.445206340154012,
+            "median_ms": 7.440112113952637,
+            "min_ms": 7.435647964477539,
+            "max_ms": 7.4706878662109375,
+            "stdev_ms": 0.009156158071976467
+          },
+          "256": {
+            "mean_ms": 7.559606409072876,
+            "median_ms": 7.556175947189331,
+            "min_ms": 7.551743984222412,
+            "max_ms": 7.573535919189453,
+            "stdev_ms": 0.007715880663764786
+          }
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 7.335015455881755,
+            "median_ms": 7.328959941864014,
+            "min_ms": 7.271008014678955,
+            "max_ms": 7.420415878295898,
+            "stdev_ms": 0.03861202540286212
+          },
+          "4": {
+            "mean_ms": 7.285930665334066,
+            "median_ms": 7.279024124145508,
+            "min_ms": 7.222367763519287,
+            "max_ms": 7.358272075653076,
+            "stdev_ms": 0.030214671355816597
+          },
+          "8": {
+            "mean_ms": 7.2263210614522295,
+            "median_ms": 7.19596791267395,
+            "min_ms": 7.144991874694824,
+            "max_ms": 7.44758415222168,
+            "stdev_ms": 0.07432427345382389
+          }
+        },
+        "best_blockreduce_block_size": 64,
+        "best_blockreduce_ms": 7.3858517487843836,
+        "best_warpreduce_warps_per_block": 8,
+        "best_warpreduce_ms": 7.2263210614522295,
+        "perthread_vs_best_cooperative_speedup": 0.24574164327659018
+      },
+      {
+        "name": "large_channel",
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 4608,
+        "reduction_elements_per_weight": 50176,
+        "current_dispatch_path": "perthread",
+        "current_ms": {
+          "mean_ms": 43.91832784016927,
+          "median_ms": 44.240753173828125,
+          "min_ms": 39.2545280456543,
+          "max_ms": 44.56252670288086,
+          "stdev_ms": 1.2675197433934962
+        },
+        "perthread_ms": {
+          "mean_ms": 43.88931630452474,
+          "median_ms": 44.19203186035156,
+          "min_ms": 38.96883010864258,
+          "max_ms": 44.42652893066406,
+          "stdev_ms": 1.302650384052819
+        },
+        "blockreduce_ms": {
+          "64": {
+            "mean_ms": 137.6585215250651,
+            "median_ms": 137.38520050048828,
+            "min_ms": 136.5055694580078,
+            "max_ms": 138.96853637695312,
+            "stdev_ms": 0.9440621519782513
+          },
+          "128": {
+            "mean_ms": 137.72393137613932,
+            "median_ms": 137.38255310058594,
+            "min_ms": 136.56748962402344,
+            "max_ms": 139.19679260253906,
+            "stdev_ms": 0.9436390842174077
+          },
+          "256": {
+            "mean_ms": 138.01490987141926,
+            "median_ms": 137.97760009765625,
+            "min_ms": 136.72239685058594,
+            "max_ms": 139.29971313476562,
+            "stdev_ms": 0.9594768784041207
+          }
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 135.68946736653646,
+            "median_ms": 135.79385375976562,
+            "min_ms": 134.0362548828125,
+            "max_ms": 136.5900115966797,
+            "stdev_ms": 0.751989752536112
+          },
+          "4": {
+            "mean_ms": 135.6425572713216,
+            "median_ms": 136.13040161132812,
+            "min_ms": 133.7610626220703,
+            "max_ms": 136.68739318847656,
+            "stdev_ms": 0.9238980278619122
+          },
+          "8": {
+            "mean_ms": 135.68370463053387,
+            "median_ms": 135.67494201660156,
+            "min_ms": 133.9370880126953,
+            "max_ms": 136.181884765625,
+            "stdev_ms": 0.45469344527218086
+          }
+        },
+        "best_blockreduce_block_size": 64,
+        "best_blockreduce_ms": 137.6585215250651,
+        "best_warpreduce_warps_per_block": 4,
+        "best_warpreduce_ms": 135.6425572713216,
+        "perthread_vs_best_cooperative_speedup": 0.3235659750703041
+      },
+      {
+        "name": "large_spatial",
+        "config": {
+          "N": 32,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 56,
+          "W": 56,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 1152,
+        "reduction_elements_per_weight": 100352,
+        "current_dispatch_path": "perthread",
+        "current_ms": {
+          "mean_ms": 21.44759572347005,
+          "median_ms": 21.34879970550537,
+          "min_ms": 21.061216354370117,
+          "max_ms": 22.092992782592773,
+          "stdev_ms": 0.3117911178515826
+        },
+        "perthread_ms": {
+          "mean_ms": 21.30837237040202,
+          "median_ms": 21.329840660095215,
+          "min_ms": 20.995136260986328,
+          "max_ms": 21.488576889038086,
+          "stdev_ms": 0.1150546901981408
+        },
+        "blockreduce_ms": {
+          "64": {
+            "mean_ms": 69.62437795003255,
+            "median_ms": 69.62192153930664,
+            "min_ms": 69.45072174072266,
+            "max_ms": 69.87452697753906,
+            "stdev_ms": 0.10904503952029329
+          },
+          "128": {
+            "mean_ms": 69.23343124389649,
+            "median_ms": 69.4058723449707,
+            "min_ms": 67.70454406738281,
+            "max_ms": 69.6019515991211,
+            "stdev_ms": 0.4885303684534704
+          },
+          "256": {
+            "mean_ms": 69.23973922729492,
+            "median_ms": 69.22575759887695,
+            "min_ms": 69.12284851074219,
+            "max_ms": 69.3433609008789,
+            "stdev_ms": 0.0805913044472809
+          }
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 68.7246701558431,
+            "median_ms": 68.76848220825195,
+            "min_ms": 68.1475830078125,
+            "max_ms": 69.50316619873047,
+            "stdev_ms": 0.29551386121397344
+          },
+          "4": {
+            "mean_ms": 68.40949579874675,
+            "median_ms": 68.4373893737793,
+            "min_ms": 67.85401916503906,
+            "max_ms": 69.23280334472656,
+            "stdev_ms": 0.4266989603650597
+          },
+          "8": {
+            "mean_ms": 68.54020334879557,
+            "median_ms": 68.88998413085938,
+            "min_ms": 66.98790740966797,
+            "max_ms": 69.10336303710938,
+            "stdev_ms": 0.6021331479970141
+          }
+        },
+        "best_blockreduce_block_size": 128,
+        "best_blockreduce_ms": 69.23343124389649,
+        "best_warpreduce_warps_per_block": 4,
+        "best_warpreduce_ms": 68.40949579874675,
+        "perthread_vs_best_cooperative_speedup": 0.31148266949794395
+      }
+    ],
+    "batch_sweep": [
+      {
+        "name": "batch_32",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 32
+        },
+        "weight_elements": 4608,
+        "reduction_elements_per_weight": 25088,
+        "current_dispatch_path": "perthread",
+        "current_ms": {
+          "mean_ms": 21.850258127848306,
+          "median_ms": 22.275360107421875,
+          "min_ms": 19.637792587280273,
+          "max_ms": 22.941408157348633,
+          "stdev_ms": 1.070598706415781
+        },
+        "perthread_ms": {
+          "mean_ms": 21.98782297770182,
+          "median_ms": 22.241263389587402,
+          "min_ms": 19.604415893554688,
+          "max_ms": 22.323104858398438,
+          "stdev_ms": 0.7872148533109871
+        },
+        "blockreduce_ms": {
+          "64": {
+            "mean_ms": 69.76262537638347,
+            "median_ms": 69.7555046081543,
+            "min_ms": 69.67212677001953,
+            "max_ms": 69.85395050048828,
+            "stdev_ms": 0.042146098644857174
+          },
+          "128": {
+            "mean_ms": 69.91532618204752,
+            "median_ms": 69.91278076171875,
+            "min_ms": 69.84812927246094,
+            "max_ms": 70.03353881835938,
+            "stdev_ms": 0.04535996520279877
+          },
+          "256": {
+            "mean_ms": 70.28349278767904,
+            "median_ms": 70.28224182128906,
+            "min_ms": 70.24272155761719,
+            "max_ms": 70.31353759765625,
+            "stdev_ms": 0.01777706763298734
+          }
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 68.39790318806966,
+            "median_ms": 68.38096237182617,
+            "min_ms": 68.26934051513672,
+            "max_ms": 68.57459259033203,
+            "stdev_ms": 0.07054352130508994
+          },
+          "4": {
+            "mean_ms": 68.27735850016276,
+            "median_ms": 68.27979278564453,
+            "min_ms": 68.1470718383789,
+            "max_ms": 68.40054321289062,
+            "stdev_ms": 0.05926176010046742
+          },
+          "8": {
+            "mean_ms": 68.01378275553385,
+            "median_ms": 67.97260665893555,
+            "min_ms": 67.7891845703125,
+            "max_ms": 68.21785736083984,
+            "stdev_ms": 0.15382503136593478
+          }
+        },
+        "best_blockreduce_block_size": 64,
+        "best_blockreduce_ms": 69.76262537638347,
+        "best_warpreduce_warps_per_block": 8,
+        "best_warpreduce_ms": 68.01378275553385,
+        "perthread_vs_best_cooperative_speedup": 0.32328481209072013
+      },
+      {
+        "name": "batch_64",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 64
+        },
+        "weight_elements": 4608,
+        "reduction_elements_per_weight": 50176,
+        "current_dispatch_path": "perthread",
+        "current_ms": {
+          "mean_ms": 43.62793045043945,
+          "median_ms": 44.27935981750488,
+          "min_ms": 39.07513427734375,
+          "max_ms": 45.03510284423828,
+          "stdev_ms": 1.7716140482251486
+        },
+        "perthread_ms": {
+          "mean_ms": 42.61243489583333,
+          "median_ms": 44.15348815917969,
+          "min_ms": 38.94291305541992,
+          "max_ms": 44.669185638427734,
+          "stdev_ms": 2.3880333854719775
+        },
+        "blockreduce_ms": {
+          "64": {
+            "mean_ms": 139.14421997070312,
+            "median_ms": 139.14167022705078,
+            "min_ms": 138.99542236328125,
+            "max_ms": 139.35113525390625,
+            "stdev_ms": 0.09414251394937978
+          },
+          "128": {
+            "mean_ms": 139.1666015625,
+            "median_ms": 139.16419219970703,
+            "min_ms": 139.1071014404297,
+            "max_ms": 139.29737854003906,
+            "stdev_ms": 0.03864736619109632
+          },
+          "256": {
+            "mean_ms": 139.25259297688802,
+            "median_ms": 139.3126220703125,
+            "min_ms": 138.62803649902344,
+            "max_ms": 139.39456176757812,
+            "stdev_ms": 0.19268703957055588
+          }
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 136.36591288248698,
+            "median_ms": 136.35519409179688,
+            "min_ms": 136.08950805664062,
+            "max_ms": 136.73023986816406,
+            "stdev_ms": 0.13719219090135415
+          },
+          "4": {
+            "mean_ms": 136.38026479085286,
+            "median_ms": 136.3525619506836,
+            "min_ms": 136.1301727294922,
+            "max_ms": 136.96572875976562,
+            "stdev_ms": 0.16468064895236206
+          },
+          "8": {
+            "mean_ms": 135.831276957194,
+            "median_ms": 135.6966094970703,
+            "min_ms": 135.47174072265625,
+            "max_ms": 136.1771240234375,
+            "stdev_ms": 0.24384880362509284
+          }
+        },
+        "best_blockreduce_block_size": 64,
+        "best_blockreduce_ms": 139.14421997070312,
+        "best_warpreduce_warps_per_block": 8,
+        "best_warpreduce_ms": 135.831276957194,
+        "perthread_vs_best_cooperative_speedup": 0.3137159264818091
+      },
+      {
+        "name": "batch_128",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 128
+        },
+        "weight_elements": 4608,
+        "reduction_elements_per_weight": 100352,
+        "current_dispatch_path": "perthread",
+        "current_ms": {
+          "mean_ms": 85.85812327067057,
+          "median_ms": 88.31806564331055,
+          "min_ms": 77.71929931640625,
+          "max_ms": 89.61798095703125,
+          "stdev_ms": 4.541001748330586
+        },
+        "perthread_ms": {
+          "mean_ms": 86.14542160034179,
+          "median_ms": 88.39105606079102,
+          "min_ms": 77.99183654785156,
+          "max_ms": 89.21062469482422,
+          "stdev_ms": 4.385474445218973
+        },
+        "blockreduce_ms": {
+          "64": {
+            "mean_ms": 277.73969116210935,
+            "median_ms": 277.7180480957031,
+            "min_ms": 277.5867919921875,
+            "max_ms": 277.9884338378906,
+            "stdev_ms": 0.12055535372986771
+          },
+          "128": {
+            "mean_ms": 277.6394368489583,
+            "median_ms": 277.64617919921875,
+            "min_ms": 277.4720764160156,
+            "max_ms": 277.8385314941406,
+            "stdev_ms": 0.08197974165334955
+          },
+          "256": {
+            "mean_ms": 277.3610310872396,
+            "median_ms": 277.4039306640625,
+            "min_ms": 277.1899719238281,
+            "max_ms": 277.477294921875,
+            "stdev_ms": 0.07986997510278662
+          }
+        },
+        "warpreduce_ms": {
+          "2": {
+            "mean_ms": 272.74180399576824,
+            "median_ms": 272.7180938720703,
+            "min_ms": 272.2951965332031,
+            "max_ms": 273.5875244140625,
+            "stdev_ms": 0.30461862283526503
+          },
+          "4": {
+            "mean_ms": 272.4835917154948,
+            "median_ms": 272.41973876953125,
+            "min_ms": 271.95172119140625,
+            "max_ms": 273.1543884277344,
+            "stdev_ms": 0.2960836542743207
+          },
+          "8": {
+            "mean_ms": 271.4989857991537,
+            "median_ms": 271.6335144042969,
+            "min_ms": 270.7649230957031,
+            "max_ms": 272.20465087890625,
+            "stdev_ms": 0.5071657274277556
+          }
+        },
+        "best_blockreduce_block_size": 256,
+        "best_blockreduce_ms": 277.3610310872396,
+        "best_warpreduce_warps_per_block": 8,
+        "best_warpreduce_ms": 271.4989857991537,
+        "perthread_vs_best_cooperative_speedup": 0.3172955558075986
+      }
+    ]
+  }
+}
