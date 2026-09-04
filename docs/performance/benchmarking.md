@@ -1107,3 +1107,74 @@ consistent with M28's own 19.07 ms, confirming pinned memory/async
 transfer support adds no overhead to the pre-existing synchronous path (no
 CUDA tensor construction, transfer, or compute in this benchmark ever calls
 any of the new async code paths).
+
+## Milestone 30: Asynchronous DataLoader GPU prefetch
+
+### Purpose
+
+Measure whether `Trainer(..., prefetch=True)` (`forge.data.
+CUDAPrefetchLoader` under the hood) achieves real, hardware-verified overlap
+between CPU batch preparation, H2D transfer, and GPU compute -- and, per the
+milestone brief's explicit instruction, distinguish "no overlap opportunity"
+from "broken pipeline" rather than only reporting favorable numbers. See
+`docs/architecture/async-dataloader.md` for the full design.
+
+    python -m benchmarks.async_dataloader_bench
+
+Not part of `python -m benchmarks`'s category list (same "diagnostic
+script" precedent as `async_transfer_bench.py`/`stream_bench.py`). Each
+configuration compares a synchronous `Trainer` against `prefetch=True`,
+median of 5 trials, one full epoch per trial, `forge.cuda.synchronize()`
+bracketing each measurement.
+
+### Measured example (940MX, real hardware, driver 582.53)
+
+**Synthetic workload** (independently controllable CPU-prep and GPU-compute
+cost, n=512, batch=32):
+
+| Configuration | Synchronous | Prefetch | Speedup |
+|---|---:|---:|---:|
+| negligible CPU work, light GPU work | 85.92 ms/epoch | 135.57 ms/epoch | 0.634x |
+| heavy CPU work, light GPU work | 777.54 ms/epoch | 846.92 ms/epoch | 0.918x |
+| light CPU work, heavy GPU work | 744.07 ms/epoch | 226.87 ms/epoch | **3.280x** |
+
+The first two configurations show prefetch is *not* free, and does not pay
+for itself, when there is little GPU-compute time to hide pinning/threading/
+transfer cost behind -- an honest, expected result (Section 60 of the
+milestone brief), not a regression: a light-GPU-work step spends little time
+blocked inside a synchronizing CUDA call, which is the only window (given
+Python's GIL) the background CPU-producer thread can make progress in
+concurrently with the main thread (`docs/architecture/async-dataloader.md`'s
+**Threading Model** section). The third configuration -- enough GPU compute
+per step for real transfer/compute overlap to matter -- shows a genuine
+3.28x speedup, confirming the pipeline is not merely correct but actually
+concurrent at the hardware level.
+
+**Real MNIST CNN** (`examples.mnist.model.build_model()`, synthetic
+MNIST-shaped batches, n=1024, batch=64, `CrossEntropyLoss` + `Adam`):
+
+| | Synchronous | Prefetch | Speedup |
+|---|---:|---:|---:|
+| | 354.42 ms/epoch (2,889 samples/sec) | 293.89 ms/epoch (3,484 samples/sec) | **1.206x** |
+
+A modest but real, honestly-measured improvement for a realistic
+convolutional workload on the 940MX's 3 SMs.
+
+**Memory overhead** (same MNIST run, `forge.cuda.memory_stats()`/
+`pinned_memory_stats()` before the first run vs. after both runs +
+`empty_cache()`): CUDA active bytes 0 -> 0, pinned active bytes 0 -> 0 --
+zero net growth attributable to the prefetch pipeline once batches are no
+longer referenced, matching `tests/test_dataloader_prefetch.py::
+test_repeated_epochs_do_not_grow_cuda_or_pinned_memory`.
+
+### Default-path regression check
+
+`prefetch=False` (the default) exercises none of this milestone's new code
+beyond one cheap `if not self.prefetch: yield; return` no-op check per
+`_run_training_epoch()`/`evaluate()` call -- `benchmarks/mnist_bench.py`'s
+existing default-stream CUDA training measurement is structurally
+unreachable from any Milestone 30 code path (it never goes through
+`Trainer`/`DataLoader` at all) and was re-run unchanged to confirm the
+overall test suite still passes (1,147 tests, `python -m pytest tests/`);
+no separate timing regression check was needed since no default-path code
+was modified.

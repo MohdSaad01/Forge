@@ -20,11 +20,29 @@ CPU batch `DataLoader` yields to `self.device` before the forward pass.
 `DataLoader` itself is never made device-aware. See the **Device**
 paragraphs on the `Trainer` class docstring below and
 `docs/architecture/training-engine.md`'s **Device semantics** section.
+
+**Milestone 30 (`prefetch=True`).** An opt-in, `device='cuda'`-only mode that
+transparently wraps whatever loader `fit()`/`evaluate()` receives in a
+`forge.data.CUDAPrefetchLoader` (Section 37-39), so the loop below runs
+completely unmodified -- `_to_device_batch`'s existing `x.to(self.device)`
+call simply becomes a no-op (the batch already arrived on `self.device`; see
+`Tensor.to()`'s same-device early return) rather than needing a separate
+code path. The one real addition is a dedicated *compute* `Stream`, entered
+for the duration of the batch loop: real, hardware-verified overlap between
+the prefetch pipeline's transfer stream and this compute stream requires
+both to be genuine non-default CUDA streams (`benchmarks/async_transfer_bench.
+py`'s own overlap benchmark already establishes this; the CUDA default/null
+stream has legacy synchronizing-stream semantics against any explicitly
+created stream, so a still-default-stream compute path would serialize
+against the transfer stream and see no real overlap, correctness aside).
+See `docs/architecture/async-dataloader.md`'s **Trainer Integration** and
+**Compute Stream** sections.
 """
 
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterable, Iterator
 
@@ -144,6 +162,17 @@ class Trainer:
     every batch `DataLoader` yields, before the forward pass. `DataLoader`
     itself remains entirely CPU-side and is never made device-aware -- see
     **Batch movement** below.
+
+    **Prefetch (Milestone 30).** `prefetch=True` (default `False`) requires
+    `device='cuda'` (raises `TrainerError` at construction otherwise) and
+    makes `fit()`/`evaluate()` transparently wrap each distinct loader they
+    receive in a `forge.data.CUDAPrefetchLoader(loader, device=self.device,
+    prefetch_size=self.prefetch_size)`, cached per loader object so its
+    dedicated transfer stream is created once and reused for the Trainer's
+    whole lifetime rather than once per epoch. A loader that is already a
+    `CUDAPrefetchLoader` is used as-is (never double-wrapped). Batch
+    movement, autograd, and optimizer semantics are all otherwise completely
+    unaffected -- see the class docstring's **Milestone 30** paragraph above.
     """
 
     def __init__(
@@ -154,6 +183,8 @@ class Trainer:
         device: "str | Device" = "cpu",
         metrics: "Iterable[Metric] | None" = None,
         verbose: bool = True,
+        prefetch: bool = False,
+        prefetch_size: int = 2,
     ):
         if not isinstance(model, Module):
             raise TrainerError(
@@ -175,12 +206,26 @@ class Trainer:
         # rather than deferring the failure to the first batch.
         get_backend(resolved_device)
 
+        if prefetch and resolved_device.type != "cuda":
+            raise TrainerError(
+                f"Trainer prefetch=True requires device='cuda' (GPU prefetch has no CPU "
+                f"mode); got device='{resolved_device}'."
+            )
+
         self.model = model
         self.loss_fn = loss_fn
         self.optimizer = optimizer
         self.device = resolved_device
         self.verbose = bool(verbose)
         self.metrics = self._validate_metrics(metrics)
+        self.prefetch = bool(prefetch)
+        self.prefetch_size = prefetch_size
+        # Milestone 30: lazily created on first prefetch-enabled fit()/evaluate()
+        # call, then reused for this Trainer's whole lifetime (never recreated
+        # per epoch) -- see the class docstring's **Prefetch** paragraph and
+        # `docs/architecture/async-dataloader.md`'s **Compute Stream** section.
+        self._compute_stream: "Any | None" = None
+        self._prefetch_loaders: "dict[int, Any]" = {}
         # Training-progress counters (Milestone 18): persisted/restored by
         # `save_checkpoint()`/`resume()` so `fit()` continues epoch numbering
         # and `global_step` counting across a checkpoint resume, rather than
@@ -249,6 +294,55 @@ class Trainer:
             y = y.to(self.device)
         return x, y
 
+    # -- prefetch (Milestone 30) -----------------------------------------
+
+    def _wrap_for_prefetch(self, loader: Any) -> Any:
+        """Return `loader` wrapped in a cached `CUDAPrefetchLoader` when `self.prefetch` is set.
+
+        A no-op (returns `loader` unchanged) when `self.prefetch` is
+        `False`, matching the default-synchronous-Trainer path exactly as
+        before Milestone 30. Caches by `id(loader)` so the same underlying
+        loader object (e.g. `train_loader` reused across every epoch of one
+        `fit()` call, or a `validation_loader` evaluated after each of
+        those) is wrapped -- and its dedicated transfer stream created --
+        exactly once per `Trainer`, not once per epoch (Section 28).
+        """
+        from ..data.prefetch import CUDAPrefetchLoader
+
+        if not self.prefetch:
+            return loader
+        if isinstance(loader, CUDAPrefetchLoader):
+            return loader
+        key = id(loader)
+        wrapped = self._prefetch_loaders.get(key)
+        if wrapped is None:
+            wrapped = CUDAPrefetchLoader(loader, device=self.device, prefetch_size=self.prefetch_size)
+            self._prefetch_loaders[key] = wrapped
+        return wrapped
+
+    @contextmanager
+    def _compute_stream_scope(self):
+        """`with self._compute_stream_scope(): ...` -- a no-op unless `self.prefetch` is set.
+
+        When prefetch is enabled, makes this Trainer's dedicated compute
+        `Stream` current for the block (creating it once, on first use, and
+        reusing it for this Trainer's lifetime -- Section 28), then restores
+        whatever stream was current before, exactly like `forge.cuda.
+        stream()`'s own scoping contract. See the class docstring's
+        **Prefetch** paragraph and this module's **Milestone 30** docstring
+        paragraph for why a genuine non-default compute stream is required
+        for real transfer/compute overlap, not just correctness.
+        """
+        if not self.prefetch:
+            yield
+            return
+        import forge.cuda as _cuda
+
+        if self._compute_stream is None:
+            self._compute_stream = _cuda.Stream()
+        with _cuda.stream(self._compute_stream):
+            yield
+
     def _check_model_device(self) -> None:
         """Validate (never move) that the model already sits on `self.device` (Milestone 12).
 
@@ -291,27 +385,29 @@ class Trainer:
     # -- core phases ------------------------------------------------------
 
     def _run_training_epoch(self, loader: Any) -> "tuple[float, dict[str, float], int]":
+        loader = self._wrap_for_prefetch(loader)
         self.model.train()
         for m in self.metrics.values():
             m.reset()
 
         total_loss = 0.0
         total_samples = 0
-        for batch in loader:
-            x, y = self._to_device_batch(batch)
-            batch_size = x.shape[0]
+        with self._compute_stream_scope():
+            for batch in loader:
+                x, y = self._to_device_batch(batch)
+                batch_size = x.shape[0]
 
-            self.optimizer.zero_grad()
-            prediction = self.model(x)
-            loss = self.loss_fn(prediction, y)
-            loss.backward()
-            self.optimizer.step()
-            self.global_step += 1
+                self.optimizer.zero_grad()
+                prediction = self.model(x)
+                loss = self.loss_fn(prediction, y)
+                loss.backward()
+                self.optimizer.step()
+                self.global_step += 1
 
-            total_loss += float(loss.to("cpu").numpy()) * batch_size
-            total_samples += batch_size
-            for m in self.metrics.values():
-                m.update(prediction, y)
+                total_loss += float(loss.to("cpu").numpy()) * batch_size
+                total_samples += batch_size
+                for m in self.metrics.values():
+                    m.update(prediction, y)
 
         if total_samples == 0:
             raise TrainerError("train_loader yielded no samples for this epoch.")
@@ -335,6 +431,7 @@ class Trainer:
         """
         self._validate_loader(loader, "loader")
         self._check_model_device()
+        loader = self._wrap_for_prefetch(loader)
 
         was_training = self.model.training
         self.model.eval()
@@ -345,7 +442,7 @@ class Trainer:
         total_loss = 0.0
         total_samples = 0
         try:
-            with no_grad():
+            with self._compute_stream_scope(), no_grad():
                 for batch in loader:
                     x, y = self._to_device_batch(batch)
                     batch_size = x.shape[0]

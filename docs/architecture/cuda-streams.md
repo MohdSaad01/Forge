@@ -439,9 +439,9 @@ important correctness tests in the milestone").
 
 ## 15. Trainer semantics
 
-**Decision: Option A (Trainer remains synchronous).** `forge/training/
-trainer.py` was **not modified** for this milestone, and does not use
-`forge.cuda.stream()` internally. Since `current_stream()` defaults to
+**Decision: Option A (Trainer remains synchronous), by default.** `forge/
+training/trainer.py` was **not modified** for this milestone, and does not
+use `forge.cuda.stream()` internally. Since `current_stream()` defaults to
 `None` (Section 2) everywhere `Trainer` runs, every `Module`/`Loss`/
 `Optimizer` call it makes remains exactly as host-synchronous as it always
 was (M26's contract, unchanged), and `Trainer.fit()`/`evaluate()` continue
@@ -450,6 +450,21 @@ trivially satisfied, not newly implemented. Overlapping DataLoader/transfer/
 compute inside `Trainer` is explicitly out of scope for this milestone
 (Section 23/45 of the brief); a future milestone that wants `Trainer` to use
 an explicit stream internally can build on this contract directly.
+
+**Superseded, for the opt-in `prefetch=True` path only, by Milestone 30.**
+`Trainer(..., prefetch=True)` gives `Trainer` a dedicated, lazily created,
+persistent compute `Stream`, current for the duration of `fit()`'s/
+`evaluate()`'s batch loop -- required for real (not just correct) overlap
+with `forge.data.CUDAPrefetchLoader`'s dedicated transfer stream, since two
+explicitly created streams run concurrently with each other but the CUDA
+legacy default/null stream is a synchronizing stream with respect to any
+explicitly created one (confirmed directly by `benchmarks/async_transfer_
+bench.py`'s own transfer/compute overlap measurement, which already uses
+two explicit streams for exactly this reason). `prefetch=False` (the
+default) is completely unaffected -- this section's original Option A
+decision stands unchanged for every `Trainer` that does not opt in. See
+`docs/architecture/async-dataloader.md`'s **Trainer Integration** and
+**Compute Stream** sections for the full contract.
 
 ## 16. Persistence / checkpoint semantics
 
@@ -488,8 +503,9 @@ not expect dramatic overlap on every kernel/GPU").
   or nonblocking `.to()` -- all explicitly out of scope (Milestone 27's
   Section 45; reaffirmed as out of scope, or optional-and-not-taken, by the
   Milestone 28 brief's Sections 7/52).
-- `Trainer` does not use streams internally (Section 15) -- DataLoader/
-  transfer/compute overlap remains a future milestone.
+- `Trainer` does not use streams internally by default (Section 15) --
+  `prefetch=True` (Milestone 30) is the opt-in exception; see
+  `docs/architecture/async-dataloader.md`.
 - The allocator's pending-block scan (`_try_reclaim_pending`) is a linear
   scan over pending blocks of the requested size -- fine at the "small
   number of streams" (2-8) scale the brief targets, not designed for a large

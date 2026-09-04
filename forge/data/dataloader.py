@@ -102,6 +102,25 @@ class DataLoader:
             f"drop_last={self.drop_last})"
         )
 
+    def prefetch(self, device: str = "cuda", prefetch_size: int = 2) -> "Any":
+        """Wrap this loader in a `CUDAPrefetchLoader` (Milestone 30).
+
+        ```python
+        for x, y in loader.prefetch(device="cuda"):  # x, y already on cuda
+            ...
+        ```
+
+        Sugar for `forge.data.CUDAPrefetchLoader(self, device=device,
+        prefetch_size=prefetch_size)` -- see that class for the full
+        asynchronous-prefetch contract. This `DataLoader` itself is
+        untouched and remains independently usable for plain synchronous
+        iteration; importing this module never requires CUDA, only calling
+        `.prefetch()` does (lazily imported here for exactly that reason).
+        """
+        from .prefetch import CUDAPrefetchLoader
+
+        return CUDAPrefetchLoader(self, device=device, prefetch_size=prefetch_size)
+
 
 def _collate(samples: list) -> Any:
     """Stack a list of dataset samples (Tensors, or tuples of Tensors) into a batch."""

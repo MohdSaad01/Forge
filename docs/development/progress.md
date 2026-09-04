@@ -1651,3 +1651,97 @@ new: pinned H2D ~1.8-1.9x faster than pageable at 4 MB, async submission
 0.97x-1.24x, D2H transfer/compute overlap 0.86x-0.91x (memory-bandwidth
 contention, reported as measured); default-stream M20 MNIST throughput
 unaffected at 19.66-19.83 ms/iteration, within the M26-28 baseline range).
+
+### M30 — Asynchronous DataLoader GPU prefetch
+Turns the M29 pinned-memory/async-transfer primitives into a bounded,
+opt-in asynchronous CPU-batch-preparation + H2D-transfer + GPU-compute
+pipeline, integrated with the existing `DataLoader` and `Trainer` -- zero
+new synchronization mechanism; every piece is exactly the M25-29 machinery
+those milestones' own docs already said a future DataLoader-prefetch
+milestone would consume.
+
+**API.** `forge.data.CUDAPrefetchLoader(loader, device="cuda",
+prefetch_size=2)` wraps an existing `DataLoader` (also reachable as
+`loader.prefetch(device="cuda", prefetch_size=2)`) -- a wrapper, not a
+subclass or reimplementation; `DataLoader` itself is completely unmodified
+beyond that one convenience method. `Trainer(..., prefetch=True,
+prefetch_size=2)` (requires `device="cuda"`) transparently wraps whatever
+loader `fit()`/`evaluate()` receive, cached per loader object so the
+wrapper (and its transfer stream) is created once, not once per epoch.
+
+**Pipeline.** A single bounded background `threading.Thread` ("the CPU
+producer") does exactly one thing: call `next()` on the wrapped loader's
+own unmodified iterator and push each resulting CPU batch into a
+`queue.Queue(maxsize=prefetch_size)` -- backpressure is entirely this
+queue's own blocking `put()`. It never touches CUDA/streams. The single
+calling thread does everything CUDA-related: stage a popped CPU batch into
+`forge.cuda.PinnedMemory` (reusing M29's mechanism exactly, no new pinned
+lifetime system), submit its async H2D on one dedicated, persistent
+transfer `Stream`, and hand the resulting CUDA `Tensor` batch to the
+caller. Double buffering (Section 45): exactly one batch is staged ahead on
+the GPU side at any time, independent of `prefetch_size` (which only bounds
+CPU-side lookahead).
+
+**Transfer→compute dependency needed zero new mechanism.** `CUDAStorage.
+last_stream` is already set correctly by the M29 async-H2D path; the
+caller's first kernel touching that storage on a different stream
+automatically invokes M28's `_stream_guard`, inserting a GPU-side
+`cudaStreamWaitEvent` with no explicit event and no
+`cudaDeviceSynchronize()` anywhere in this milestone's own code. Verified
+directly with a `cf_synchronize`-spy across a full prefetch training run
+(zero calls): `tests/test_dataloader_prefetch.py`, `tests/
+test_trainer_prefetch.py`.
+
+**Real overlap requires a real compute stream.** CUDA's legacy default/null
+stream synchronizes against any explicitly created stream, so
+default-stream compute would fully serialize against the prefetch
+pipeline's transfer stream (correctness unaffected, but zero real overlap).
+`Trainer(prefetch=True)` therefore creates one dedicated, lazily-created,
+persistent compute `Stream`, current only for the duration of `fit()`'s/
+`evaluate()`'s batch loop -- documented as superseding `docs/architecture/
+cuda-streams.md`'s "Trainer remains synchronous" decision for this one
+opt-in path only; `prefetch=False` is completely unaffected.
+
+**RNG safety needed no changes to `DataLoader`/`Dropout`/`forge.random`.**
+`DataLoader.__iter__()`'s one RNG draw (the shuffle permutation) executes
+lazily on its *first* `next()` call. `CUDAPrefetchLoader` always performs
+that first `next()` call synchronously on the calling thread, before
+starting the background thread -- every draw after that point is
+RNG-free (`_collate` touches no randomness), so the background thread never
+races the main thread's `Dropout` draws on Forge's shared process-global
+generator. Verified with shuffle-ordering tests (parametrized over
+`prefetch_size`) asserting byte-for-byte identical batch order against the
+synchronous path for a fixed seed.
+
+**Reference-cycle-free cleanup.** The background thread's target is a free
+function taking only `(source_iter, queue)`, never a bound method closing
+over `self` -- avoiding a `self -> Thread -> bound-method -> self` cycle
+that would otherwise need the cyclic GC (not plain refcounting) to ever
+collect an early-terminated iterator's thread/queue/CUDA batches, matching
+this codebase's established lifetime-testing convention. Verified with
+`gc.disable()` in effect across repeated `for batch in loader: break` loops.
+
+**Tests.** 1,147 tests total (1,113 pre-existing + 34 new), all passing on
+the 940MX; 28 of the 34 new tests are CUDA-hardware-gated (6 are
+CUDA-unavailable/CPU-only-import-path tests that run everywhere), across
+`tests/test_dataloader_prefetch.py`, `tests/
+test_dataloader_prefetch_availability.py`, and `tests/
+test_trainer_prefetch.py`. Every pre-existing test passes unmodified. New
+coverage: construction/validation, CUDA-tensor batch correctness
+(dtype/shape/value), synchronous-vs-asynchronous ordering under `shuffle`
+(parametrized `prefetch_size`) and `drop_last`, epoch-boundary correctness
+across repeated epochs, dataset-exception propagation, early-termination
+thread cleanup via plain refcounting (`gc.disable()`), repeated-epoch
+CUDA/pinned memory leak checks, zero-`cudaDeviceSynchronize()`
+verification, `Trainer` prefetch integration (exact-loss-match against the
+synchronous `Trainer`, validation/standalone-`evaluate()`, compute-stream
+lifecycle, gradient/optimizer correctness), and CPU-only import safety.
+
+See `docs/architecture/async-dataloader.md` (new) for the full design and
+contract, updates to `docs/architecture/cuda-transfers.md` (Section
+20/21) and `docs/architecture/cuda-streams.md` (Section 15/18), and the
+**Milestone 30** section in `docs/performance/benchmarking.md`
+(`benchmarks/async_dataloader_bench.py`: synthetic light-CPU/heavy-GPU
+overlap 3.28x, negligible-CPU/light-GPU overhead-dominated 0.63x-0.92x
+(honestly reported, not a regression), real MNIST CNN 1.21x; CUDA/pinned
+memory both return to baseline after repeated epochs).

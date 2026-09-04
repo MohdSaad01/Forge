@@ -386,7 +386,12 @@ and `tests/test_cuda_async_transfer.py`).
   and `from_array()`'s CUDA-to-CUDA clone path were not touched.
 - No asynchronous DataLoader, prefetch worker, or automatic GPU prefetch
   (Section 41/45) -- this milestone provides only the primitives a future
-  milestone's DataLoader integration would consume.
+  milestone's DataLoader integration would consume. **Milestone 30**
+  consumes exactly these primitives (`PinnedMemory`, `from_array_async`/
+  `to_numpy_async` via `Tensor.to(..., non_blocking=True)`, and the M28
+  `_stream_guard` cross-stream dependency) to build that DataLoader
+  integration with zero new transfer/synchronization mechanism -- see
+  `docs/architecture/async-dataloader.md`.
 - `Tensor.shape` on a still-pending D2H tensor forces synchronization (see
   **Host-Read Synchronization** above) -- a known, documented, low-impact
   limitation, not a correctness issue.
@@ -409,10 +414,22 @@ have to rediscover it:
   that stages the next batch into `PinnedMemory` while the current batch
   trains, then submits `non_blocking=True` H2D transfers -- the primitives
   this milestone adds are exactly what such a design would consume.
+  **Implemented in Milestone 30** (`forge.data.CUDAPrefetchLoader`) -- see
+  `docs/architecture/async-dataloader.md`. Its background CPU-producer
+  thread deliberately never touches CUDA/streams itself (only the calling
+  thread does), sidestepping the thread-safety hazard the next bullet in
+  this section already anticipated.
 - **`Trainer`-internal transfer/compute overlap**: `Trainer` issuing its own
   H2D transfer on a dedicated stream ahead of the compute stream needing it,
   synchronizing only at public method boundaries (mirrors Milestone 27's
-  already-deferred "Trainer-internal stream use").
+  already-deferred "Trainer-internal stream use"). **Implemented in
+  Milestone 30** as `Trainer(..., prefetch=True)`, which also gives
+  `Trainer` a dedicated, persistent compute `Stream` for the duration of
+  the prefetch-enabled training loop -- see `docs/architecture/
+  async-dataloader.md`'s **Trainer Integration**/**Compute Stream**
+  sections and `docs/architecture/cuda-streams.md`'s note on this
+  superseding the "Trainer remains synchronous" default for that opt-in
+  path only.
 - **A pinned caching allocator**: only if profiling of a real prefetch
   pipeline shows repeated `cudaHostAlloc`/`cudaFreeHost` calls are a
   measurable bottleneck.
