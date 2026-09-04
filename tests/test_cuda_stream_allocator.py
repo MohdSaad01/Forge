@@ -150,19 +150,26 @@ def test_cross_stream_read_of_a_default_stream_tensor_is_always_safe():
     np.testing.assert_allclose(doubled.to("cpu").numpy(), np.full(shape, 10.0, dtype=np.float32))
 
 
-def test_using_a_tensor_across_two_different_explicit_streams_raises_clearly():
-    """Forge does not support arbitrary cross-stream tensor dependencies (Section 20 of the brief)."""
+def test_using_a_tensor_across_two_different_explicit_streams_establishes_a_dependency():
+    """Milestone 28: cross-stream Tensor use is automatically safe, not a CUDAError (see M27's identical test).
+
+    `t` is produced on `stream_a`; reading it from `stream_b` must insert a
+    GPU-side dependency (`cudaEventRecord` on `stream_a` + `cudaStreamWaitEvent`
+    on `stream_b`) rather than raising -- see `docs/architecture/
+    cuda-streams.md`'s **Automatic cross-stream dependencies** section.
+    """
     stream_a = forge.cuda.Stream()
     stream_b = forge.cuda.Stream()
 
     with forge.cuda.stream(stream_a):
         t = Tensor(np.ones((16,), dtype=np.float32), device="cuda")
 
-    with pytest.raises(forge.CUDAError):
-        with forge.cuda.stream(stream_b):
-            _ = t + t
+    with forge.cuda.stream(stream_b):
+        result = t + t
 
     stream_a.synchronize()
+    stream_b.synchronize()
+    np.testing.assert_allclose(result.to("cpu").numpy(), np.full((16,), 2.0, dtype=np.float32))
 
 
 # -- 4. empty_cache() drains pending blocks (Section 18) -----------------------

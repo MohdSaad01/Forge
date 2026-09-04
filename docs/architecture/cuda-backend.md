@@ -1,4 +1,4 @@
-# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21; CUDA memory statistics and allocation lifecycle in Milestone 22; CUDA allocation profiling and caching-allocator design in Milestone 24; exact-size CUDA caching allocator implemented in Milestone 25; CUDA execution and synchronization semantics formalized, `forge.cuda.synchronize()` added, in Milestone 26; real CUDA streams and asynchronous execution added in Milestone 27 -- see `docs/architecture/cuda-streams.md`)
+# CUDA Backend (Milestones 8-10; CUDA `Trainer`/loss integration in Milestone 12; CUDA model persistence in Milestone 13; CUDA `CrossEntropyLoss` in Milestone 14; CUDA `Conv2d`/`MaxPool2d` in Milestone 15; CUDA `Dropout` in Milestone 16; CUDA Adam in Milestone 17; CUDA Conv2d-backward performance optimization in Milestone 21; CUDA memory statistics and allocation lifecycle in Milestone 22; CUDA allocation profiling and caching-allocator design in Milestone 24; exact-size CUDA caching allocator implemented in Milestone 25; CUDA execution and synchronization semantics formalized, `forge.cuda.synchronize()` added, in Milestone 26; real CUDA streams and asynchronous execution added in Milestone 27; automatic GPU-side cross-stream Tensor dependencies added in Milestone 28 -- see `docs/architecture/cuda-streams.md`)
 
 ## Summary
 Forge has a real CUDA execution backend for a small operation set: tensor
@@ -37,7 +37,7 @@ forge/
             build.py           Locates nvcc/MSVC, compiles kernels.cu -> a DLL
             backend.py         CUDAStorage, CUDABackend, get_cuda_backend(), is_cuda_available()
             memory.py            CUDAMemoryStats, allocation/free counters (M22)
-            stream.py            CUDAStream, CUDAEvent (internal), current-stream tracking (M27)
+            stream.py            CUDAStream, CUDAEvent (internal), current-stream tracking (M27); wait_event/wait_event_on_default_stream (M28)
             allocator.py         CUDACachingAllocator -- ready + pending blocks (M25; M27)
             __init__.py        Re-exports the above
     cuda/__init__.py           forge.cuda: memory_stats(), reset_peak_memory_stats() (M22); Stream, current_stream(), set_stream(), stream() (M27)
@@ -1665,8 +1665,13 @@ cuda-streams.md` for what was actually built: real `Stream` objects,
 per-storage `last_stream` tracking, a "fail clearly" cross-stream policy
 (not full `cudaStreamWaitEvent` dependency resolution), real internal CUDA
 events replacing `cudaDeviceSynchronize()` for allocator reuse safety, and
-deferred/stream-ordered (pending-block) allocator reuse. Nonblocking
-`Tensor.to()` remains unimplemented, exactly as anticipated here.
+deferred/stream-ordered (pending-block) allocator reuse. **Milestone 28**
+then closed the one bullet M27 deliberately left open -- "cross-stream
+synchronization" above -- replacing the "fail clearly" policy with exactly
+the `cudaStreamWaitEvent`/`cudaEventRecord` dependency mechanism anticipated
+here; see `docs/architecture/cuda-streams.md`'s **Milestone 28: Automatic
+Cross-Stream Dependencies** section. Nonblocking `Tensor.to()` remains
+unimplemented, exactly as anticipated here.
 
 ## CUDA model persistence (Milestone 13)
 `save_model()`/`load_model()` (`forge/serialization/model.py`) now support

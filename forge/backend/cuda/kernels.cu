@@ -54,18 +54,21 @@ __declspec(dllexport) int cf_synchronize() {
     return static_cast<int>(cudaDeviceSynchronize());
 }
 
-// -- CUDA streams and events (Milestone 27) --------------------------------
+// -- CUDA streams and events (Milestone 27; cross-stream waits in Milestone 28) --
 //
 // Real `cudaStream_t`/`cudaEvent_t` handles, exported as opaque `void*` so
 // `ctypes` never needs to know their actual (opaque) struct layout -- the
 // same "raw pointer in, raw pointer out" convention `cf_malloc`/`cf_free`
 // already use for device memory. `cf_stream_create`/`cf_stream_destroy`/
-// `cf_stream_synchronize` back `forge.backend.cuda.stream.CUDAStream`, the
-// only public stream abstraction (`forge.cuda.Stream`). `cf_event_*` are
-// used only *internally*, by the caching allocator
-// (`forge.backend.cuda.allocator`), to know when a block released on a
-// non-default stream is actually safe to reuse -- no public CUDA event API
-// is exposed (see the Milestone 27 brief's explicit scope limit).
+// `cf_stream_synchronize`/`cf_stream_wait_event` back
+// `forge.backend.cuda.stream.CUDAStream`, the only public stream abstraction
+// (`forge.cuda.Stream`). `cf_event_*` are used only *internally* -- by the
+// caching allocator (`forge.backend.cuda.allocator`) to know when a block
+// released on a non-default stream is safe to reuse, and, as of Milestone
+// 28, by `CUDABackend._stream_guard` to establish a GPU-side cross-stream
+// dependency -- no public CUDA event API is exposed (see the Milestone 27
+// brief's explicit scope limit, reaffirmed in Milestone 28's brief Section
+// 7: a public `Event` API is optional, not required for correctness).
 // `cudaEventDisableTiming` is passed at creation since Forge's internal
 // events are used only to test/wait for completion, never to measure
 // elapsed time -- a small, standard CUDA optimization for exactly this use.
@@ -80,6 +83,17 @@ __declspec(dllexport) int cf_stream_destroy(void* stream) {
 
 __declspec(dllexport) int cf_stream_synchronize(void* stream) {
     return static_cast<int>(cudaStreamSynchronize(static_cast<cudaStream_t>(stream)));
+}
+
+// Milestone 28: the GPU-side (never host-blocking) cross-stream dependency
+// primitive. `stream=NULL` means CUDA's default (null) stream -- valid: a
+// caller may make the default stream wait on an event recorded on an
+// explicit stream (Section 14 of the milestone brief, "explicit -> default").
+// The trailing `0` is the required-but-unused `flags` parameter (CUDA
+// currently defines no flags for this call).
+__declspec(dllexport) int cf_stream_wait_event(void* stream, void* event) {
+    return static_cast<int>(cudaStreamWaitEvent(
+        static_cast<cudaStream_t>(stream), static_cast<cudaEvent_t>(event), 0));
 }
 
 __declspec(dllexport) int cf_event_create(void** out_event) {

@@ -798,3 +798,23 @@ Every M25/M26 test in `tests/test_cuda_allocator.py` continues to pass
 unmodified: they exercise only the default-stream path, which is byte-for-
 byte unchanged. New Milestone 27 tests live in `tests/
 test_cuda_stream_allocator.py`.
+
+## Milestone 28: Unaffected by Cross-Stream Dependencies
+
+Milestone 28 replaced M27's "fail clearly" cross-stream Tensor policy with
+automatic `cudaStreamWaitEvent`-based dependencies (`docs/architecture/
+cuda-streams.md`'s **Milestone 28** section) -- but changed nothing in this
+allocator. `CUDAStorage.__del__`, `release()`/`release_pending()`, and
+`_try_reclaim_pending()` above are byte-for-byte the same code as M27. The
+reason this remains safe: `CUDABackend._stream_guard` (`backend.py`) still
+updates every storage's `last_stream` to the *current* stream after
+establishing whatever dependency was needed, exactly as it always updated
+`last_stream` for every touched storage in M27 -- so `last_stream` continues
+to mean "the stream that will next touch this storage," cross-stream reads
+included, which is precisely what `release_pending()` needs to record the
+correct event. Verified directly:
+`tests/test_cuda_stream_dependencies.py::
+test_empty_cache_remains_safe_after_cross_stream_dependencies` and
+`::test_repeated_cross_stream_dependencies_do_not_grow_cuda_allocation` (100
+repeated cross-stream release/reallocate cycles with no growth in
+`allocated_bytes`).

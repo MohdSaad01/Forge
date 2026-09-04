@@ -1,4 +1,4 @@
-# CUDA Streams and Asynchronous Execution (Milestone 27)
+# CUDA Streams and Asynchronous Execution (Milestone 27; cross-stream dependencies in Milestone 28)
 
 Milestone 26 formally established Forge's Milestone 8-26 CUDA execution
 model: every kernel launch and `cudaMemcpy` runs on CUDA's default (null)
@@ -192,46 +192,65 @@ stream itself is later destroyed (documented CUDA runtime behavior -- see
 `stream.py`'s `CUDAStream` docstring), so nothing needs to keep the stream
 object alive past that point.
 
-## 7. Cross-stream dependency policy: fail clearly
+## 7. Cross-stream dependency policy: automatic GPU-side dependencies (Milestone 28)
 
-Section 20/21 of the milestone brief explicitly sanctions this: "if
-cross-stream execution is not supported for arbitrary Tensor dependencies
-yet, fail clearly rather than silently producing incorrect results." Forge
-does the former, not full `cudaStreamWaitEvent`-based cross-stream
-dependency resolution (explicitly out of scope -- "do not attempt arbitrary
-graph-level multi-stream scheduling").
+**Superseded from Milestone 27.** M27 chose to raise `forge.CUDAError`
+immediately on any cross-stream Tensor use ("fail clearly rather than
+silently produce incorrect results" -- that milestone's Section 20/21).
+Milestone 28's brief explicitly removes that limitation: "Forge should be
+able to determine when a CUDA Tensor was last produced/used on another
+stream and establish the necessary dependency automatically." This section
+describes the current (M28) behavior; see **Milestone 28: Automatic
+Cross-Stream Dependencies** below for the full design discussion.
 
-`CUDABackend._stream_guard(storages, op)` runs before every kernel launch
-(via `_require_compute_dtype`, and explicitly in `reshape`/`from_array`):
-for each input storage, if `storage.last_stream` is not `None` and is not
-identical to the stream this operation is about to launch on, it raises
-`forge.CUDAError` immediately, naming both streams. A storage whose
-`last_stream` is `None` (only ever touched on the default stream) is always
-safe to read from any stream -- the M26 contract already guarantees that
-work completed, synchronously, before Python could see the storage at all.
+`CUDABackend._stream_guard(storages, op)` still runs before every kernel
+launch (via `_require_compute_dtype`, and explicitly in `reshape`/
+`from_array`) -- the same single chokepoint as M27, unchanged in *where* it
+runs, changed in *what it does*. For each input storage whose `last_stream`
+is not `None` and not identical to the stream this operation is about to
+launch on, it now inserts a real, GPU-side dependency -- `cudaEventRecord`
+on the producing stream, then `cudaStreamWaitEvent` on the consuming stream
+-- instead of raising:
 
 ```text
 Stream A: x = a + b            # x.last_stream = A
-Stream A: y = x + x            # OK -- x.last_stream is A, current stream is A
-Stream B: z = x + x            # CUDAError -- x.last_stream is A, current stream is B
-(no stream) w = x + x          # CUDAError -- x.last_stream is A (real), current is None
+Stream A: y = x + x            # same-stream fast path -- no event, no wait
+Stream B: z = x + x            # cudaEventRecord(A) + cudaStreamWaitEvent(B) -- then OK
+(no stream) w = x + x          # cudaEventRecord(A) + cudaStreamWaitEvent(NULL) -- then OK
 ```
 
+A storage whose `last_stream` is `None` (only ever touched on the default
+stream) still never needs a dependency -- the M26 contract already
+guarantees that work completed, synchronously, before Python could see the
+storage at all.
+
 Verified directly: `tests/test_cuda_stream_allocator.py::
-test_using_a_tensor_across_two_different_explicit_streams_raises_clearly`,
+test_using_a_tensor_across_two_different_explicit_streams_establishes_a_dependency`,
 `tests/test_cuda_stream_autograd.py::
-test_backward_on_a_different_stream_than_forward_raises_cuda_error` (forward
-on stream A, `backward()` attempted under stream B).
+test_backward_on_a_different_stream_than_forward_matches_same_stream_reference`
+(forward on stream A, `backward()` on stream B -- now produces the same
+gradients as an identical run kept on one stream, not a `CUDAError`), and
+the whole of `tests/test_cuda_stream_dependencies.py`.
 
-**Working across streams remains possible** -- just not implicitly. Call
-`stream.synchronize()` (or `forge.cuda.synchronize()`) between uses on
-different streams to reset `last_stream` back to a state (default,
-effectively) where any stream can safely consume it. Explicit synchronization,
-not implicit dependency tracking, is Forge's Milestone 27 answer to
-cross-stream reads -- exactly the smallest correct mechanism the brief calls
-for (Section 12).
+**Explicit synchronization remains available, just no longer required.**
+`stream.synchronize()`/`forge.cuda.synchronize()` between cross-stream uses
+still work exactly as before (M26/M27) -- they simply become optional for
+correctness in the cases `_stream_guard` now covers automatically.
 
-## 8. Allocator changes: pending blocks
+## 8. Allocator changes: pending blocks (Milestone 27; unaffected by Milestone 28)
+
+Milestone 28's cross-stream dependencies changed *when* `_stream_guard`
+raises versus proceeds, not the allocator's own pending-block model below --
+`CUDAStorage.__del__`, `release()`/`release_pending()`, and
+`_try_reclaim_pending()` are byte-for-byte unchanged from M27. The one
+interaction worth stating explicitly: `_stream_guard` now updates a
+*read-only* input's `last_stream` to the consuming stream too (not just a
+freshly written output's), exactly as M27 already did -- so a storage
+consumed cross-stream still ends up with `last_stream` naming whichever
+stream will *actually* next touch it, which is exactly what
+`release_pending()` needs to record the correct event when that storage is
+later released. See **Milestone 28: Automatic Cross-Stream Dependencies**
+below, **Storage lifetime and the allocator**, for why this remains safe.
 
 The M25/M26 allocator's central assumption -- "release implies safe to
 reuse immediately" -- is no longer universally true. `forge/backend/cuda/
@@ -370,10 +389,19 @@ forge.cuda.stream(s): output = model(x); loss = criterion(output, target);
 loss.backward()` block therefore runs every forward *and* backward op on
 `s`, correctly ordered by `s`'s own program order.
 
-Cross-stream backward (forward issued under stream A, `backward()` called
-under stream B) fails clearly via `_stream_guard` (Section 7) -- verified by
-`tests/test_cuda_stream_autograd.py::
-test_backward_on_a_different_stream_than_forward_raises_cuda_error`.
+**Milestone 28:** cross-stream backward (forward issued under stream A,
+`backward()` called under stream B) is now automatically safe via
+`_stream_guard` (Section 7) -- every backward kernel reads activations/
+weights last touched on stream A from stream B, and `_stream_guard`
+establishes the needed dependency for each one, with no code change to
+`forge/autograd/engine.py` or `forge/tensor/tensor.py` (the same "ambient
+stream state, not threaded through function signatures" property that made
+same-stream backward work automatically in M27 generalizes to cross-stream
+backward automatically too). Verified by `tests/test_cuda_stream_autograd.py::
+test_backward_on_a_different_stream_than_forward_matches_same_stream_reference`,
+which checks the resulting gradients exactly match an identical run kept on
+one stream (previously, M27's identically-named test asserted a
+`CUDAError`).
 
 ## 14. Optimizer semantics
 
@@ -386,6 +414,21 @@ correctly observes the updated parameter values, with no explicit
 synchronization needed in between (CUDA's own per-stream ordering
 guarantees this) -- verified directly by `tests/test_cuda_stream_autograd.py::
 test_optimizer_step_then_forward_on_same_stream_sees_updated_parameters`.
+
+**Milestone 28:** an optimizer step consuming a gradient produced on a
+*different* stream, or reading/writing a parameter last touched on a
+different stream, is also safe -- `sgd_step`/`adam_step` call
+`_require_compute_dtype` (hence `_stream_guard`) exactly like every other
+`CUDABackend` method, so cross-stream dependencies are established
+automatically with no optimizer-specific code. Verified by
+`tests/test_cuda_stream_autograd.py::
+test_optimizer_step_on_a_different_stream_than_backward_matches_same_stream_reference`
+and `::test_parameter_read_and_update_across_streams_are_never_racy_in_either_order`
+-- the latter alternates a parameter *read* (forward) and *write*
+(optimizer step) across two streams in both orders with no explicit
+synchronization anywhere in between, and matches an identical sequence kept
+on one stream exactly (Section 39 of the M28 brief: "one of the most
+important correctness tests in the milestone").
 
 ## 15. Trainer semantics
 
@@ -434,11 +477,10 @@ not expect dramatic overlap on every kernel/GPU").
 
 ## 18. Current limitations
 
-- No cross-stream dependency resolution (Section 7) -- an explicit
-  `stream.synchronize()` is required to hand a tensor from one stream to
-  another.
 - No public CUDA event API, stream priorities, stream pools, CUDA Graphs,
-  or nonblocking `.to()` -- all explicitly out of scope (Section 45).
+  or nonblocking `.to()` -- all explicitly out of scope (Milestone 27's
+  Section 45; reaffirmed as out of scope, or optional-and-not-taken, by the
+  Milestone 28 brief's Sections 7/52).
 - `Trainer` does not use streams internally (Section 15) -- DataLoader/
   transfer/compute overlap remains a future milestone.
 - The allocator's pending-block scan (`_try_reclaim_pending`) is a linear
@@ -449,28 +491,206 @@ not expect dramatic overlap on every kernel/GPU").
   `cudaMemcpy` (Section 5) -- correct, but each one is a coarse whole-device
   ordering point; a future milestone introducing pinned memory and
   `cudaMemcpyAsync` could remove that cost.
+- **Milestone 28**: `_stream_guard`'s dependency insertion is a fresh
+  `CUDAEvent` per distinct producer stream on *every* cross-stream op --
+  correct and, per the M28 brief's own Section 6, deliberately not pooled
+  ("first implement correctness ... optimize only if profiling justifies
+  it"); `benchmarks/stream_dependency_bench.py`'s "event creation" number
+  (~2.6 us on the 940MX) is the isolated per-event cost this would target if
+  a future milestone's profiling shows it matters. Only one piece of
+  producer-stream history (`CUDAStorage.last_stream`) is tracked, per the
+  brief's "do not attach a full stream history" constraint -- see
+  **Milestone 28: Automatic Cross-Stream Dependencies**, **Why one
+  `last_stream` field is still enough**, below for why this remains
+  sufficient even for multi-consumer/multi-producer graphs.
 
 ## 19. Future stream/event design
 
-Explicitly out of scope for this milestone, listed so a future milestone
+Explicitly out of scope through Milestone 28, listed so a future milestone
 does not have to rediscover it:
 
-- **General cross-stream dependencies**: `cudaStreamWaitEvent`-based
-  automatic dependency insertion (rather than "fail clearly, synchronize
-  explicitly") so a tensor could move between streams without an explicit
-  barrier.
 - **`Trainer`-internal stream use**: a designated training stream with
   synchronization only at public method boundaries (Option B from Section
-  23 of the brief), enabling overlap between data loading/transfer and
+  23 of the M27 brief), enabling overlap between data loading/transfer and
   compute.
 - **Nonblocking `.to()`**: pinned host memory + `cudaMemcpyAsync`, with an
   explicit story for when the destination tensor's data is guaranteed
   ready.
 - **A public CUDA event API**: `forge.cuda.Event` for user-level fine-grained
-  synchronization, rather than the allocator-internal-only `CUDAEvent` this
-  milestone introduces.
+  synchronization, rather than the internal-only `CUDAEvent` Forge has
+  through Milestone 28. The M28 brief explicitly left this optional
+  (Section 7); it was not introduced, since `_stream_guard`'s automatic
+  dependency insertion already meets the milestone's actual acceptance
+  criterion (cross-stream correctness) with no user-facing API needed.
 - **Stream priorities / pools**: per-thread or scheduler-managed stream
   pools, useful once Forge has a caller that actually needs more than a
   handful of manually-created streams.
+- **Event pooling**: see Section 18's Milestone 28 bullet above.
 
 None of this is implemented now.
+
+## 20. Milestone 28: Automatic Cross-Stream Dependencies
+
+### Mechanism
+
+`CUDABackend._stream_guard(storages, op)` (`forge/backend/cuda/backend.py`),
+the single chokepoint every kernel-launching method already ran through in
+M27 (Section 7), now does this instead of raising:
+
+```text
+for each distinct producer stream P among storages' last_stream (P != current):
+    event = CUDAEvent(lib)         # cudaEventCreateWithFlags(cudaEventDisableTiming)
+    event.record(P.handle)         # cudaEventRecord(event, P)
+    current.wait_event(event)      # cudaStreamWaitEvent(current, event, 0) -- or
+                                    # wait_event_on_default_stream() if current is NULL
+    # event falls out of scope here -- see "Event lifetime" below
+for each storage:
+    storage.last_stream = current
+```
+
+`CUDAStream.wait_event()` and the free function
+`stream.wait_event_on_default_stream()` (`forge/backend/cuda/stream.py`) are
+the two thin wrappers around the new `cf_stream_wait_event` export
+(`kernels.cu`, a direct `cudaStreamWaitEvent` call) -- the first for an
+explicit current stream, the second for the one stream Forge doesn't wrap in
+a `CUDAStream` object (`current_stream() is None`, meaning CUDA's default/
+null stream). Both compile to the identical underlying CUDA call; `stream=
+NULL` waiting on an event is a valid, documented `cudaStreamWaitEvent` usage.
+
+### All four directions
+
+```text
+default  -> explicit    : cudaEventRecord(NULL) + cudaStreamWaitEvent(B)
+explicit -> default      : cudaEventRecord(A) + cudaStreamWaitEvent(NULL)
+explicit A -> explicit B : cudaEventRecord(A) + cudaStreamWaitEvent(B)
+explicit B -> explicit A : cudaEventRecord(B) + cudaStreamWaitEvent(A)
+```
+
+All four are the *same* code path in `_stream_guard` -- there is no
+default-stream special case, deliberately: Section 14 of the milestone brief
+warns against "assum[ing] CUDA's legacy/default-stream ordering automatically
+solves all cases," so Forge does not rely on the (real, but driver-mode-
+dependent) implicit whole-device ordering the legacy default stream provides
+for `cudaMemcpy` (Section 5) -- it establishes an explicit, defined
+dependency here regardless of which side is the default stream. All four
+directions are verified directly on the 940MX by
+`tests/test_cuda_stream_dependencies.py::test_all_four_stream_directions_produce_correct_results`
+(parametrized over all four).
+
+### Why one `last_stream` field is still enough
+
+The milestone brief's Section 18/19 raise a natural worry: with only one
+`last_stream` field per storage (no producer-stream *history*), can a
+multi-consumer or multi-producer graph still be handled correctly? Yes,
+without any extra metadata, for a subtle but load-bearing reason:
+
+`_stream_guard` updates `last_stream` to the *current* stream for every
+storage it touches -- inputs (reads) exactly as much as freshly constructed
+outputs, unchanged from M27 (Section 6 there). Consider `x` produced on
+stream P, then read by consumer stream A (`_stream_guard` makes A wait for
+P, then sets `x.last_stream = A`), then read again later by consumer stream
+B. `x.last_stream` is now `A`, not `P` -- so B's `_stream_guard` call
+establishes a dependency on *A*, not P. This is still correct, because A's
+own command queue already contains "wait for P's event" (enqueued before
+A's read of `x`), so waiting for an event recorded on A *after* that read
+transitively implies P's work completed too, by CUDA's own per-stream FIFO
+program-order guarantee -- not by re-deriving P from anywhere. The
+dependency chain is carried entirely by the stream's own queue order, not by
+any Forge-side bookkeeping of "who *originally* produced this." This is
+conservative (B may wait slightly longer than the true minimum -- for all of
+A's read to finish, not just P's write) but always correct, and costs
+nothing extra to implement: the exact same one-field, "last toucher" model
+M27 already used for allocator safety turns out to already be sufficient
+for the dependency-insertion problem too, with no additional history
+required. Verified directly:
+`tests/test_cuda_stream_dependencies.py::test_multi_consumer_streams_each_see_correct_producer_data`
+(two independent consumer streams reading one producer's tensor) and
+`::test_multi_producer_streams_each_get_their_own_dependency` (`C = A + B`,
+`A` and `B` each on their own stream -- `_stream_guard` iterates every
+input storage, so both producers get a dependency, satisfying Invariant 4
+independently of the single-field design above).
+
+### Deduplication
+
+`_stream_guard` collects the *distinct* producer streams among an
+operation's storages into a `set` before creating any event -- two inputs
+last touched on the same other stream cost exactly one event and one wait,
+not two (Section 20 of the milestone brief). Verified:
+`tests/test_cuda_stream_dependencies.py::test_two_inputs_from_the_same_producer_stream_dedupe_to_one_dependency`.
+Redundant *repeated* events across separate operations (e.g. the same
+producer/consumer pair used twice in a row) are not deduplicated -- Section
+6's "correctness first, pool/optimize only if justified" applies here too;
+seep Section 18's Milestone 28 limitations bullet.
+
+### No host blocking
+
+`cudaStreamWaitEvent` only ever inserts a GPU-side ordering point into the
+consuming stream's own command queue; the call itself returns to Python
+immediately regardless of whether the event has completed -- this is why
+`_stream_guard` can run inline on every operation without turning
+asynchronous execution back into host-synchronous execution. Verified
+directly (not merely assumed): `tests/test_cuda_stream_dependencies.py::
+test_cross_stream_dependency_between_two_explicit_streams_never_calls_device_synchronize`
+spies on the real `cf_synchronize` (`cudaDeviceSynchronize`) entry point and
+confirms it is called zero times while establishing and using a cross-stream
+dependency between two explicit streams.
+
+### Storage lifetime and the allocator
+
+Because `_stream_guard` still updates every touched storage's `last_stream`
+to the current stream (see "Why one `last_stream` field is still enough"
+above), M27's allocator integration (Section 8) needs no change: whichever
+stream a storage's `__del__` finds in `last_stream` is genuinely the last
+stream that will touch it, cross-stream reads included, so
+`release_pending()`'s event-recording remains correct unmodified. Verified:
+`tests/test_cuda_stream_dependencies.py::
+test_empty_cache_remains_safe_after_cross_stream_dependencies` and
+`::test_repeated_cross_stream_dependencies_do_not_grow_cuda_allocation` (100
+repeated cross-stream release/reallocate cycles, steady-state
+`allocated_bytes` unchanged -- no leak).
+
+### Persistence / checkpointing
+
+Unaffected: `to_numpy()` already synchronizes a storage's own `last_stream`
+before its D2H copy (Section 5/6), and `last_stream` remains accurate under
+cross-stream reads (above) -- so `save_model()`/`save_checkpoint()` remain
+correct with no code change, exactly as M27 already established. Not
+re-tested here (M27's `tests/test_cuda_stream_autograd.py::
+test_save_model_after_async_work_on_a_stream_round_trips_correctly` and
+`::test_save_checkpoint_after_async_work_on_a_stream_round_trips_correctly`
+already cover the "read after async work" case this reasoning depends on;
+Milestone 28 does not change what stream a parameter's `last_stream` ends up
+naming when only one stream ever touches it).
+
+### Benchmark results (940MX, real hardware; `python -m benchmarks.stream_dependency_bench`)
+
+| Measurement | Median |
+|---|---:|
+| same-stream baseline (no dependency) | 56.43 us/op |
+| cross-stream dependency (1 producer) | 79.04 us/op |
+| multi-input dependency (2 producers, incl. producing both operands) | 459.33 us/op |
+| event creation + destruction (isolated) | 2.63 us/event |
+| cross-stream allocator reuse (release + realloc, same stream) | 197.58 us/cycle |
+
+Cross-stream overhead over the same-stream fast path measured ~1.4x on a
+4,096-element elementwise add (79.04 / 56.43 us) -- the added
+`cudaEventRecord` + `cudaStreamWaitEvent` pair, real but small relative to
+kernel-launch overhead at this size. The same-stream fast path itself
+remains within run-to-run noise of Milestone 27's own numbers (both ~50-60
+us range for a comparably sized chained add in `stream_bench.py`), confirming
+Section 12's "should not turn a single-stream workload into an event-heavy
+workload" requirement.
+
+The existing M20 CNN/MNIST workload (`python -m benchmarks.mnist_bench`,
+default-stream mode -- it never calls `forge.cuda.stream()`, so it never
+exercises the cross-stream path added this milestone) measured 19.07 ms/
+iteration (3,310 samples/sec) on the 940MX after this milestone's changes,
+within the M26 baseline's own documented 18.56-19.53 ms range (see
+**Milestone 27**'s benchmarking section above) and better than either of
+M27's own two runs (23.03 ms, 27.47 ms) -- consistent with the
+already-documented WDDM driver-scheduling variance across runs, not a
+regression. This confirms Section 12/26 of the M28 brief: default-stream
+(M26-compatible) performance is unaffected, since every storage's
+`last_stream` stays `None` throughout default-stream execution and
+`_stream_guard`'s producer-collection loop degenerates to the same no-op it
+already was in M27.

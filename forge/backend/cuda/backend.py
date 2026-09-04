@@ -87,6 +87,8 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
     lib.cf_stream_destroy.restype = ctypes.c_int
     lib.cf_stream_synchronize.argtypes = [ctypes.c_void_p]
     lib.cf_stream_synchronize.restype = ctypes.c_int
+    lib.cf_stream_wait_event.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    lib.cf_stream_wait_event.restype = ctypes.c_int
     lib.cf_event_create.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
     lib.cf_event_create.restype = ctypes.c_int
     lib.cf_event_record.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -378,33 +380,53 @@ class CUDABackend(Backend):
             self._synchronize(action)
 
     def _stream_guard(self, storages: "tuple[CUDAStorage, ...]", op: str) -> None:
-        """Validate and refresh each storage's `last_stream` before a kernel launch touches it.
+        """Establish any needed cross-stream dependency, then refresh each storage's `last_stream`.
 
-        Raises `CUDAError` if any storage was last touched on a *different*,
-        still-live stream than the one this operation is about to launch on
-        (Forge does not support this cross-stream dependency -- see
-        Section 20/21 of the milestone brief and Invariant 5 in
-        `docs/architecture/cuda-streams.md`: "fail clearly rather than
-        silently produce incorrect results"). A storage whose `last_stream`
-        is `None` (only ever touched on the default stream) is always safe
-        to read from any stream, since default-stream work is already fully
-        complete by the time Python can see the storage at all (the M26
-        contract, still intact for that one stream). Marking every storage
-        to the current stream here -- *before* the launch -- is correct
-        because Python is single-threaded: nothing else can run between this
-        check and the launch it guards.
+        Milestone 28: for each storage last touched on a *different*,
+        still-live stream than the one this operation is about to launch on,
+        insert a GPU-side dependency -- `cudaEventRecord` on the producing
+        stream followed by `cudaStreamWaitEvent` on the current stream (via
+        `CUDAStream.wait_event()`/`_stream.wait_event_on_default_stream()`)
+        -- *before* the launch this method guards, so the launch is safely
+        ordered after that storage's prior work without ever blocking the
+        host (Invariants 1/2 in `docs/architecture/cuda-streams.md`). This
+        replaces Milestone 27's policy of raising `CUDAError` on exactly this
+        situation -- see that document's **Automatic cross-stream
+        dependencies** section for the full contract this implements.
+
+        A storage whose `last_stream` is `None` (only ever touched on the
+        default stream) never needs a dependency: default-stream work is
+        already fully complete by the time Python can see the storage at all
+        (the M26 contract, still intact for that one stream). Same-stream
+        storages (`previous is current`) are the fast path (Invariant 3):
+        skipped entirely, no event created.
+
+        Distinct producing streams are deduplicated (`producers`, a `set`)
+        so two inputs last touched on the *same* other stream cost one event
+        and one wait, not two (Section 20 of the milestone brief) -- while a
+        multi-producer operation (Invariant 4) still waits for every
+        distinct producer. Every storage's `last_stream` is then set to the
+        current stream -- *after* the dependency is established but still
+        *before* the launch it guards, correct because Python is
+        single-threaded: nothing else can run in between. This keeps
+        `last_stream` meaning exactly what the allocator's pending-block
+        release (`CUDAStorage.__del__` -> `release_pending`) needs it to
+        mean: the stream that will *actually* touch this storage next,
+        transitively including everything it was just made to wait for.
         """
         current = _stream.current_stream()
+        producers: "set[_stream.CUDAStream]" = set()
         for s in storages:
             previous = s.last_stream
             if previous is not None and previous is not current:
-                raise CUDAError(
-                    f"CUDA '{op}' would use a tensor last used on stream {previous!r} while "
-                    f"the current Forge CUDA stream is {current!r} -- Forge does not support "
-                    "this cross-stream dependency in this milestone. Synchronize explicitly "
-                    "(that stream's .synchronize(), or forge.cuda.synchronize()) before "
-                    "crossing streams, or keep the whole producer/consumer chain on one stream."
-                )
+                producers.add(previous)
+        for producer in producers:
+            event = _stream.CUDAEvent(self._lib)
+            event.record(producer.handle)
+            if current is None:
+                _stream.wait_event_on_default_stream(self._lib, event)
+            else:
+                current.wait_event(event)
         for s in storages:
             s.last_stream = current
 
@@ -436,9 +458,11 @@ class CUDABackend(Backend):
             # cuda-streams.md`'s **Memory copy semantics**), which under
             # CUDA's legacy-default-stream semantics is already implicitly
             # ordered against every other Forge stream. `_stream_guard` is
-            # not required for correctness here, but is kept for a clear
-            # Forge-level error (rather than a silent, implicit ordering
-            # guarantee) and to keep `data.last_stream` accurate.
+            # not required for correctness here either, but is still kept --
+            # now to establish an explicit, defined GPU-side dependency
+            # rather than relying only on that implicit legacy-stream
+            # ordering (Milestone 28 brief Section 14), and to keep
+            # `data.last_stream` accurate.
             self._stream_guard((data,), "from_array (device-to-device copy)")
             new_ptr = self._alloc(data.nbytes)
             if data.nbytes > 0:

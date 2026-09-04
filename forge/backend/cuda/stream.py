@@ -1,11 +1,14 @@
-"""Real CUDA streams, current-stream tracking, and internal CUDA events (Milestone 27).
+"""Real CUDA streams, current-stream tracking, and internal CUDA events (Milestone 27; cross-stream waits in Milestone 28).
 
 `CUDAStream` wraps one real `cudaStreamCreate`d handle (backing the public
 `forge.cuda.Stream`); `CUDAEvent` wraps one real `cudaEventCreate`d handle and
-is used *only* internally, by `forge.backend.cuda.allocator`, to know when a
-block released on a non-default stream has actually finished being used --
-there is no public CUDA event API (per the Milestone 27 brief's explicit
-scope limit).
+is used *only* internally -- by `forge.backend.cuda.allocator`, to know when a
+block released on a non-default stream has actually finished being used, and,
+as of Milestone 28, by `CUDABackend._stream_guard` to establish a GPU-side
+cross-stream Tensor dependency (`CUDAEvent.record()` + `CUDAStream.
+wait_event()`/`wait_event_on_default_stream()`) -- there is no public CUDA
+event API (per the Milestone 27 brief's explicit scope limit, reaffirmed as
+optional-not-required in the Milestone 28 brief's Section 7).
 
 **Current-stream state** is one process-global variable (`_current_stream`),
 matching the "Forge is single-threaded elsewhere" convention `allocator.py`'s
@@ -98,6 +101,26 @@ class CUDAStream:
         if code != 0:
             raise CUDAError(_err(self._lib, code, "cudaStreamSynchronize"))
 
+    def wait_event(self, event: "CUDAEvent") -> None:
+        """Make this stream wait, GPU-side only, for `event` to complete (Milestone 28).
+
+        `cudaStreamWaitEvent(this stream, event, 0)`: every operation
+        enqueued on this stream *after* this call does not begin executing
+        until `event` completes, but this call itself never blocks the
+        host -- it only inserts a dependency into this stream's own command
+        queue and returns immediately, regardless of whether `event` has
+        already completed. This is the GPU-side cross-stream dependency
+        primitive `CUDABackend._stream_guard` (`backend.py`) uses to make an
+        ordinary Tensor operation safe across streams; see
+        `docs/architecture/cuda-streams.md`'s **Automatic cross-stream
+        dependencies** section.
+        """
+        if self._destroyed:
+            raise CUDAError("Cannot wait_event on a Stream that has already been destroyed.")
+        code = self._lib.cf_stream_wait_event(self._ptr, event._ptr)
+        if code != 0:
+            raise CUDAError(_err(self._lib, code, "cudaStreamWaitEvent"))
+
     def destroy(self) -> None:
         """Explicitly destroy the underlying CUDA stream. Safe to call more than once."""
         if getattr(self, "_destroyed", True) or not getattr(self, "_ptr", None):
@@ -133,13 +156,32 @@ class CUDAStream:
 
 
 class CUDAEvent:
-    """A real CUDA event, used only internally by `allocator.py` for stream-safe block reuse.
+    """A real CUDA event, used only internally -- for stream-safe block reuse and cross-stream dependencies.
 
-    Not exposed as public API anywhere (`forge.cuda` has no `Event`) -- see
-    the Milestone 27 brief's explicit scope limit ("public CUDA event APIs"
-    are out of scope). Created with `cudaEventDisableTiming`: Forge's
+    Two internal call sites use this, both in `forge/backend/cuda/`, never
+    Tensor/Module/autograd code directly: `allocator.py`'s pending-block
+    reuse (Milestone 27), and `backend.py`'s `_stream_guard` cross-stream
+    dependency insertion (Milestone 28, `record()` + `CUDAStream.wait_event()`
+    /`wait_event_on_default_stream()` below). Not exposed as public API
+    anywhere (`forge.cuda` has no `Event`) -- see the Milestone 27 brief's
+    explicit scope limit ("public CUDA event APIs" are out of scope) and the
+    Milestone 28 brief's Section 7 (a public `Event` API is optional, not
+    required for cross-stream correctness; kept internal here to avoid
+    unnecessary API surface). Created with `cudaEventDisableTiming`: Forge's
     internal events are only ever queried/waited for completion, never used
     to measure elapsed time.
+
+    An event is safe to destroy (`__del__`, below) immediately after being
+    used in a `record()` + `wait()`/`CUDAStream.wait_event()` pair, even
+    though the recorded work may not have completed yet -- this is
+    documented CUDA runtime behavior (`cudaEventDestroy`: if the event's
+    work has not completed, the driver defers releasing its resources until
+    it has, rather than the call failing or leaving a dangling dependency).
+    `_stream_guard` relies on exactly this guarantee to use one throwaway
+    `CUDAEvent` per cross-stream dependency rather than pooling or otherwise
+    keeping events alive past the single Python statement that creates them
+    (Milestone 28 brief Section 6: correctness first, pool only if profiling
+    justifies it).
     """
 
     __slots__ = ("_ptr", "_lib")
@@ -184,6 +226,21 @@ class CUDAEvent:
             pass  # interpreter shutdown may have already torn down module globals
 
 
+def wait_event_on_default_stream(lib: "ctypes.CDLL", event: "CUDAEvent") -> None:
+    """Make CUDA's default (null) stream wait, GPU-side only, for `event` to complete.
+
+    The `CUDAStream.wait_event()` counterpart for the one stream Forge
+    doesn't wrap in a `CUDAStream` object (`current_stream() is None`; see
+    this module's docstring) -- `cudaStreamWaitEvent(NULL, event, 0)` is a
+    valid call with the identical GPU-side-only, never-host-blocking
+    contract. Used by `CUDABackend._stream_guard` (Milestone 28) for the
+    "explicit stream -> default stream" cross-stream dependency direction.
+    """
+    code = lib.cf_stream_wait_event(None, event._ptr)
+    if code != 0:
+        raise CUDAError(_err(lib, code, "cudaStreamWaitEvent (default stream)"))
+
+
 # -- current-stream tracking ------------------------------------------------
 
 _current_stream: "CUDAStream | None" = None
@@ -225,4 +282,11 @@ def stream_context(stream: "CUDAStream"):
         set_stream(previous)
 
 
-__all__ = ["CUDAStream", "CUDAEvent", "current_stream", "set_stream", "stream_context"]
+__all__ = [
+    "CUDAStream",
+    "CUDAEvent",
+    "current_stream",
+    "set_stream",
+    "stream_context",
+    "wait_event_on_default_stream",
+]

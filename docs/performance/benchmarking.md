@@ -963,3 +963,62 @@ per stream (2,000,000 elements, few launches) measured only ~1.01x, since
 one such kernel already occupies the whole device and leaves no idle SMs
 for a second stream's blocks to use -- exactly the brief's own caveat ("do
 not expect dramatic overlap on every kernel/GPU").
+
+## Milestone 28: Cross-stream dependency overhead
+
+### Purpose
+Milestone 27's cross-stream policy was "fail clearly"; Milestone 28 replaces
+it with automatic `cudaEventRecord`/`cudaStreamWaitEvent`-based dependencies
+(`docs/architecture/cuda-streams.md`'s **Milestone 28** section). Per that
+milestone's brief Section 45/46: measure the real cost of this mechanism
+(same-stream fast path, cross-stream dependency, multi-input dependency,
+event creation in isolation, allocator pending->ready reuse) and confirm
+default-stream (M26-compatible) performance is unaffected.
+
+    python -m benchmarks.stream_dependency_bench
+
+Not part of `python -m benchmarks`'s category list (matching
+`allocator_bench.py`/`stream_bench.py`'s own "diagnostic script" precedent).
+Each measurement is a median of 7 trials, `timing.py`'s synchronize-
+bracketed methodology (`forge.cuda.synchronize()` before/after each trial's
+inner loop, per-iteration time reported).
+
+### Measured example (940MX, real hardware)
+
+| Measurement | Median |
+|---|---:|
+| same-stream baseline (no dependency), 4,096-element add | 56.43 us/op |
+| cross-stream dependency (1 producer) | 79.04 us/op |
+| multi-input dependency (2 producers, incl. producing both operands) | 459.33 us/op |
+| event creation + destruction (isolated) | 2.63 us/event |
+| cross-stream allocator reuse (release + realloc, same stream) | 197.58 us/cycle |
+
+Cross-stream overhead over the same-stream fast path: ~1.40x on this
+workload size -- the real, GPU-side-only cost of one `cudaEventRecord` +
+one `cudaStreamWaitEvent` pair, small relative to kernel-launch overhead at
+this element count. `event creation + destruction` in isolation (2.63 us)
+confirms most of that 1.40x is the record/wait calls themselves, not event
+object construction -- consistent with the milestone brief's Section 6
+guidance not to pool events without profiling evidence it matters (none
+found here).
+
+### Default-stream regression check
+
+Re-running the M20 MNIST workload (`benchmarks/mnist_bench.py`, the same
+batch=64, 5 warmup + 30 steady-state iteration configuration used since
+Milestone 21 -- default-stream mode throughout, since it never calls
+`forge.cuda.stream()`):
+
+| Metric | M26 (post-sync-audit) | M27, run 1 | M27, run 2 | M28 |
+|---|---:|---:|---:|---:|
+| Mean/median iteration time (CUDA) | 18.56-19.53 ms | 23.03 ms | 27.47 ms | 19.07 ms |
+
+M28's number falls back within the M26 baseline range and below both of
+M27's own runs -- consistent with the already-documented WDDM
+driver-scheduling variance (Milestone 21's benchmarking notes) across
+separate runs on this hardware, not a systematic regression. This is the
+expected result: every storage's `last_stream` stays `None` throughout
+default-stream execution, so `_stream_guard`'s Milestone 28 producer-
+collection loop degenerates to the identical no-op it already was in M27
+(Section 26 of the M28 brief: "same-stream performance does not materially
+regress").

@@ -57,24 +57,43 @@ def test_forward_and_backward_on_same_stream_matches_cpu():
         np.testing.assert_allclose(gg, cg, rtol=1e-4, atol=1e-5)
 
 
-# -- 2. Forward on stream A, backward attempted on stream B fails clearly ------
+# -- 2. Forward on stream A, backward on stream B is automatically safe (Milestone 28) ------
 
 
-def test_backward_on_a_different_stream_than_forward_raises_cuda_error():
-    model = _model().to("cuda")
-    x = Tensor(np.random.default_rng(2).standard_normal((5, 4)).astype(np.float32), device="cuda")
+def test_backward_on_a_different_stream_than_forward_matches_same_stream_reference():
+    """Milestone 28: forward on stream A, `backward()` on stream B is safe, not a CUDAError (see M27's identical test).
 
-    stream_a = forge.cuda.Stream()
-    stream_b = forge.cuda.Stream()
+    Every gradient kernel `backward()` launches on `stream_b` reads Tensors
+    (activations, weights) last touched on `stream_a` -- `_stream_guard`
+    establishes the needed GPU-side dependency automatically for each one
+    (Section 16 of the Milestone 28 brief: "Forge must establish the
+    dependency between the forward-produced Tensor and the backward
+    computation"). Compared against an identical forward+backward run kept
+    entirely on one stream.
+    """
+    x_np = np.random.default_rng(2).standard_normal((5, 4)).astype(np.float32)
 
-    with forge.cuda.stream(stream_a):
-        loss = model(x).sum()
+    def run(same_stream: bool):
+        forge.random.seed(2)
+        model = _model().to("cuda")
+        x = Tensor(x_np, device="cuda")
+        stream_a = forge.cuda.Stream()
+        stream_b = stream_a if same_stream else forge.cuda.Stream()
 
-    with pytest.raises(forge.CUDAError):
+        with forge.cuda.stream(stream_a):
+            loss = model(x).sum()
         with forge.cuda.stream(stream_b):
             loss.backward()
+        stream_a.synchronize()
+        stream_b.synchronize()
+        return float(loss.to("cpu").numpy()), [p.grad.to("cpu").numpy() for p in model.parameters()]
 
-    stream_a.synchronize()
+    same_loss, same_grads = run(same_stream=True)
+    cross_loss, cross_grads = run(same_stream=False)
+
+    assert cross_loss == pytest.approx(same_loss)
+    for sg, cg in zip(same_grads, cross_grads):
+        np.testing.assert_allclose(cg, sg)
 
 
 # -- 3. Optimizer step on a stream, observed correctly on that same stream ----
@@ -130,6 +149,93 @@ def test_adam_step_on_stream_matches_cpu_adam_step():
 
     for cp, gp in zip(cpu_params, cuda_params):
         np.testing.assert_allclose(gp, cp, rtol=1e-4, atol=1e-5)
+
+
+# -- 3b. Cross-stream optimizer/parameter dependency safety (Milestone 28, Sections 38-40) --
+
+
+def test_optimizer_step_on_a_different_stream_than_backward_matches_same_stream_reference():
+    """Gradients computed on Stream A, `optimizer.step()` issued on Stream B (Section 38).
+
+    `SGD.step()` reads `param.grad` (produced on A) from Stream B --
+    `_stream_guard` must establish the dependency automatically, with no
+    host synchronization required in between, and the result must exactly
+    match an identical run kept entirely on one stream.
+    """
+    x_np = np.random.default_rng(13).standard_normal((6, 4)).astype(np.float32)
+
+    def run(same_stream: bool):
+        forge.random.seed(13)
+        model = Sequential(Linear(4, 8), ReLU(), Linear(8, 2)).to("cuda")
+        optimizer = SGD(model.parameters(), lr=0.5)
+        x = Tensor(x_np, device="cuda")
+
+        stream_backward = forge.cuda.Stream()
+        stream_step = stream_backward if same_stream else forge.cuda.Stream()
+
+        with forge.cuda.stream(stream_backward):
+            model(x).sum().backward()
+        with forge.cuda.stream(stream_step):
+            optimizer.step()
+
+        stream_backward.synchronize()
+        stream_step.synchronize()
+        return [p.to("cpu").numpy() for p in model.parameters()]
+
+    same_stream_params = run(same_stream=True)
+    cross_stream_params = run(same_stream=False)
+
+    for same, cross in zip(same_stream_params, cross_stream_params):
+        np.testing.assert_allclose(cross, same)
+
+
+def test_parameter_read_and_update_across_streams_are_never_racy_in_either_order():
+    """Section 39: "the most important correctness tests in the milestone."
+
+    Forward+backward (a *read* of `model.weight`) on Stream A, then
+    `optimizer.step()` (a *write* to `model.weight`) on Stream B, then a
+    second forward (another read) back on Stream A -- three ops touching the
+    same parameter storage, alternating streams, with no explicit
+    synchronization anywhere in between. `_stream_guard` must order the
+    write strictly after the first read and the second read strictly after
+    the write (both directions of the read/update race), matching an
+    identical sequence kept entirely on one stream exactly.
+    """
+
+    def build(seed: int):
+        forge.random.seed(seed)
+        model = Linear(4, 4).to("cuda")
+        optimizer = SGD(model.parameters(), lr=1.0)
+        x = Tensor(np.random.default_rng(seed).standard_normal((6, 4)).astype(np.float32), device="cuda")
+        return model, optimizer, x
+
+    # Cross-stream: read (A) -> update (B) -> read (A) again.
+    model, optimizer, x = build(14)
+    stream_a = forge.cuda.Stream()
+    stream_b = forge.cuda.Stream()
+    with forge.cuda.stream(stream_a):
+        out_before = model(x)
+        out_before.sum().backward()
+    with forge.cuda.stream(stream_b):
+        optimizer.step()
+    with forge.cuda.stream(stream_a):
+        out_after = model(x)
+    stream_a.synchronize()
+    stream_b.synchronize()
+
+    # Reference: the identical sequence, kept entirely on one stream.
+    ref_model, ref_optimizer, ref_x = build(14)
+    s = forge.cuda.Stream()
+    with forge.cuda.stream(s):
+        ref_before = ref_model(ref_x)
+        ref_before.sum().backward()
+        ref_optimizer.step()
+        ref_after = ref_model(ref_x)
+    s.synchronize()
+
+    assert not np.allclose(out_before.to("cpu").numpy(), out_after.to("cpu").numpy())
+    np.testing.assert_allclose(out_before.to("cpu").numpy(), ref_before.to("cpu").numpy())
+    np.testing.assert_allclose(out_after.to("cpu").numpy(), ref_after.to("cpu").numpy())
 
 
 # -- 4. Persistence after async work (Section 35) -------------------------------
