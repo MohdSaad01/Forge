@@ -990,6 +990,43 @@ CONV2D_FORWARD_LAUNCHER(float, f32)
 CONV2D_FORWARD_LAUNCHER(double, f64)
 
 // -- Conv2d backward: input (gather over the output windows an input pixel feeds) --
+//
+// Milestone 32 fix: the original version below (kept only in this comment
+// for reference) resolved, *inside* the `co` loop, which `(kh, ho)`/`(kw,
+// wo)` pairs are valid for this thread's fixed `(hi, wi)`:
+//
+//   for (int co = 0; co < Cout; ++co) {
+//       for (int kh = 0; kh < KH; ++kh) {
+//           int t = hi + PH - kh;
+//           if (t % SH != 0) continue;         // <- co-independent
+//           int ho = t / SH;                    // <- co-independent
+//           ...
+//
+// `hi`/`wi`/`PH`/`PW`/`SH`/`SW`/`KH`/`KW` never depend on `co` -- so that
+// integer division/modulo pair (expensive on CC 5.0: no native fast-path,
+// `SH`/`SW` are runtime kernel arguments, not compile-time constants, so
+// the compiler cannot even special-case a stride of 1) was recomputed
+// identically `Cout` times per thread for no reason. M32 profiling
+// (`benchmarks/conv2d_backward_profile.py`) measured this as the single
+// largest Conv2d-backward contributor at every non-MNIST-scale shape tested
+// (e.g. 65.4ms vs. `dWeight`'s 43.6ms at a Cin=16/Cout=32/28x28/N=64 shape)
+// and comparable to `dWeight` even at the real M20 MNIST shapes -- see
+// `docs/performance/conv2d-backward-profiling.md`.
+//
+// The fix hoists that resolution out of the `co` loop entirely: each thread
+// first builds two small local tables of valid `(kh, ho)` and `(kw, wo)`
+// pairs *once*, then the `co` loop only ever does array indexing, integer
+// multiply/add for `g_idx`/`w_idx`, and the same multiply-accumulate the
+// original kernel always needed -- no per-`co` division survives. This
+// computes exactly the same set of `(co, kh, ho, kw, wo)` contributions as
+// before (same math, same order of summation for a fixed `co`), just
+// without recomputing `co`-independent work `Cout` times. `MAX_CONV_K`
+// bounds the local tables -- generous for any kernel size Forge's own
+// `Conv2d`/tests use (K in {2, 3, 5} in practice; never observed or
+// intended to exceed single digits), documented in `docs/architecture/
+// cuda-backend.md`.
+
+constexpr int MAX_CONV_K = 32;
 
 template <typename T>
 __global__ void k_conv2d_backward_input(
@@ -1010,21 +1047,45 @@ __global__ void k_conv2d_backward_input(
     int ci = static_cast<int>(t2 % Cin);
     int n = static_cast<int>(t2 / Cin);
 
+    // Resolve valid (kh, ho) pairs once -- co-independent.
+    int kh_valid[MAX_CONV_K];
+    int ho_valid[MAX_CONV_K];
+    int h_count = 0;
+    for (int kh = 0; kh < KH && kh < MAX_CONV_K; ++kh) {
+        int t = hi + PH - kh;
+        if (t % SH != 0) continue;
+        int ho = t / SH;
+        if (ho < 0 || ho >= Hout) continue;
+        kh_valid[h_count] = kh;
+        ho_valid[h_count] = ho;
+        ++h_count;
+    }
+
+    // Resolve valid (kw, wo) pairs once -- co-independent.
+    int kw_valid[MAX_CONV_K];
+    int wo_valid[MAX_CONV_K];
+    int w_count = 0;
+    for (int kw_ = 0; kw_ < KW && kw_ < MAX_CONV_K; ++kw_) {
+        int tw = wi + PW - kw_;
+        if (tw % SW != 0) continue;
+        int wo = tw / SW;
+        if (wo < 0 || wo >= Wout) continue;
+        kw_valid[w_count] = kw_;
+        wo_valid[w_count] = wo;
+        ++w_count;
+    }
+
     T acc = static_cast<T>(0);
     for (int co = 0; co < Cout; ++co) {
-        for (int kh = 0; kh < KH; ++kh) {
-            int t = hi + PH - kh;
-            if (t % SH != 0) continue;
-            int ho = t / SH;
-            if (ho < 0 || ho >= Hout) continue;
-            for (int kw_ = 0; kw_ < KW; ++kw_) {
-                int tw = wi + PW - kw_;
-                if (tw % SW != 0) continue;
-                int wo = tw / SW;
-                if (wo < 0 || wo >= Wout) continue;
-                long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
-                long long w_idx = ((static_cast<long long>(co) * Cin + ci) * KH + kh) * KW + kw_;
-                acc += grad_out[g_idx] * w[w_idx];
+        long long g_base = static_cast<long long>(n) * Cout + co;
+        long long w_base = static_cast<long long>(co) * Cin + ci;
+        for (int hi_i = 0; hi_i < h_count; ++hi_i) {
+            int kh = kh_valid[hi_i], ho = ho_valid[hi_i];
+            long long g_row = (g_base * Hout + ho) * Wout;
+            long long w_row = (w_base * KH + kh) * KW;
+            for (int wi_i = 0; wi_i < w_count; ++wi_i) {
+                int kw_ = kw_valid[wi_i], wo = wo_valid[wi_i];
+                acc += grad_out[g_row + wo] * w[w_row + kw_];
             }
         }
     }

@@ -1818,3 +1818,58 @@ and prefetch queue depth (1 vs. 2 vs. 3 -- no measurable benefit from
 depth beyond 1 for this workload) were all measured and found not to be
 bottlenecks -- none were optimized, per the milestone brief's "do not
 optimize for the sake of having an optimization."
+
+### M32 — CUDA Conv2d backward optimization
+M31 identified `conv2d` backward as 55-57% of total CUDA training-step
+time. This milestone built a dedicated `conv2d_backward` profiler
+(`benchmarks/conv2d_backward_profile.py`, new -- isolates `dInput`/
+`dWeight`/`dBias` individually via `TimedEvent`) and measured all three
+across seven shapes (both real M20 MNIST layers, plus larger-channel/
+larger-spatial/batch-size sweeps beyond what M21 tested), before
+implementing exactly one measurement-justified kernel optimization. See
+`docs/performance/conv2d-backward-profiling.md` for the complete profiling
+report and `docs/architecture/cuda-backend.md`'s **CUDA Conv2d backward:
+input optimization (Milestone 32)** section for the architecture writeup.
+
+**Finding.** Contrary to M21's own MNIST-scale-only finding (`dWeight` was
+that milestone's fix target), this milestone's broader shape sweep found
+`dInput` -- not `dWeight` -- dominant at 6 of 7 shapes (60-66% of
+`conv2d_backward` at every non-MNIST-scale shape, and slightly ahead of
+`dWeight` even at the real MNIST CNN when both layers are summed).
+`k_conv2d_backward_input`'s `(kh,ho)`/`(kw,wo)` validity resolution
+(`t % SH`, `t / SH` and the `W` analog) does not depend on `co`, yet sat
+inside the `co` loop -- `Cout`-fold redundant integer division per thread,
+with no fast path on CC 5.0 for a runtime-valued stride divisor.
+
+**Optimization.** `kernels.cu`'s `k_conv2d_backward_input` hoists that
+resolution into two small per-thread local tables built once, before the
+`co` loop -- which now does only array indexing and multiply-accumulate,
+zero division. Computes the identical `(co, kh, ho, kw, wo)` contributions
+as before; `dWeight`/`dBias` and the exported symbol/signature/dispatch are
+completely unchanged.
+
+**Results.** Isolated `dInput` kernel: 1.5-1.8x faster at every shape
+tested (65.36ms -> 36.08ms at N=64/Cin=16/Cout=32/28x28/K=3). Full
+`conv2d_backward`: 1.12-1.37x faster across all seven shapes. Real MNIST
+CNN `conv2d` backward op: 11.16ms -> 9.95ms (~1.12x, smaller than the
+isolated numbers since MNIST's real layers are the smallest shapes tested
+and `dWeight`, left unchanged, remains substantial at the first layer).
+Live async pipeline backward-phase GPU time: 10.82ms -> 8.48ms (~1.28x,
+spanning both M31's fusion and this fix together -- no clean post-M31-only
+snapshot from this session exists to isolate M32 alone at the full-pipeline
+level). Async prefetch speedup unchanged within noise (1.21x -> 1.212x).
+
+**Tests.** 1,162 tests total (1,154 pre-existing + 8 new,
+`tests/test_cuda_conv2d_backward_optimization.py`), all passing on the
+940MX. New coverage: weight/bias finite differences (input FD already
+existed), explicit-async-stream backward correctness, two cross-stream
+correctness tests, repeated-use memory-safety.
+
+**What was profiled but not touched.** `dBias` (never more than 2% of
+`conv2d_backward` at any shape) and `dWeight`'s existing hybrid dispatch
+(M21's own measurement-tuned design, no `co`-independent redundancy to
+remove) -- both measured, neither is this milestone's bottleneck.
+`dWeight`'s per-thread reduction is now the largest remaining
+`conv2d_backward` cost at most non-MNIST shapes and is documented as the
+natural next optimization target, deliberately not pursued here per the
+milestone brief's "start with one optimization" rule.

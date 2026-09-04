@@ -830,6 +830,88 @@ behind an unchanged `Backend`/`CUDABackend` boundary and an unchanged
 exported C symbol/signature -- no public API, abstraction boundary, or
 cross-cutting architectural decision was touched.
 
+## CUDA Conv2d backward: input optimization (Milestone 32)
+Milestone 31's pipeline profiling found `conv2d` backward responsible for
+55-57% of total CUDA training-step time -- the largest remaining cost after
+M31's CrossEntropy fusion. Milestone 32's dedicated profiler
+(`benchmarks/conv2d_backward_profile.py`, new -- isolates and times
+`dInput`/`dWeight`/`dBias` individually via timing-enabled CUDA events)
+measured all three `conv2d_backward` kernels across seven shapes (the two
+real M20 MNIST layers plus larger-channel, larger-spatial, and batch-size
+sweeps -- see `docs/performance/conv2d-backward-profiling.md` for the full
+report) and found, contrary to Milestone 21's own MNIST-scale-only finding,
+that **`dInput`, not `dWeight`, is the dominant `conv2d_backward` cost** at
+6 of 7 shapes tested (60-66% of backward time at every non-MNIST-scale
+shape; even at the real MNIST CNN, `dInput`'s cost summed across both real
+conv layers slightly exceeds `dWeight`'s).
+
+**Root cause.** `k_conv2d_backward_input` (Milestone 15, unchanged since)
+launches one thread per input element, looping `Cout x KH x KW` and
+resolving, for each `(kh, kw)`, which output position reads it via
+`t % SH` / `t / SH` (`W`-dimension analog for `kw`). That resolution depends
+only on the thread's fixed `(hi, wi)` and the layer's stride/padding/kernel
+shape -- **never on `co`** -- yet sat *inside* the `co` loop, paying
+`Cout`-fold redundant integer division per thread (32-fold at the
+`large_channel`/batch-sweep shapes) for identical results every time.
+Integer division by a runtime (non-compile-time-constant) stride has no
+fast path on CC 5.0 hardware. Direct evidence this was genuinely an
+instruction-latency problem rather than a memory-bandwidth one: the fix
+below changes zero memory-access patterns (same reads, same writes, same
+coalescing) and produced its entire measured speedup purely from removing
+redundant scalar ALU work.
+
+**Change.** `kernels.cu`'s `k_conv2d_backward_input` now resolves each
+thread's valid `(kh, ho)`/`(kw, wo)` pairs into two small fixed-size local
+tables (`MAX_CONV_K = 32`-bounded -- generous for any kernel size Forge
+tests or uses; K stays in {1, 2, 3, 5} across the whole repo) *once* per
+thread, before the `co` loop, instead of recomputing the same division
+inside it. The `co` loop then does only array indexing, integer
+multiply/add for `g_idx`/`w_idx`, and the same multiply-accumulate as
+before -- computing the identical set of `(co, kh, ho, kw, wo)`
+contributions, in the same order, as the original kernel. `dWeight` and
+`dBias` are completely unchanged (Milestone 21's hybrid dispatch and
+block-reduction kernel already have no equivalent `co`-independent
+redundancy to remove -- their inner loops compute `hi`/`wi` via
+multiply-add, never division). `cf_conv2d_backward_input_{f32,f64}`'s
+exported symbol name, signature, and `CUDABackend.conv2d_backward` dispatch
+are all unchanged -- purely a kernel-internals change behind the existing
+boundary, same precedent as Milestone 21/11's own kernel rewrites.
+
+**Correctness.** All 1,154 pre-existing tests pass unchanged, including
+`tests/test_cuda_conv.py`'s full forward/backward-vs-CPU suite across
+stride/padding/kernel-shape combinations and its input finite-difference
+check. `tests/test_cuda_conv2d_backward_optimization.py` (new, 8 tests)
+adds weight/bias finite-difference checks, explicit-async-stream backward
+correctness, two cross-stream correctness tests, and a repeated-use
+memory-safety test -- all pass. `CUDABackend._require_compute_dtype`'s
+existing `_stream_guard` chokepoint (unchanged since Milestone 28) already
+covers `conv2d_backward`'s three launches, so no new cross-stream-dependency
+code was needed.
+
+**Measured result (940MX, real hardware).** Isolated `dInput` kernel:
+1.5-1.8x faster at every shape tested (e.g. 65.36ms -> 36.08ms at the
+`large_channel` shape: N=64, Cin=16, Cout=32, 28x28, K=3). Full
+`conv2d_backward` (input + weight + bias): 1.12-1.37x faster across all
+seven shapes. The real M20 MNIST CNN's `conv2d` backward op (`mnist_profile.py`,
+which adds its own inter-op synchronization) improved 11.16ms -> 9.95ms
+(~1.12x) -- smaller than the isolated-kernel numbers because MNIST's real
+layers are the two smallest shapes tested, where `dInput`'s absolute
+contribution (and this fix's absolute savings) is smallest, and because
+`dWeight` (left unchanged) remains substantial at the first MNIST layer.
+The live asynchronous pipeline (`pipeline_profile.py`, batch=64,
+prefetch_size=2) shows backward-phase GPU time dropping from 10.82ms to
+8.48ms (~1.28x; this comparison spans both Milestone 31's CrossEntropy
+fusion and this milestone's fix together, since no clean post-M31-only
+snapshot from this hardware session exists -- `fwd`/`loss` staying
+essentially flat in the same table bounds M31's own contribution) --
+see `docs/performance/conv2d-backward-profiling.md` for the complete
+before/after tables, per-shape breakdown, and this caveat's full reasoning.
+
+**Why no ADR.** Same reasoning as Milestone 21/11's own kernel rewrites:
+this changes kernel internals behind an unchanged `Backend`/`CUDABackend`
+boundary and an unchanged exported C symbol/signature -- no public API,
+abstraction boundary, or cross-cutting architectural decision was touched.
+
 ## CUDA Memory Statistics (Milestone 22)
 Milestone 22 is observability, not optimization: it instruments the
 `cudaMalloc`/`cudaFree` boundary that already existed (`CUDABackend._alloc`,
