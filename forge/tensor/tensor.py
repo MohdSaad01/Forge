@@ -522,6 +522,46 @@ class Tensor:
         mask_array = backend.dropout_mask(self._data, p, rng)
         return Tensor._wrap(mask_array, self._device)
 
+    # -- CrossEntropyLoss (Milestone 31) --------------------------------------
+
+    def cross_entropy(self, target: "Tensor") -> "Tensor":
+        """Fused mean cross-entropy: `-mean(log_softmax(self)[i, target[i]])`.
+
+        `self` ("logits") must be 2D `(batch, classes)`; `target` must be an
+        integer-dtype Tensor of shape `(batch,)` already on `self`'s device,
+        holding class indices in `[0, classes)`. This is the fused primitive
+        `forge.nn.CrossEntropyLoss` (`forge/nn/loss.py`) dispatches to after
+        its own shape/dtype/range validation -- see that module's docstring
+        and `Backend.cross_entropy`'s docstring (`backend/base.py`) for why
+        this replaced a composed chain of Tensor primitives. `target` never
+        requires grad (an integer dtype cannot -- see `_GRAD_CAPABLE_DTYPES`),
+        so it is deliberately excluded from `inputs` below: it contributes no
+        gradient and never needs an entry in the backward graph.
+        """
+        if self.ndim != 2:
+            raise ShapeMismatchError(
+                f"cross_entropy expects logits of shape (batch, classes), got shape {self.shape}."
+            )
+        if target.ndim != 1 or target.shape[0] != self.shape[0]:
+            raise ShapeMismatchError(
+                f"cross_entropy expects target of shape ({self.shape[0]},), got shape {target.shape}."
+            )
+        if target._device != self._device:
+            raise UnsupportedDeviceError(
+                "cross_entropy requires target on the same device as logits; got logits on "
+                f"'{self._device}' and target on '{target._device}'."
+            )
+
+        backend = get_backend(self._device)
+        result = backend.cross_entropy(self._data, target._data)
+
+        logits_data, target_data = self._data, target._data
+
+        def backward_fn(grad_output):
+            return (backend.cross_entropy_backward(grad_output, logits_data, target_data),)
+
+        return self._differentiable_wrap(result, (self,), backward_fn, "cross_entropy")
+
     # -- Device transfer -----------------------------------------------------
 
     def to(self, device: "str | Device", non_blocking: bool = False) -> "Tensor":

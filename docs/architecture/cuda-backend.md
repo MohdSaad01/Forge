@@ -437,6 +437,36 @@ loss-level math this backs.
    it were, reading the max on host and transferring it back would be exactly
    the "silent CPU fallback for a real computation" this milestone forbids.
 
+### Milestone 31: fused forward/backward kernels
+The four primitives above are still real, independently correct, and still
+independently tested `Backend` methods -- but as of Milestone 31,
+`CrossEntropyLoss` no longer composes them. `docs/performance/
+pipeline-profiling.md` (Section "Optimization Implementation") found the
+composed forward pass (`max_axis1` + two column-broadcast `sub`s + `exp` +
+`sum(axis=1)` + `log` + a one-hot `mul` against a freshly host-transferred
+float matrix + a full `sum` + a final `scale`, ~9 launches) and its backward
+(~7 more) costing more wall-clock time on the 940MX than the entire M20 CNN
+forward pass, purely from this GPU's real per-launch dispatch overhead on a
+tensor far too small to hide it behind actual arithmetic.
+
+`Backend.cross_entropy`/`cross_entropy_backward` (`backend/base.py`) replace
+that composition with two CUDA kernel launches forward (`k_cross_entropy_
+forward`, one thread per row computing the log-sum-exp NLL directly; the
+existing `cf_sum_*` full reduction, reused rather than duplicated, to
+average them) and one launch backward (`k_cross_entropy_backward`,
+recomputing softmax from the saved logits and writing `grad_output/N *
+(softmax - one_hot)` directly -- the one-hot matrix is never materialized).
+`target` crosses the host/device boundary (when it doesn't already live on
+the GPU) as small int64 indices only -- the one-hot float matrix the
+composed implementation built and transferred every step is gone entirely.
+`Tensor.cross_entropy()` (`forge/tensor/tensor.py`) is the one call site;
+`CrossEntropyLoss.forward()`'s own shape/dtype/target-range validation
+(this section's **Target handling and device validation** below) is
+completely unchanged -- only the computation after that validation changed.
+`max_axis1`/`sum(axis=1)`/column-broadcast `sub` remain in the `Backend`
+interface (and their own tests) as general-purpose small primitives; they
+are simply no longer on this particular hot path.
+
 ### Target handling and device validation
 `target` (a `Tensor` or array-like of integer class indices) follows the
 same explicit-device-consistency rule as everywhere else in Forge: if

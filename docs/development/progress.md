@@ -1745,3 +1745,76 @@ contract, updates to `docs/architecture/cuda-transfers.md` (Section
 overlap 3.28x, negligible-CPU/light-GPU overhead-dominated 0.63x-0.92x
 (honestly reported, not a regression), real MNIST CNN 1.21x; CUDA/pinned
 memory both return to baseline after repeated epochs).
+
+### M31 — Profile and optimize the async CUDA training pipeline
+A profiling-first milestone: built `benchmarks/pipeline_profile.py` (a
+non-synchronizing, event-based profiler for the real M27-M30 asynchronous
+pipeline -- CPU-only component costs, isolated H2D bandwidth, per-phase GPU
+busy time via timing-enabled CUDA events, batch-size/prefetch-depth sweeps,
+allocator/pinned characterization) plus a full synchronization audit,
+before implementing exactly one measurement-justified optimization. See
+`docs/performance/pipeline-profiling.md` for the complete profiling report
+and bottleneck ranking.
+
+**Profiling infrastructure.** `forge/backend/cuda/profiling_events.py`
+(new) adds `TimedEvent`, a *timing-enabled* CUDA event (`cudaEventCreate`,
+no `cudaEventDisableTiming`) distinct from the internal `stream.CUDAEvent`
+used everywhere else (allocator/dependency machinery) -- the internal one
+is deliberately timing-*disabled* for its own hot-path use, so a separate,
+purely additive, profiling-only type was needed to support
+`cudaEventElapsedTime`. Never touched by any core-runtime code path; zero
+cost to ordinary training.
+
+**Finding.** `mnist_profile.py`'s per-phase breakdown showed
+`CrossEntropyLoss`'s forward pass (4.73 ms) costing *more* wall-clock time
+than the entire M20 CNN's forward pass (4.21 ms) -- on a `(64, 10)` tensor,
+versus two `Conv2d` + two `MaxPool2d` + `Linear` layers over a `(64, 1, 28,
+28)` input. The composed implementation launched ~9 forward + ~7 backward
+Tensor-primitive kernels plus 2 host<->device transfers per step; at this
+GPU's measured ~54-65 us/launch dispatch cost (`stream_dependency_bench.py`),
+that overhead alone explained the anomaly -- a launch-overhead-bound, not
+compute-bound, operation. By contrast `conv2d` backward (55-57% of total
+step time) is genuinely compute-bound and out of this milestone's scope
+(Section 50 excludes cuDNN migration / broad kernel rewrites).
+
+**Optimization.** `Backend.cross_entropy`/`cross_entropy_backward`
+(`backend/base.py`, `cpu.py`, `cuda/backend.py` + two new fused CUDA
+kernels in `kernels.cu`) replace the composed chain with 2 kernel launches
+forward (a fused per-row log-sum-exp-NLL kernel, one thread per row
+matching `k_max_axis1`'s existing convention; the existing `cf_sum_*`
+reduction, reused) and 1 launch backward (fused softmax-minus-one-hot
+gradient) -- the one-hot matrix is never materialized; only small int64
+target indices ever cross the host/device boundary, and only when not
+already CUDA-resident. `Tensor.cross_entropy()` (`tensor.py`) is the new
+entry point; `nn.CrossEntropyLoss.forward()`'s existing shape/dtype/
+target-range validation is completely unchanged -- only the computation
+after it changed.
+
+**Results.** Isolated op benchmark (batch=64/classes=10): CUDA forward
+1.02 ms -> 0.40 ms (2.5x), CUDA backward 15.20 ms -> 0.17 ms (noisy
+before/~90x after); CPU also improved modestly (fewer autograd-graph
+objects per step, no CPU regression). End-to-end real M20 CNN training
+step: 19.20 ms -> 17.90 ms (~7%, consistent with the loss's measured
+10-17%-of-step fraction). `async_dataloader_bench.py`'s real-MNIST prefetch
+speedup unchanged within noise (1.171x -> 1.180x) -- the async pipeline's
+own M30 behavior is undisturbed.
+
+**Tests.** 1,154 tests total (1,147 pre-existing + 7 new,
+`tests/test_cuda_cross_entropy_fusion.py`), all CUDA-hardware-gated, all
+passing on the 940MX; every pre-existing test (including the full
+`tests/test_cuda_loss.py` CrossEntropyLoss suite -- forward vs. CPU across
+numerically difficult logits, backward vs. analytical formula and finite
+differences, reduction semantics, device validation, "no CPU fallback" spy
+tests) passes unmodified. New coverage: `Tensor.cross_entropy`'s own
+defense-in-depth validation, cross-stream correctness (logits/target/
+grad_output each produced on a distinct stream from the op itself),
+repeated-use memory-safety (`allocated_bytes`/`reserved_bytes`/
+`pending_bytes` all return to 0).
+
+**What was profiled but not touched.** Dependency/event overhead
+(~64 us/dependency), allocator overhead (>95% cache-hit rate), pinned-
+memory overhead (~0.22 ms/batch, hidden behind ~8.5-24.7 ms/batch compute),
+and prefetch queue depth (1 vs. 2 vs. 3 -- no measurable benefit from
+depth beyond 1 for this workload) were all measured and found not to be
+bottlenecks -- none were optimized, per the milestone brief's "do not
+optimize for the sake of having an optimization."

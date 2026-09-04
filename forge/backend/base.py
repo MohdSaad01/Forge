@@ -188,3 +188,34 @@ class Backend(ABC):
         (`x * mask`) and backward (`grad_output * mask`, via ordinary `mul`
         autograd) with one multiply and no Dropout-specific backward rule.
         """
+
+    # -- CrossEntropyLoss (Milestone 31) --------------------------------------
+    #
+    # Milestone 21/31 profiling found `nn.CrossEntropyLoss`'s forward pass
+    # (previously composed from ~9 ordinary Tensor primitives: max_axis1, two
+    # row-broadcast subs, exp, sum(axis=1), log, a mul against a freshly
+    # host-transferred one-hot matrix, a full sum, and a final scale) costing
+    # *more* wall-clock time on CUDA than the entire M20 CNN's forward pass,
+    # despite operating on a tensor orders of magnitude smaller -- each of
+    # those ~9 forward + ~7 backward primitives pays a real per-launch
+    # dispatch cost regardless of how little arithmetic it does (see
+    # `docs/performance/pipeline-profiling.md`). `x` (logits, floating-point)
+    # and `target` (class indices, always int64 on CUDA -- see
+    # `CUDABackend.cross_entropy`) are raw backend storage, matching every
+    # other `Backend` method; `Tensor.cross_entropy()` (`tensor.py`) is the
+    # one call site, reached from `nn.CrossEntropyLoss.forward()` after all
+    # of that class's existing shape/dtype/range validation.
+
+    @abstractmethod
+    def cross_entropy(self, x: Any, target: Any) -> Any:
+        """Fused forward: `mean(-log_softmax(x)[i, target[i]])` over `x`'s shape (batch, classes)."""
+
+    @abstractmethod
+    def cross_entropy_backward(self, grad_output: Any, x: Any, target: Any) -> Any:
+        """Gradient w.r.t. `x`: `grad_output/batch_size * (softmax(x) - one_hot(target))`.
+
+        Recomputes softmax from the saved forward input `x` (and `target`)
+        rather than caching intermediate forward state -- the same
+        "recompute from a saved input" convention `relu`/`exp`/`log`
+        backward already use elsewhere in this interface.
+        """

@@ -11,18 +11,17 @@ As of Milestone 12, `MSELoss` is CUDA-compatible: it composes only `-`
 *and* backward (Milestones 8-10). No new CUDA kernel was needed; see
 `docs/architecture/cuda-backend.md`'s **CUDA losses** section.
 
-As of Milestone 14, `CrossEntropyLoss` is also CUDA-compatible, using the
-same high-level formulation as CPU (no `CUDACrossEntropyLoss` subclass, no
-second autograd engine): `.exp()`/`.log()` are now real CUDA kernels, and
-`.sum(axis=1, keepdims=...)` is now a real CUDA axis-wise reduction (see
-`docs/architecture/cuda-backend.md`'s **CUDA CrossEntropyLoss** section for
-the full primitive-by-primitive breakdown). The one piece that isn't an
-ordinary differentiable Tensor op is the log-sum-exp numerical-stability
-shift: `Backend.max_axis1()` computes each row's max directly against
-backend storage (CPU: `np.max`; CUDA: a dedicated kernel, never a host
-round-trip) and the result is wrapped as a `requires_grad=False` leaf,
-exactly mirroring how the CPU implementation has always treated the max as a
-constant.
+As of Milestone 14, `CrossEntropyLoss` is also CUDA-compatible (no
+`CUDACrossEntropyLoss` subclass, no second autograd engine). As of
+Milestone 31, its numerically-stable log-sum-exp computation is a single
+fused `Backend.cross_entropy`/`cross_entropy_backward` primitive
+(`Tensor.cross_entropy()`, `forge/tensor/tensor.py`) rather than ~9 composed
+Tensor ops -- Milestone 21/31 profiling found the composed version costing
+more wall-clock time on CUDA than the entire M20 CNN's forward pass, purely
+from per-kernel-launch dispatch overhead on a tensor too small for that cost
+to be hidden by actual arithmetic. See `docs/performance/pipeline-profiling.md`
+and that method's docstring for the full justification; this class's own
+validation (shape/dtype/target-range checks, below) is unchanged.
 """
 
 from __future__ import annotations
@@ -131,13 +130,12 @@ class CrossEntropyLoss(Loss):
                     f".to('{logits.device}') first -- this is never done automatically."
                 )
             # A host materialization of the (small, integer) target indices
-            # for validation and one-hot construction below -- exactly the
-            # same kind of read-only transfer `Trainer`/`Metric`/persistence
-            # already use for non-computational purposes (see
-            # `docs/architecture/cuda-backend.md`'s **No CPU fallback**
-            # section). The actual loss *computation* (log-sum-exp, the
-            # one-hot multiply, the reductions) always runs through backend
-            # dispatch below, never here.
+            # for validation below -- exactly the same kind of read-only
+            # transfer `Trainer`/`Metric`/persistence already use for
+            # non-computational purposes (see `docs/architecture/
+            # cuda-backend.md`'s **No CPU fallback** section). The actual
+            # loss *computation* (log-sum-exp, the gather, the reduction)
+            # always runs through backend dispatch below, never here.
             target_array = get_backend(target.device).to_numpy(target._data)
         else:
             target_array = np.asarray(target)
@@ -161,34 +159,18 @@ class CrossEntropyLoss(Loss):
                 f"[{int(target_array.min())}, {int(target_array.max())}]."
             )
 
-        # `Backend.max_axis1()` computes the numerical-stability shift
-        # directly against `logits`'s own backend storage -- CPU via
-        # `np.max`, CUDA via a dedicated kernel -- never by reading `logits`
-        # to host first (forbidden for a CUDA tensor, and would defeat the
-        # point on any device). `Tensor._wrap` builds a fresh leaf with
-        # `requires_grad=False`, matching the "max is a constant" contract
-        # described above.
-        backend = get_backend(logits.device)
-        shift = Tensor._wrap(backend.max_axis1(logits._data), logits.device)
-        shifted = logits - shift
-
-        log_sum_exp = shifted.exp().sum(axis=1, keepdims=True).log()
-        log_probs = shifted - log_sum_exp
-
-        one_hot = np.zeros((batch_size, num_classes), dtype=logits.dtype.numpy_dtype)
-        one_hot[np.arange(batch_size), target_array] = 1.0
-        one_hot_t = Tensor(one_hot, dtype=logits.dtype, device=logits.device)
-
-        picked = (log_probs * one_hot_t).sum(axis=1)
-        # Built with `logits`'s own dtype explicitly (rather than the more
-        # obvious `picked.sum() * (-1.0 / batch_size)`), for the same reason
-        # `MSELoss.forward()` does above: `Tensor._coerce()` would otherwise
-        # infer a bare Python float as Forge's default dtype (float32)
-        # regardless of `logits`'s actual dtype, which `CUDABackend`'s exact-
-        # dtype-match requirement turns into a `CUDAError` for a float64 CUDA
-        # loss.
-        scale = Tensor(-1.0 / batch_size, dtype=logits.dtype, device=logits.device)
-        return picked.sum() * scale
+        # Milestone 31: dispatches to `Tensor.cross_entropy()`, a fused
+        # `Backend` primitive (`max_axis1` + log-sum-exp + gather + mean in
+        # one or two real kernel launches on CUDA, one vectorized NumPy call
+        # on CPU) rather than composing ~9 separate Tensor ops -- see that
+        # method's docstring and `docs/performance/pipeline-profiling.md`
+        # for why. `target_array` (already fully validated above, including
+        # the class-index range check) only ever needs to cross the
+        # host/device boundary as small integer indices now -- the one-hot
+        # float matrix the pre-Milestone-31 implementation built and
+        # transferred here is gone entirely.
+        target_tensor = Tensor(target_array.astype(np.int64, copy=False), device=logits.device)
+        return logits.cross_entropy(target_tensor)
 
 
 __all__ = ["Loss", "MSELoss", "CrossEntropyLoss"]

@@ -1,0 +1,133 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "a9d37000bc54fb599db8e0f92b6367b81d2cd6e2",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "results": [
+    {
+      "category": "training",
+      "operation": "mnist_cnn_zero_grad_forward_loss_backward_step",
+      "device": "cpu",
+      "scale": "fixed",
+      "shape": "batch=64 (M20 CNN: Conv2d/ReLU/MaxPool2d x2 -> Flatten -> Linear/ReLU/Linear)",
+      "dtype": "float32",
+      "mean_seconds": 0.047765420000844945,
+      "median_seconds": 0.04688614996848628,
+      "stdev_seconds": 0.003127191139655598,
+      "min_seconds": 0.04430589999537915,
+      "max_seconds": 0.05546520004281774,
+      "warmup": 5,
+      "iterations": 30,
+      "extra": {
+        "batches_per_sec": 20.935647587361537,
+        "samples_per_sec": 1339.8814455911383,
+        "extrapolated_epoch_seconds": 44.780081250792136,
+        "epoch_sample_count_used_for_extrapolation": 60000
+      }
+    },
+    {
+      "category": "training",
+      "operation": "mnist_cnn_zero_grad_forward_loss_backward_step",
+      "device": "cuda",
+      "scale": "fixed",
+      "shape": "batch=64 (M20 CNN: Conv2d/ReLU/MaxPool2d x2 -> Flatten -> Linear/ReLU/Linear)",
+      "dtype": "float32",
+      "mean_seconds": 0.019195000000763685,
+      "median_seconds": 0.01862070002243854,
+      "stdev_seconds": 0.002319196265623023,
+      "min_seconds": 0.016772300004959106,
+      "max_seconds": 0.02743960003135726,
+      "warmup": 5,
+      "iterations": 30,
+      "extra": {
+        "batches_per_sec": 52.096900232363346,
+        "samples_per_sec": 3334.201614871254,
+        "extrapolated_epoch_seconds": 17.995312500715954,
+        "epoch_sample_count_used_for_extrapolation": 60000,
+        "cuda_allocated_before_bytes": 440992,
+        "cuda_peak_allocated_bytes": 7789424,
+        "cuda_allocated_after_bytes": 440992,
+        "cuda_allocation_count_delta": 0,
+        "cuda_free_count_delta": 0,
+        "cuda_active_bytes": 440992,
+        "cuda_reserved_bytes": 9573304,
+        "cuda_cached_bytes": 9132312,
+        "cuda_peak_reserved_bytes": 9573304,
+        "cuda_cache_hit_count": 1920,
+        "cuda_cache_miss_count": 0,
+        "cuda_driver_malloc_count": 0,
+        "cuda_driver_free_count": 0
+      }
+    },
+    {
+      "category": "training",
+      "operation": "zero_grad_forward_loss_backward_step",
+      "device": "cpu",
+      "scale": "fixed",
+      "shape": "batch=64, in=64, hidden=128, out=10",
+      "dtype": "float32",
+      "mean_seconds": 0.0006506519939284772,
+      "median_seconds": 0.0006725999992340803,
+      "stdev_seconds": 6.765567976109499e-05,
+      "min_seconds": 0.0005489999894052744,
+      "max_seconds": 0.0008447999716736376,
+      "warmup": 5,
+      "iterations": 50,
+      "extra": {
+        "batches_per_sec": 1536.9199039293574,
+        "samples_per_sec": 98362.87385147887,
+        "mean_forward_seconds": 0.0002790019998792559,
+        "mean_backward_seconds": 0.0003442919987719506,
+        "mean_optimizer_seconds": 2.7357995277270676e-05
+      }
+    },
+    {
+      "category": "training",
+      "operation": "zero_grad_forward_loss_backward_step",
+      "device": "cuda",
+      "scale": "fixed",
+      "shape": "batch=64, in=64, hidden=128, out=10",
+      "dtype": "float32",
+      "mean_seconds": 0.0027540219970978797,
+      "median_seconds": 0.0024015999806579202,
+      "stdev_seconds": 0.0006470587246675199,
+      "min_seconds": 0.0022060999763198197,
+      "max_seconds": 0.004533400002401322,
+      "warmup": 5,
+      "iterations": 50,
+      "extra": {
+        "batches_per_sec": 363.10530600473606,
+        "samples_per_sec": 23238.739584303108,
+        "mean_forward_seconds": 0.0011065619951114059,
+        "mean_backward_seconds": 0.0013983639993239193,
+        "mean_optimizer_seconds": 0.0002490960026625544,
+        "cuda_allocated_before_bytes": 95824,
+        "cuda_peak_allocated_bytes": 269920,
+        "cuda_allocated_after_bytes": 98388,
+        "cuda_allocation_count_delta": 0,
+        "cuda_free_count_delta": 0,
+        "cuda_active_bytes": 98388,
+        "cuda_reserved_bytes": 9781176,
+        "cuda_cached_bytes": 9682788,
+        "cuda_peak_reserved_bytes": 9781176,
+        "cuda_cache_hit_count": 1450,
+        "cuda_cache_miss_count": 0,
+        "cuda_driver_malloc_count": 0,
+        "cuda_driver_free_count": 0
+      }
+    }
+  ]
+}

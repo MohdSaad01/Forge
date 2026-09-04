@@ -150,6 +150,27 @@ __declspec(dllexport) int cf_event_destroy(void* event) {
     return static_cast<int>(cudaEventDestroy(static_cast<cudaEvent_t>(event)));
 }
 
+// -- profiling-only timed events (Milestone 31) ----------------------------
+//
+// `cf_event_create` above is created with `cudaEventDisableTiming` -- right
+// for its hot allocator/cross-stream-dependency use (`stream.py`'s
+// `CUDAEvent`), but unable to answer "how long did this GPU work take"
+// (`cudaEventElapsedTime` requires a timing-*enabled* event). These two
+// functions are the one place Forge creates such an event, used only by
+// `forge/backend/cuda/profiling_events.py` / `benchmarks/pipeline_profile.py`
+// -- never by any hot-path code, so ordinary training never pays for them
+// (Section 5/34/39 of the milestone brief: real GPU-side timing via CUDA
+// events rather than `time.perf_counter()`, kept optional and outside the
+// core runtime).
+__declspec(dllexport) int cf_event_create_timed(void** out_event) {
+    return static_cast<int>(cudaEventCreate(reinterpret_cast<cudaEvent_t*>(out_event)));
+}
+
+__declspec(dllexport) int cf_event_elapsed_ms(void* start, void* end, float* out_ms) {
+    return static_cast<int>(cudaEventElapsedTime(
+        out_ms, static_cast<cudaEvent_t>(start), static_cast<cudaEvent_t>(end)));
+}
+
 } // extern "C"
 
 // -- elementwise kernels ----------------------------------------------------
@@ -750,6 +771,112 @@ AXIS1_REDUCE_LAUNCHER(cf_max_axis1, k_max_axis1, float, f32)
 AXIS1_REDUCE_LAUNCHER(cf_max_axis1, k_max_axis1, double, f64)
 AXIS1_REDUCE_LAUNCHER(cf_sum_axis1, k_sum_axis1, float, f32)
 AXIS1_REDUCE_LAUNCHER(cf_sum_axis1, k_sum_axis1, double, f64)
+
+// -- fused CrossEntropyLoss (Milestone 31) ---------------------------------
+//
+// Milestone 21/31 profiling (`benchmarks/mnist_profile.py`,
+// `docs/performance/pipeline-profiling.md`) measured CrossEntropyLoss's
+// forward pass costing *more* wall-clock time on the 940MX than the entire
+// M20 CNN forward pass, despite operating on a tensor orders of magnitude
+// smaller. The cause was never per-element arithmetic: the previous
+// implementation (`forge/nn/loss.py`) composed ~9 separate Tensor
+// primitives (max_axis1, two row-broadcast subs, exp, sum(axis=1), log, a
+// mul against a freshly host-transferred one-hot matrix, a full sum, and a
+// final scale) plus two fresh host->device transfers, each paying this
+// GPU's real, measured ~50-300us-per-launch dispatch overhead
+// (`benchmarks/stream_dependency_bench.py`) regardless of how little actual
+// arithmetic it does. This kernel pair fuses that entire chain into two
+// GPU-side kernel launches for the forward pass (one to compute each row's
+// negative log-likelihood, one -- the existing `cf_sum_*` reduction above,
+// reused rather than duplicated -- to average them) and one launch for the
+// backward pass, replacing ~9 forward + ~7 backward launches and both host
+// transfers (the one-hot matrix is never built at all; only the already-
+// small integer target indices ever cross the host/device boundary, and
+// only when they were not already CUDA-resident -- see `CUDABackend.
+// cross_entropy` in `backend.py`).
+//
+// One thread per row (looping serially over `cols`), matching
+// `k_max_axis1`/`k_sum_axis1` above -- classification class counts are
+// small (tens to low thousands) relative to batch size, so a per-row thread
+// keeps this kernel simple and correct rather than adding a block-per-row
+// shared-memory reduction for a case Forge's own workloads never need.
+// `inv_n` is always passed as `double` and cast to `T` inside the kernel,
+// matching `k_sgd_step`/`k_adam_step`'s existing convention for scalar
+// launch parameters (below) -- one ctypes signature serves both dtypes.
+
+template <typename T>
+__global__ void k_cross_entropy_forward(
+    const T* logits, const long long* target, T* loss_out,
+    long long rows, long long cols, double inv_n) {
+    long long row = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (row < rows) {
+        const T* r = logits + row * cols;
+        T m = r[0];
+        for (long long c = 1; c < cols; ++c) {
+            T v = r[c];
+            if (v > m) m = v;
+        }
+        T sum_exp = static_cast<T>(0);
+        for (long long c = 0; c < cols; ++c) {
+            sum_exp += cf_expv(r[c] - m);
+        }
+        long long t = target[row];
+        loss_out[row] = (m + cf_logv(sum_exp) - r[t]) * static_cast<T>(inv_n);
+    }
+}
+
+template <typename T>
+__global__ void k_cross_entropy_backward(
+    const T* grad_output, const T* logits, const long long* target, T* grad_logits,
+    long long rows, long long cols, double inv_n) {
+    long long row = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (row < rows) {
+        const T* r = logits + row * cols;
+        T m = r[0];
+        for (long long c = 1; c < cols; ++c) {
+            T v = r[c];
+            if (v > m) m = v;
+        }
+        T sum_exp = static_cast<T>(0);
+        for (long long c = 0; c < cols; ++c) {
+            sum_exp += cf_expv(r[c] - m);
+        }
+        T scale = grad_output[0] * static_cast<T>(inv_n);
+        long long t = target[row];
+        T* g = grad_logits + row * cols;
+        for (long long c = 0; c < cols; ++c) {
+            T softmax_c = cf_expv(r[c] - m) / sum_exp;
+            g[c] = scale * (softmax_c - (c == t ? static_cast<T>(1) : static_cast<T>(0)));
+        }
+    }
+}
+
+#define CROSS_ENTROPY_FWD_LAUNCHER(TYPE, SUFFIX)                                            \
+    extern "C" __declspec(dllexport) int cf_cross_entropy_forward_##SUFFIX(                 \
+        const TYPE* logits, const long long* target, TYPE* loss_out,                        \
+        long long rows, long long cols, double inv_n, void* stream) {                       \
+        int blocks, threads;                                                                \
+        launch_config(rows, blocks, threads);                                               \
+        k_cross_entropy_forward<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(         \
+            logits, target, loss_out, rows, cols, inv_n);                                   \
+        return static_cast<int>(cudaGetLastError());                                        \
+    }
+
+#define CROSS_ENTROPY_BWD_LAUNCHER(TYPE, SUFFIX)                                            \
+    extern "C" __declspec(dllexport) int cf_cross_entropy_backward_##SUFFIX(                \
+        const TYPE* grad_output, const TYPE* logits, const long long* target,               \
+        TYPE* grad_logits, long long rows, long long cols, double inv_n, void* stream) {     \
+        int blocks, threads;                                                                \
+        launch_config(rows, blocks, threads);                                               \
+        k_cross_entropy_backward<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(        \
+            grad_output, logits, target, grad_logits, rows, cols, inv_n);                    \
+        return static_cast<int>(cudaGetLastError());                                        \
+    }
+
+CROSS_ENTROPY_FWD_LAUNCHER(float, f32)
+CROSS_ENTROPY_FWD_LAUNCHER(double, f64)
+CROSS_ENTROPY_BWD_LAUNCHER(float, f32)
+CROSS_ENTROPY_BWD_LAUNCHER(double, f64)
 
 // Backward of sum(axis=1): broadcast each row's single upstream gradient
 // value to every element of that row -- the axis=1 analog of

@@ -285,3 +285,30 @@ class CPUBackend(Backend):
         keep = rng.random(a.shape) >= p
         scale = 1.0 / (1.0 - p)
         return np.where(keep, scale, 0.0).astype(a.dtype, copy=False)
+
+    # -- CrossEntropyLoss (Milestone 31) -------------------------------------
+    #
+    # NumPy has no per-launch dispatch cost, so this stays the same
+    # numerically-stable log-sum-exp computation `forge/nn/loss.py` used to
+    # compose from separate Tensor ops -- just as one vectorized function
+    # instead of nine autograd-tracked steps. See `base.py`'s `cross_entropy`
+    # docstring for why this exists as a `Backend` primitive.
+
+    def cross_entropy(self, x: np.ndarray, target: np.ndarray) -> np.ndarray:
+        n = x.shape[0]
+        shift = np.max(x, axis=1, keepdims=True)
+        shifted = x - shift
+        log_sum_exp = np.log(np.sum(np.exp(shifted), axis=1, keepdims=True))
+        log_probs = shifted - log_sum_exp
+        picked = log_probs[np.arange(n), target]
+        return np.asarray(-picked.mean(), dtype=x.dtype)
+
+    def cross_entropy_backward(self, grad_output: np.ndarray, x: np.ndarray, target: np.ndarray) -> np.ndarray:
+        n = x.shape[0]
+        shift = np.max(x, axis=1, keepdims=True)
+        exp_shifted = np.exp(x - shift)
+        softmax = exp_shifted / np.sum(exp_shifted, axis=1, keepdims=True)
+        one_hot = np.zeros_like(x)
+        one_hot[np.arange(n), target] = 1.0
+        grad = (softmax - one_hot) * (np.asarray(grad_output, dtype=x.dtype) / n)
+        return grad.astype(x.dtype, copy=False)

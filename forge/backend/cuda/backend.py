@@ -112,6 +112,12 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
     lib.cf_event_destroy.argtypes = [ctypes.c_void_p]
     lib.cf_event_destroy.restype = ctypes.c_int
 
+    # -- profiling-only timed events (Milestone 31) -- see profiling_events.py --
+    lib.cf_event_create_timed.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    lib.cf_event_create_timed.restype = ctypes.c_int
+    lib.cf_event_elapsed_ms.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_float)]
+    lib.cf_event_elapsed_ms.restype = ctypes.c_int
+
     # Every kernel-launching function below gained a trailing `void* stream`
     # parameter in Milestone 27 (`ctypes.c_void_p` -- `None` means the CUDA
     # default stream); the memcpy/malloc/free/synchronize functions above did
@@ -256,6 +262,21 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
             ctypes.c_void_p, ctypes.c_longlong, ctypes.c_double, ctypes.c_uint64, ctypes.c_void_p,
         ]
         dropout_mask_fn.restype = ctypes.c_int
+
+        # -- Milestone 31: fused CrossEntropyLoss --
+        ce_fwd_fn = getattr(lib, f"cf_cross_entropy_forward_{suffix}")
+        ce_fwd_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_longlong, ctypes.c_longlong, ctypes.c_double, ctypes.c_void_p,
+        ]
+        ce_fwd_fn.restype = ctypes.c_int
+
+        ce_bwd_fn = getattr(lib, f"cf_cross_entropy_backward_{suffix}")
+        ce_bwd_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_longlong, ctypes.c_longlong, ctypes.c_double, ctypes.c_void_p,
+        ]
+        ce_bwd_fn.restype = ctypes.c_int
 
 
 def _load_library() -> "ctypes.CDLL":
@@ -793,6 +814,63 @@ class CUDABackend(Backend):
             f"-1) on a 2D tensor in this milestone; got axis={axis!r} for a tensor of shape "
             f"{a.shape}. Move the tensor to CPU with .to('cpu') for other axis-wise reductions."
         )
+
+    # -- fused CrossEntropyLoss (Milestone 31) -----------------------------------
+    #
+    # See `base.py`'s `cross_entropy` docstring and `kernels.cu`'s "fused
+    # CrossEntropyLoss" section for why this replaced a composed chain of
+    # ~9 forward / ~7 backward Tensor primitives. `target` must already be
+    # an int64 `CUDAStorage` -- `Tensor.cross_entropy()` (`tensor.py`) is the
+    # one call site, and it is responsible for getting the (small) integer
+    # target indices onto the device as int64 before reaching here, never a
+    # full one-hot float matrix.
+
+    def cross_entropy(self, x: CUDAStorage, target: CUDAStorage) -> CUDAStorage:
+        self._stream_guard((x, target), "cross_entropy")
+        dtype = x.dtype
+        if dtype not in _COMPUTE_DTYPES:
+            raise CUDAError(f"CUDA 'cross_entropy' does not support dtype '{dtype}'. Supported: float32, float64.")
+        if target.dtype != np.dtype(np.int64):
+            raise CUDAError(f"CUDA 'cross_entropy' requires int64 target indices, got '{target.dtype}'.")
+        if x.ndim != 2:
+            raise CUDAError(f"CUDA 'cross_entropy' expects 2D logits (batch, classes), got shape {x.shape}.")
+        rows, cols = x.shape
+        if target.shape != (rows,):
+            raise CUDAError(
+                f"CUDA 'cross_entropy' target shape {target.shape} does not match logits batch {rows}."
+            )
+
+        per_row_ptr = self._alloc(rows * dtype.itemsize)
+        per_row = CUDAStorage(per_row_ptr, (rows,), dtype, self._lib)
+        fn = getattr(self._lib, f"cf_cross_entropy_forward_{_SUFFIX[dtype]}")
+        code = fn(
+            x.ptr, target.ptr, per_row.ptr,
+            ctypes.c_longlong(rows), ctypes.c_longlong(cols), ctypes.c_double(1.0 / rows if rows else 0.0),
+            self._stream_handle(),
+        )
+        self._check(code, "cross_entropy (per-row)")
+        self._maybe_synchronize("cross_entropy (per-row)")
+
+        # Reduce to a scalar mean via the existing, already-tested full
+        # reduction (`sum`, above) rather than a second bespoke kernel --
+        # `per_row` was just constructed on the current stream, so `sum`'s
+        # own `_stream_guard` call is a same-stream no-op here.
+        return self.sum(per_row, axis=None, keepdims=False)
+
+    def cross_entropy_backward(self, grad_output: CUDAStorage, x: CUDAStorage, target: CUDAStorage) -> CUDAStorage:
+        self._stream_guard((grad_output, x, target), "cross_entropy backward")
+        dtype = x.dtype
+        rows, cols = x.shape
+        out_ptr = self._alloc(x.nbytes)
+        fn = getattr(self._lib, f"cf_cross_entropy_backward_{_SUFFIX[dtype]}")
+        code = fn(
+            grad_output.ptr, x.ptr, target.ptr, out_ptr,
+            ctypes.c_longlong(rows), ctypes.c_longlong(cols), ctypes.c_double(1.0 / rows if rows else 0.0),
+            self._stream_handle(),
+        )
+        self._check(code, "cross_entropy backward")
+        self._maybe_synchronize("cross_entropy backward")
+        return CUDAStorage(out_ptr, x.shape, dtype, self._lib)
 
     # -- reshape (metadata + device-side copy, no kernel needed) -----------------
 

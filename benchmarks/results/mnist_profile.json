@@ -1,0 +1,79 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "a9d37000bc54fb599db8e0f92b6367b81d2cd6e2",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profiles": [
+    {
+      "device": "cpu",
+      "batch_size": 64,
+      "iterations": 30,
+      "warmup_iterations": 5,
+      "phase_mean_seconds": {
+        "transfer": 0.001104500003081436,
+        "forward": 0.0752130933261166,
+        "loss": 0.0014876566749686996,
+        "backward": 0.3412663633256064,
+        "optimizer": 0.005632363333522032
+      },
+      "forward_by_layer_mean_seconds": {
+        "Conv2d": 0.028103036668229227,
+        "ReLU": 0.003814269998110831,
+        "MaxPool2d": 0.03771209998521954,
+        "Flatten": 4.921666307685276e-05,
+        "Linear": 0.005329653345203648
+      },
+      "backward_by_op_mean_seconds": {
+        "cross_entropy": 0.00032637666639251015,
+        "+": 0.00027821000354985397,
+        "@": 0.05860046001228814,
+        "relu": 0.020868993329349904,
+        "reshape": 8.416666726892193e-06,
+        "max_pool2d": 0.14425643333621943,
+        "conv2d": 0.11135325999930501
+      }
+    },
+    {
+      "device": "cuda",
+      "batch_size": 64,
+      "iterations": 30,
+      "warmup_iterations": 5,
+      "phase_mean_seconds": {
+        "transfer": 0.0023797466749480617,
+        "forward": 0.005413486663019285,
+        "loss": 0.0030738366670751325,
+        "backward": 0.016393389999090385,
+        "optimizer": 0.0013592299966452023
+      },
+      "forward_by_layer_mean_seconds": {
+        "Conv2d": 0.0025451933285997558,
+        "ReLU": 0.0008266933301153283,
+        "MaxPool2d": 0.0005795666598714888,
+        "Flatten": 0.00021668666158802807,
+        "Linear": 0.0008994499997546276
+      },
+      "backward_by_op_mean_seconds": {
+        "cross_entropy": 0.000185096663578103,
+        "+": 0.0005742466659285128,
+        "@": 0.0012799333276537557,
+        "relu": 0.0009513266772652666,
+        "reshape": 0.00016500667164412637,
+        "max_pool2d": 0.001010903326096013,
+        "conv2d": 0.011159766663331539
+      }
+    }
+  ]
+}

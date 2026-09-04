@@ -21,6 +21,10 @@ benchmarks/
     training_bench.py       end-to-end toy-model training-throughput benchmark
     mnist_bench.py            end-to-end real M20 CNN training-throughput benchmark (Milestone 21)
     mnist_profile.py           MNIST workload phase/per-op profiling script (Milestone 21; not a benchmark category)
+    pipeline_profile.py         end-to-end async pipeline profiler: CPU components, transfer bandwidth, per-phase
+                                 GPU busy time (event-based), prefetch-depth/batch-size sweeps, allocator/pinned
+                                 characterization (Milestone 31; not a benchmark category -- see
+                                 docs/performance/pipeline-profiling.md)
     memory.py                   cuda_memory_extra() -- CUDA memory-stats reporting for BenchmarkResult.extra (Milestone 22)
     run.py                    CLI entry point
     __main__.py                `python -m benchmarks`
@@ -47,6 +51,7 @@ python -m benchmarks --categories forward transfer  # a subset
 python -m benchmarks --output my_run.json           # a different output path
 python -m benchmarks --categories mnist              # real M20 CNN training throughput only (Milestone 21)
 python -m benchmarks.mnist_profile                    # MNIST workload phase/per-op breakdown (Milestone 21; not a category)
+python -m benchmarks.pipeline_profile                   # end-to-end async pipeline profile (Milestone 31; not a category)
 ```
 This is always an explicit, separate action from running `pytest` -- the
 correctness suite and the benchmark suite are different commands with
