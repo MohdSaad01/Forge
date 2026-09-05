@@ -66,6 +66,12 @@ _SUFFIX = {np.dtype(np.float32): "f32", np.dtype(np.float64): "f64"}
 # not a newly-fitted one).
 _CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD = 256
 
+# `kernels.cu`'s `MATMUL_TILE` (the dWeight GEMM's fixed 16x16 tile size) --
+# used only to compute `blocks_y = ceil(Cout/16)` for Milestone 38's
+# Candidate B dispatch condition below. Not a tunable: mirrors the kernel's
+# own compile-time constant so the two never drift independently.
+_MATMUL_TILE = 16
+
 _TRANSFERABLE_DTYPES = (
     np.dtype(np.float32),
     np.dtype(np.float64),
@@ -1297,11 +1303,35 @@ class CUDABackend(Backend):
         # buffers measured 2.7-9.0x faster with no regression at any of the
         # 7 representative shapes. See `docs/performance/conv2d-backward-
         # profiling.md`'s **Milestone 37** section for the full evidence.
+        #
+        # Milestone 38: above the threshold, a *second* shape axis now
+        # matters -- `dweight_halffused_gemm_splitk` (`experimental_conv_
+        # halffused.py`, Candidate B) eliminates the `Xcol` buffer entirely
+        # by fusing its gather into the split-K GEMM's own tile load, while
+        # keeping `dYcolT`'s cheap materialization (`grad_output_permute`,
+        # unchanged). A block-tiled GEMM's `tile_b` load depends only on
+        # `(b_m, col)`, not on `blockIdx.y`, so fusing it pays a redundant-
+        # regather tax of `blocks_y = ceil(Cout/16)` -- measured (`Cout` in
+        # {8,16,17,24,32,48,64} at a fixed base shape) as a clean, monotonic
+        # win at `blocks_y == 1` (`Cout <= 16`: 1.29-1.46x across every
+        # tested shape/Cout) that flips to a real, reproducible *regression*
+        # at `blocks_y >= 2` (`Cout` in 17..32: ~0.92-0.93x; Cout=48/64:
+        # 0.68-0.76x, worsening as `blocks_y` grows). `im2col`
+        # (`k_im2col_conv2d`) itself is unmodified either way -- Candidate B
+        # is used only when it is used at all, i.e. exactly the shapes where
+        # it wins. See `docs/performance/conv2d-backward-profiling.md`'s
+        # **Milestone 38** section for the complete evidence.
         weight_elements = Cout * Cin * KH * KW
         if weight_elements >= _CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD:
-            from .experimental_conv_im2col import dweight_im2col_gemm_splitk
+            gemm_blocks_y = (Cout + _MATMUL_TILE - 1) // _MATMUL_TILE
+            if gemm_blocks_y == 1:
+                from .experimental_conv_halffused import dweight_halffused_gemm_splitk
 
-            grad_w = dweight_im2col_gemm_splitk(self, grad_output, x, weight.shape, stride, padding)
+                grad_w = dweight_halffused_gemm_splitk(self, grad_output, x, weight.shape, stride, padding)
+            else:
+                from .experimental_conv_im2col import dweight_im2col_gemm_splitk
+
+                grad_w = dweight_im2col_gemm_splitk(self, grad_output, x, weight.shape, stride, padding)
         else:
             grad_w_ptr = self._alloc(Cout * Cin * KH * KW * dtype.itemsize)
             fn_gw = getattr(self._lib, f"cf_conv2d_backward_weight_{_SUFFIX[dtype]}")

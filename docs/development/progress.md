@@ -2159,3 +2159,62 @@ bit rot), all passing on the 940MX after a clean rebuild.
 site changed behind an unchanged `CUDABackend.conv2d_backward` signature
 and contract. No public API, Tensor semantics, or cross-cutting
 architectural decision was touched.
+
+### M38 — CUDA Conv2d dWeight im2col elimination: half-fused split-K GEMM (partial acceptance)
+M37 left `im2col` (`k_im2col_conv2d`) + `grad_output` permute as `dWeight`'s
+dominant remaining cost (54-63% of pipeline time, zero FLOPs). This
+milestone measured `k_im2col_conv2d` itself via `nvcc -Xptxas -v`: 32
+registers/thread, 0 spill, thread-count-limited (huge block count) --
+never occupancy-bound, unlike the GEMM -- so its cost is genuine `Xcol`
+write/read traffic, not a fixable occupancy artifact. The actual lever is
+the *GEMM's* tile dependency structure: `k_matmul_splitk`'s `tile_a` load
+depends only on `(row, a_m)`, so fusing a gather into the tile load costs a
+redundant-recompute factor of `blocks_x` (M37's Candidate A/C fused *both*
+gathers and lost badly at `blocks_x` up to 9 -- this milestone's own
+"Candidate A" framing is mechanistically identical and was not
+re-implemented, per Section 12's reuse allowance); fusing only `tile_b`
+(the `Xcol`/im2col operand) instead costs `blocks_y = ceil(Cout/16)`,
+`<= 2` at every representative shape.
+
+**Candidate B** (`kernels.cu`'s `k_dweight_halffused_gemm_splitk`, Python
+`forge.backend.cuda.experimental_conv_halffused.
+dweight_halffused_gemm_splitk`): eliminates the `Xcol` buffer by fusing its
+gather into a split-K GEMM's tile load, keeping `grad_output_permute`'s
+cheap materialized `dYcolT` unchanged. `nvcc -Xptxas -v`: 0 bytes
+stack/spill, 49 registers f32 (54 f64). Measured (`benchmarks/
+m38_im2col_profile.py`, interleaved CUDA-event A/B, all 7 representative
+shapes plus a `Cout` sweep isolating `blocks_y`): a clean, monotonic win at
+`blocks_y == 1` / `Cout <= 16` (1.30-1.44x) that flips to a real,
+reproducible regression at `blocks_y >= 2` (0.92-0.93x at `blocks_y=2`,
+0.68-0.76x at 3-4). Also strictly cheaper in peak reserved memory at every
+shape (13.78-55.12MB less), including where it isn't speed-dispatched.
+**Candidate C** (partial/tiled materialization) was rejected analytically
+without implementation: chunking `im2col` moves the same total bytes while
+adding real per-launch overhead (M31), and its only possible edge --lower
+peak memory-- is already dominated by Candidate B's measured results.
+
+**Decision: partial acceptance.** `CUDABackend.conv2d_backward`
+(`backend.py`) now branches on `blocks_y = ceil(Cout/16)` *inside* the
+existing weight-element-threshold arm: `blocks_y == 1` calls Candidate B;
+`blocks_y >= 2` keeps M37's unchanged `dweight_im2col_gemm_splitk`. A
+controlled, CUDA-event, same-session before/after of the real MNIST conv2
+layer's own shape (`Cin=8,Cout=16,K=3` -- exactly the winning regime)
+measured **1.164x** at the full `conv2d_backward` level; a wall-clock,
+interleaved, same-session full-training-step A/B measured **1.0065x**
+(statistically indistinguishable from 1.0x, same Amdahl reasoning M37
+documented -- a sub-millisecond `dWeight` change is invisible against a
+~13.7ms step dominated by Python dispatch overhead). `im2col`/`grad_output_
+permute`/`k_matmul`/`cf_matmul_splitk_*` are all completely unmodified.
+
+**Tests.** 1,328 tests total (1,303 pre-existing + 25 new in `tests/
+test_cuda_conv2d_backward_weight_halffused_gemm.py` -- CPU parity across
+8 shape/stride/padding/kernel-size combinations spanning both `blocks_y`
+regimes, direct agreement with the M37 baseline, finite difference,
+explicit/cross-stream, 100-iteration memory safety, allocator cache-hit
+reuse, and production-dispatch coverage for both branches of the new
+`Cout`-based condition), all passing on the 940MX after a clean rebuild.
+
+**Why no ADR.** Same reasoning as M21/M32/M34/M36/M37: a kernel-selection
+call site changed behind an unchanged `CUDABackend.conv2d_backward`
+signature and contract. No public API, Tensor semantics, or cross-cutting
+architectural decision was touched.

@@ -1744,3 +1744,280 @@ kept as profiling-only reference code.
   256-1,152 gap data (Candidate E measured 3.04x at 72 elements, well below
   the current threshold) could plausibly lower it, but was left unchanged
   here as out of this milestone's stated scope.
+
+# Milestone 38: dWeight im2col elimination -- half-fused split-K GEMM (Candidate B, partial acceptance)
+
+## Question
+M37 left `im2col` (`k_im2col_conv2d`) + `grad_output` permute -- pure data
+movement, zero FLOPs -- as the dominant cost of the `dWeight` pipeline
+(54-63% of total time, more than the GEMM itself) and named a genuinely
+cheaper `im2col` formulation as the clearest remaining target. This
+milestone asks whether `im2col`'s `Xcol` materialization can be eliminated
+or reduced without regressing M37's production dispatch
+(`dweight_im2col_gemm_splitk`), via the brief's mandated
+`PROFILE -> ANALYZE -> DESIGN -> BENCHMARK -> SELECT -> IMPLEMENT ->
+VALIDATE` sequence.
+
+## Baseline (reproduced fresh, `benchmarks/m38_im2col_profile.py`)
+`im2col`/`grad_output_permute` are byte-for-byte unchanged since M34, so
+isolated-stage numbers match M37 within run-to-run hardware variance:
+
+| Shape | weight# | blocks_y | blocks_x | im2col (ms) |
+|---|---:|---:|---:|---:|
+| mnist_conv1 | 72 | 1 | 1 | 0.474 |
+| mnist_conv2 | 1,152 | 1 | 5 | 0.785 |
+| large_channel | 4,608 | 2 | 9 | 7.325 |
+| large_spatial | 1,152 | 1 | 5 | 7.370 |
+| batch_32 | 4,608 | 2 | 9 | 3.718 |
+| batch_64 | 4,608 | 2 | 9 | 7.385 |
+| batch_128 | 4,608 | 2 | 9 | 14.863 |
+
+`blocks_y = ceil(Cout/16)`, `blocks_x = ceil(Cin*KH*KW/16)` -- the dWeight
+GEMM's own 16x16 tile launch geometry (M37).
+
+## Root-cause analysis (Section 3 of the milestone brief)
+`nvcc -Xptxas -v` on `k_im2col_conv2d`: **32 registers/thread (f32/f64
+alike), 0 bytes stack frame, 0 bytes spill** -- launched with one thread per
+`Xcol` output element (`M*K` threads, thousands of blocks at every
+representative shape), so it is **thread-count-limited, not
+register/occupancy-limited** -- unlike the GEMM (M37), `im2col`'s own
+occupancy is never the problem. Its cost is genuine memory traffic: it
+writes `M*K` elements to `Xcol` (`K = Cin*KH*KW`, i.e. up to `KH*KW`x the
+"natural" per-input-element write rate) and reads `x` with the same
+overlap-driven re-read pattern any im2col has (M34's **Memory traffic
+analysis** section already established this; unchanged here). `k_conv2d_
+grad_output_permute`: 29 registers, 0 stack/spill -- the smaller, cheaper
+gather (7-8% of pipeline time, M37).
+
+The mechanism that determines whether *eliminating* `Xcol` materialization
+can win is a property of the *GEMM's* tiling, not of `im2col` itself:
+`k_matmul_splitk`'s `tile_a` load depends only on `(row, a_m)` -- not on
+`blockIdx.x` -- so any kernel that fuses `tile_a`'s gather into the tile
+load redundantly recomputes it `blocks_x` times (once per unique
+`blockIdx.x` sharing that row range); symmetrically, fusing `tile_b`'s
+gather costs a redundant-recompute factor of `blocks_y`. M37's Candidate
+A/C fused *both* gathers and lost at every shape with >= 18 GEMM blocks --
+consistent with this model, since at those shapes `blocks_x` reaches 9 (the
+*expensive*, 47-55%-of-pipeline `im2col`-equivalent gather... **paid only
+`blocks_y <= 2` times** in M37's own orientation, since `tile_b` is the
+`Xcol` operand there) while `blocks_x` (up to 9) multiplies the *cheap*
+`grad_output` gather. The milestone brief's Candidate A (this milestone's
+own framing of "eliminate `im2col` via a fused implicit GEMM") is
+**mechanistically identical to M37's already-rejected Candidate A/C** --
+re-deriving it was unnecessary; M37's measured data (0.52-0.97x at every
+representative shape, `docs/performance/conv2d-backward-profiling.md`'s
+**Milestone 37** section) already answers it and is not repeated here
+(Section 12 of this milestone's own brief permits reusing prior rejected
+candidates for reproducibility rather than re-litigating them).
+
+## Candidate B: half-fused split-K GEMM (implemented, measured, partially accepted)
+Fuses *only* `im2col`'s gather (`tile_b`, this milestone's actual target --
+eliminates the `Xcol` buffer entirely) directly into a split-K GEMM's tile
+load, while keeping `grad_output_permute`'s cheap, already-materialized
+`dYcolT` as `tile_a`'s source (`kernels.cu`'s `k_dweight_halffused_gemm_
+splitk`; Python wrapper `forge.backend.cuda.experimental_conv_halffused.
+dweight_halffused_gemm_splitk`). Unlike M37's "fuse everything" candidates,
+this is deliberately asymmetric: it pays the redundant-regather tax only
+where the model above says it is cheap (`blocks_y`, <= 2 at every
+representative shape) and never where it was expensive (`blocks_x`, up to
+9). Split-K is folded in unconditionally, matching the accepted M37
+occupancy fix, so the comparison isolates exactly one variable.
+
+`nvcc -Xptxas -v`: **0 bytes stack frame/spill** (f32 and f64); 49
+registers/thread (f32), 54 (f64) -- comparable to M37's fused candidates
+(47-53) and higher than the plain split-K GEMM's 27/32, i.e.
+register-limited to ~5 resident blocks/SM (vs. the thread-limited 8/SM the
+unfused split-K GEMM gets) -- a real but secondary occupancy cost, same
+finding as M37's Candidate A/C.
+
+### Correctness
+Verified against `CPUBackend.conv2d_backward` across 8 shape/stride/
+padding/kernel-size combinations spanning both `blocks_y == 1` and
+`blocks_y >= 2` (f32 + f64), finite difference, explicit-stream,
+cross-stream (both directions), and against the M37 baseline directly from
+identical inputs -- before any timing was trusted.
+
+### Measured results (`benchmarks/m38_im2col_profile.py`, interleaved
+CUDA-event A/B, 30 iterations + 5 warmup per side)
+
+| Shape | weight# | blocks_y | blocks_x | baseline (ms) | Candidate B (ms) | speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| mnist_conv1 | 72 | 1 | 1 | 1.324 | 1.609 | 0.823x |
+| mnist_conv2 | 1,152 | 1 | 5 | 1.562 | 1.186 | 1.317x |
+| large_channel | 4,608 | 2 | 9 | 13.687 | 14.695 | 0.931x |
+| large_spatial | 1,152 | 1 | 5 | 11.779 | 9.043 | 1.302x |
+| batch_32 | 4,608 | 2 | 9 | 6.924 | 7.505 | 0.922x |
+| batch_64 | 4,608 | 2 | 9 | 13.718 | 14.819 | 0.926x |
+| batch_128 | 4,608 | 2 | 9 | 27.540 | 29.194 | 0.943x |
+
+A `Cout` sweep at a fixed base shape (`Cin=16, H=W=28, K=3, N=64`) isolates
+`blocks_y` as the exact discriminator, cleanly and monotonically:
+
+| Cout | blocks_y | baseline (ms) | Candidate B (ms) | speedup |
+|---:|---:|---:|---:|---:|
+| 8 | 1 | 10.519 | 7.297 | 1.442x |
+| 16 | 1 | 10.906 | 7.588 | 1.437x |
+| 17 | 2 | 13.025 | 14.169 | 0.919x |
+| 24 | 2 | 13.375 | 14.400 | 0.929x |
+| 32 | 2 | 13.720 | 14.728 | 0.932x |
+| 48 | 3 | 16.740 | 22.137 | 0.756x |
+| 64 | 4 | 19.856 | 29.346 | 0.677x |
+
+`blocks_y == 1` (`Cout <= 16`): a clean, real win (1.30-1.44x) at every
+tested shape/Cout except `mnist_conv1` (0.823x -- below the 256-weight
+production threshold regardless, `K = 9` far under one 16-wide GEMM tile,
+so the fused kernel's boundary-check overhead dominates a problem this
+small; not production-relevant). `blocks_y >= 2`: a real, reproducible
+**regression** that worsens monotonically with `blocks_y` (0.92-0.93x at
+`blocks_y=2`, 0.76x at 3, 0.68x at 4) -- consistent with the root-cause
+model above: the redundant-regather tax scales with `blocks_y`, and past
+`blocks_y=1` it costs more than the eliminated `Xcol` buffer saves.
+
+### Memory
+Peak reserved bytes (`forge.cuda.reset_peak_memory_stats()` +
+`memory_stats().peak_reserved_bytes`, 20 iterations, cache-hygienic):
+Candidate B needs no `Xcol` buffer, so peak reserved memory drops
+substantially **at every shape**, including the ones where it is not
+speed-dispatched:
+
+| Shape | peak baseline (MB) | peak Candidate B (MB) | reduction |
+|---|---:|---:|---:|
+| mnist_conv1 | 4.98 | 3.25 | 1.72 MB |
+| mnist_conv2 | 4.63 | 1.65 | 2.97 MB |
+| large_channel | 42.89 | 15.33 | 27.56 MB |
+| large_spatial | 42.88 | 15.32 | 27.56 MB |
+| batch_32 | 21.46 | 7.67 | 13.78 MB |
+| batch_64 | 42.89 | 15.33 | 27.56 MB |
+| batch_128 | 85.77 | 30.64 | 55.12 MB |
+
+No regression risk from this axis (Section 6): Candidate B is
+memory-*cheaper* than the baseline everywhere, including the `blocks_y >=
+2` shapes where it is not selected for speed.
+
+## Candidate C: partial/tiled materialization (analytically rejected, not implemented)
+Chunking `im2col` into `K`-tile-sized partial materializations (e.g. one
+`M x 16` `Xcol` tile at a time, consumed by all `blocks_y` row-groups
+before being discarded) was considered but **not implemented**, for a
+reason grounded in already-measured facts rather than speculation:
+chunking does not reduce total bytes moved (the same `M*K` writes/reads
+happen either way, just split across more launches) and strictly increases
+kernel-launch count -- `ceil(K/16)` launch pairs instead of 1 im2col + 1
+GEMM launch (e.g. 9 pairs at `large_channel`'s `K=144`). M31's own
+per-launch dispatch overhead measurement (~54-65us) means this adds real,
+non-zero cost with **zero bandwidth benefit** to offset it. Its only
+possible advantage over full materialization -- lower peak memory, from
+never holding the whole `Xcol` buffer at once -- is already achieved, more
+simply and with a genuine *speed* win rather than parity, by Candidate B's
+peak-memory results above (comparable or larger reduction, no fused kernel
+needed on this axis). Candidate C is strictly dominated by Candidate B on
+both axes it could have competed on, so implementing and benchmarking it
+was not justified (Section 16's "do not force an optimization merely to
+produce a code change" applies symmetrically to *not* building a candidate
+whose own numbers are already implied by measurements in hand).
+
+## Production decision
+`CUDABackend.conv2d_backward`'s `dWeight` branch (`backend.py`) now adds a
+second, orthogonal dispatch condition **only above the existing
+`_CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD`**: `blocks_y = ceil(Cout/16) == 1`
+calls `dweight_halffused_gemm_splitk` (Candidate B); otherwise (`blocks_y
+>= 2`) the unchanged M37 `dweight_im2col_gemm_splitk` is used, exactly as
+before. `im2col`/`grad_output_permute`/`k_matmul`/`cf_matmul_splitk_*` are
+all completely unmodified; Candidate B is a new, narrowly-scoped kernel
+used only at this one call site, only in the regime it measurably wins.
+This is a genuine, evidence-backed **partial acceptance** -- not the
+"either accept unconditionally or reject entirely" framing early
+milestones used, matching Section 10's explicit permission to add
+shape-dependent dispatch when measurements justify it.
+
+## MNIST validation
+The real M20 CNN's actual layer shapes: conv1 (`Cin=1,Cout=8`, 72 weight
+elements) stays below threshold, unaffected. conv2 (`Cin=8,Cout=16,K=3`,
+1,152 weight elements, `blocks_y=1`) is **exactly the regime Candidate B
+wins in** -- unlike M37, whose accepted change never touched MNIST's own
+conv2 shape's dispatch branch differently.
+
+**Controlled, CUDA-event, same-session, before/after full
+`conv2d_backward` at MNIST's real conv2 shape** (`Cin=8, Cout=16, H=W=13,
+K=3`, monkeypatched dispatch for the "old"/M37-only measurement, un-patched
+for "new"/M38): **1.164x** (old 2.833ms, new 2.433ms, 30 iterations + 5
+warmup, low variance) -- a real, reproducible, full-`conv2d_backward`-level
+improvement at the shape that matters most for this codebase's own example
+model.
+
+**Wall-clock, interleaved, same-session A/B of the real full training step**
+(`examples/mnist/model.build_model`, batch 64, 3 rounds of 20 iterations,
+alternating order each round): **1.0065x** -- statistically
+indistinguishable from 1.0x at ~2.7-2.9% per-variant coefficient of
+variation, for the same Amdahl reason M37 documented (a full step is
+~13.7ms, dominated by Python/dispatch overhead; a sub-millisecond `dWeight`
+improvement composed with `conv2d_backward`'s own fraction of the step is
+too small to surface at wall-clock granularity). Reported honestly, exactly
+as M37 did, rather than treated as contradicting the controlled
+CUDA-event result above.
+
+## Correctness
+`tests/test_cuda_conv2d_backward_weight_halffused_gemm.py` (25 tests): CPU
+parity across 8 shape/stride/padding/kernel-size combinations spanning both
+`blocks_y` regimes (f32 + f64), direct agreement with the M37 baseline from
+identical inputs, finite difference, explicit-stream, cross-stream (both
+directions), 100-iteration memory-safety, allocator cache-hit reuse, and
+production-dispatch coverage through the real `Tensor.conv2d`/`nn.Conv2d`
+API covering both branches of the new `Cout`-based condition (`Cout=16` ->
+Candidate B; `Cout=17,32` -> unfused split-K; `Cout` below the
+weight-element threshold -> unaffected).
+
+## Stream / Async
+Explicit-stream, cross-stream (both directions), and repeated-use tests all
+pass -- Candidate B reuses `grad_output_permute` (unchanged M34 kernel,
+already stream-safe) and the same `_require_compute_dtype`/`_stream_guard`
+chokepoint every other `CUDABackend` method already routes through. No new
+synchronization was added.
+
+## Tests
+1,328 tests total (1,303 pre-existing + 25 new in `tests/test_cuda_
+conv2d_backward_weight_halffused_gemm.py`, listed above wholesale in the
+Milestone 38 `progress.md` entry), all passing on the 940MX after a clean
+rebuild.
+
+## Limitations
+- **`im2col`/`grad_output_permute` themselves are unmodified** -- Candidate
+  B eliminates the *consumption* of a materialized `Xcol` at qualifying
+  shapes but does not change the `im2col` kernel or its cost at shapes
+  where it's still used (`blocks_y >= 2`, including every representative
+  shape with `Cout > 16`). A genuinely cheaper `im2col` formulation itself
+  (not just a way to avoid consuming its output) remains unexplored.
+- **The `blocks_y == 1` regime is narrow**: only `Cout <= 16` qualifies.
+  Of the 7 representative shapes, only `mnist_conv2` and `large_spatial`
+  are both above the weight-element threshold and in this regime; the
+  4 `Cout=32` shapes (`large_channel`, `batch_32/64/128`) do not benefit
+  and correctly fall back to M37's unchanged dispatch.
+- **`mnist_conv1` (`Cout=8`, `blocks_y=1`) is the one exception to the
+  "`blocks_y==1` wins" pattern** (0.823x) -- but it sits below the
+  256-weight-element production threshold regardless (M33/M34's existing
+  boundary), so this does not affect any production dispatch decision; it
+  is reported here rather than silently dropped from the table (Section 11:
+  "do not present favorable measurements only").
+- **Candidate C was rejected analytically, not empirically** -- the
+  reasoning (zero bandwidth benefit, real launch-overhead cost, dominated
+  by Candidate B on the one axis -- memory -- it could compete on) is
+  grounded in existing measurements (M31's launch-overhead figure, this
+  milestone's own peak-memory results) but was not independently verified
+  by implementing and timing it.
+- Run-to-run hardware variance on this laptop GPU remains large enough at
+  wall-clock, full-training-step granularity to mask effects of `dWeight`'s
+  own size -- exactly as M37 documented; the CUDA-event, same-session,
+  controlled comparisons above remain the only trustworthy evidence for an
+  effect this size.
+
+## Future opportunities
+- A genuinely cheaper `im2col` kernel itself (not just avoiding its
+  consumption) -- e.g. reducing the `KH*KW`-fold redundant re-read of
+  overlapping receptive fields via shared-memory input tile staging inside
+  `k_im2col_conv2d` itself -- remains the clearest named target for the
+  `blocks_y >= 2` shapes Candidate B cannot help.
+- Extending Candidate B's asymmetric-fusion idea to `blocks_y >= 2` via a
+  kernel that internally loops over multiple `Cout` row-groups per block
+  (amortizing the fused gather across them instead of relying on GEMM's
+  own block tiling) was identified analytically during this milestone's
+  root-cause analysis but not implemented -- a plausible next step if a
+  future milestone wants to close the `blocks_y >= 2` gap specifically.

@@ -1103,6 +1103,64 @@ logic and a kernel's internal thread mapping behind an unchanged
 contract. No public API, Tensor semantics, or cross-cutting architectural
 decision was touched.
 
+## CUDA Conv2d backward: dWeight half-fused split-K GEMM (Milestone 38, partial acceptance)
+M37 named `im2col` (`k_im2col_conv2d`) + `grad_output` permute -- pure data
+movement, zero FLOPs -- as `dWeight`'s dominant remaining cost (54-63% of
+pipeline time). This milestone measured `k_im2col_conv2d` itself as
+thread-count-limited (32 registers/thread, 0 spill, huge block count) --
+never occupancy-bound -- so its cost is genuine `Xcol` write/read traffic,
+not a fixable occupancy artifact. The actual lever is the *GEMM's* own tile
+dependency structure: `k_matmul_splitk`'s `tile_a` load depends only on
+`(row, a_m)`, so fusing a gather into it costs a redundant-recompute factor
+of `blocks_x` (M37's Candidate A/C fused *both* gathers and lost badly at
+`blocks_x` up to 9); fusing only `tile_b` (the `Xcol`/im2col operand)
+instead costs `blocks_y = ceil(Cout/16)`, which is `<= 2` at every one of
+the 7 representative shapes.
+
+**New module.** `forge/backend/cuda/experimental_conv_halffused.py`:
+`dweight_halffused_gemm_splitk()` -- keeps `grad_output_permute` (unchanged
+M34 kernel) to build `dYcolT`, then calls a new kernel
+(`kernels.cu`'s `k_dweight_halffused_gemm_splitk`) that gathers `Xcol`
+on-the-fly inside the split-K GEMM's own tile load, eliminating the `Xcol`
+buffer entirely. `k_matmul`/`cf_matmul_splitk_*`/`im2col`/`grad_output_
+permute` are all completely unmodified; this is a new, narrowly-scoped
+kernel used only at this one call site.
+
+**Production dispatch.** `CUDABackend.conv2d_backward` (`backend.py`) adds
+one more branch *inside* the existing `weight_elements >=
+_CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD` arm: `blocks_y = ceil(Cout/16) == 1`
+(via the new `_MATMUL_TILE = 16` module constant, mirroring `kernels.cu`'s
+own tile size) calls `dweight_halffused_gemm_splitk`; otherwise the
+unchanged M37 `dweight_im2col_gemm_splitk` is used, exactly as before.
+Measured (`benchmarks/m38_im2col_profile.py`, interleaved CUDA-event A/B
+across all 7 representative shapes plus a `Cout` sweep): a clean,
+monotonic win at `blocks_y == 1` (1.30-1.44x at every production-relevant
+shape/Cout in that regime) that flips to a real, reproducible regression at
+`blocks_y >= 2` (0.92-0.93x at `blocks_y=2`, worsening to 0.68-0.76x at 3-4)
+-- so the dispatch condition routes each shape to whichever kernel actually
+wins there, never the one that would regress it. Candidate B is also
+strictly cheaper in peak reserved memory than the M37 baseline at every
+shape (13.78-55.12MB less at the representative shapes), including the
+`blocks_y >= 2` ones where it is not selected for speed. See
+`docs/performance/conv2d-backward-profiling.md`'s **Milestone 38** section
+for the complete evidence, including the rejected/unimplemented
+Candidate C (partial/tiled materialization -- analytically dominated by
+Candidate B on the one axis, memory, it could have competed on).
+
+**Why partial acceptance, not full replacement.** Unlike M34/M36/M37's
+single-branch replacements, this milestone's win is real only in one
+`Cout`-dependent regime and a real regression in the other -- accepting it
+unconditionally would trade a genuine win at 2 of the 7 representative
+shapes for a genuine loss at 4 of them. The `blocks_y`-based condition is
+directly the mechanism that determines which kernel wins (not an arbitrary
+tuned threshold), so it adds real, justified complexity rather than an
+untethered dispatch knob.
+
+**Why no ADR.** Same reasoning as M21/M32/M34/M36/M37: a kernel-selection
+call site changed behind an unchanged `CUDABackend.conv2d_backward` public
+signature and contract. No public API, Tensor semantics, or cross-cutting
+architectural decision was touched.
+
 ## CUDA Memory Statistics (Milestone 22)
 Milestone 22 is observability, not optimization: it instruments the
 `cudaMalloc`/`cudaFree` boundary that already existed (`CUDABackend._alloc`,

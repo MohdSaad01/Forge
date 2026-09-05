@@ -2269,6 +2269,115 @@ __global__ void k_matmul_splitk(const T* A, const T* B, T* C, int M, int K, int 
 MATMUL_SPLITK_LAUNCHER(float, f32)
 MATMUL_SPLITK_LAUNCHER(double, f64)
 
+// -- Milestone 38 Candidate B: half-fused split-K GEMM for dWeight
+//    (materialized dYcolT, on-the-fly Xcol gather) --
+//
+// M37's Candidate A/C (`k_dweight_fused_gemm[_splitk]`, above) fused *both*
+// gathers into the GEMM tile load and lost at every shape with >= 18 GEMM
+// blocks. The root cause, established analytically and confirmed by that
+// data: in a block-tiled GEMM, `tile_a`'s load depends only on `(row, a_m)`
+// -- not on `blockIdx.x` -- so every block sharing a `blockIdx.y` redundantly
+// regathers the *same* `tile_a` data `blocks_x` times; symmetrically
+// `tile_b` is redundantly regathered `blocks_y` times. At every one of
+// M38's 7 representative shapes, `Cout <= 32` (`blocks_y = ceil(Cout/16)
+// <= 2`) while `Cin*KH*KW` reaches 144 (`blocks_x` up to 9) -- so fusing
+// the `grad_output` gather (Candidate A/C's `tile_a`) pays up to a 9x
+// redundant-regather tax, while fusing only the *im2col* gather (`tile_b`,
+// this milestone's actual target) pays at most 2x. This candidate fuses
+// only `tile_b` (eliminating the `Xcol` buffer -- the dominant `im2col`
+// cost this milestone investigates) and keeps `tile_a` reading the cheap,
+// already-materialized `dYcolT` (`k_conv2d_grad_output_permute`, unchanged,
+// 7-8% of pipeline time per M37) -- deliberately asymmetric, unlike
+// Candidate A/C's "fuse everything." Split-K (`blockIdx.z`) is folded in
+// directly since M37 already established it as a pure win with no
+// downside at every representative shape.
+
+template <typename T>
+__global__ void k_dweight_halffused_gemm_splitk(
+    const T* dycolT, const T* x, T* out,
+    int N, int Cin, int H, int W, int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW, int Hout, int Wout,
+    int num_k_splits)
+{
+    __shared__ T tile_a[MATMUL_TILE][MATMUL_TILE];
+    __shared__ T tile_b[MATMUL_TILE][MATMUL_TILE];
+
+    long long Mdim = static_cast<long long>(N) * Hout * Wout;
+    int Kdim = Cin * KH * KW;
+
+    int row = blockIdx.y * MATMUL_TILE + threadIdx.y;  // Cout
+    int col = blockIdx.x * MATMUL_TILE + threadIdx.x;  // Cin*KH*KW
+
+    long long total_tiles = (Mdim + MATMUL_TILE - 1) / MATMUL_TILE;
+    long long tiles_per_split = (total_tiles + num_k_splits - 1) / num_k_splits;
+    long long tile_start = static_cast<long long>(blockIdx.z) * tiles_per_split;
+    long long tile_end = min(tile_start + tiles_per_split, total_tiles);
+
+    T acc = static_cast<T>(0);
+    for (long long t = tile_start; t < tile_end; ++t) {
+        long long a_m = t * MATMUL_TILE + threadIdx.x;
+        long long b_m = t * MATMUL_TILE + threadIdx.y;
+
+        T a_val = static_cast<T>(0);
+        if (row < Cout && a_m < Mdim) {
+            a_val = dycolT[static_cast<long long>(row) * Mdim + a_m];
+        }
+        tile_a[threadIdx.y][threadIdx.x] = a_val;
+
+        T b_val = static_cast<T>(0);
+        if (b_m < Mdim && col < Kdim) {
+            int kw_ = col % KW;
+            int k1 = col / KW;
+            int kh = k1 % KH;
+            int ci = k1 / KH;
+            int wo = static_cast<int>(b_m % Wout);
+            long long m1 = b_m / Wout;
+            int ho = static_cast<int>(m1 % Hout);
+            int n = static_cast<int>(m1 / Hout);
+            int hi = ho * SH - PH + kh;
+            int wi = wo * SW - PW + kw_;
+            if (hi >= 0 && hi < H && wi >= 0 && wi < W) {
+                long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+                b_val = x[x_idx];
+            }
+        }
+        tile_b[threadIdx.y][threadIdx.x] = b_val;
+
+        __syncthreads();
+
+#pragma unroll
+        for (int k = 0; k < MATMUL_TILE; ++k) {
+            acc += tile_a[threadIdx.y][k] * tile_b[k][threadIdx.x];
+        }
+        __syncthreads();
+    }
+
+    if (row < Cout && col < Kdim && tile_start < tile_end) {
+        atomic_add_dweight(&out[row * Kdim + col], acc);
+    }
+}
+
+#define DWEIGHT_HALFFUSED_GEMM_SPLITK_LAUNCHER(TYPE, SUFFIX)                             \
+    extern "C" __declspec(dllexport) int cf_dweight_halffused_gemm_splitk_##SUFFIX(     \
+        const TYPE* dycolT, const TYPE* x, TYPE* out,                                   \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                         \
+        int SH, int SW, int PH, int PW, int Hout, int Wout,                             \
+        int num_k_splits, void* stream) {                                               \
+        int Kdim = Cin * KH * KW;                                                       \
+        cudaMemsetAsync(out, 0, static_cast<size_t>(Cout) * Kdim * sizeof(TYPE), (cudaStream_t)stream); \
+        dim3 threads(MATMUL_TILE, MATMUL_TILE);                                         \
+        dim3 blocks(                                                                    \
+            (Kdim + MATMUL_TILE - 1) / MATMUL_TILE, (Cout + MATMUL_TILE - 1) / MATMUL_TILE, \
+            num_k_splits);                                                              \
+        k_dweight_halffused_gemm_splitk<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>( \
+            dycolT, x, out, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout,      \
+            num_k_splits);                                                              \
+        return static_cast<int>(cudaGetLastError());                                    \
+    }
+
+DWEIGHT_HALFFUSED_GEMM_SPLITK_LAUNCHER(float, f32)
+DWEIGHT_HALFFUSED_GEMM_SPLITK_LAUNCHER(double, f64)
+
 // -- MaxPool2d forward ----------------------------------------------------------
 //
 // Ties within a window break to the first maximum encountered in row-major
