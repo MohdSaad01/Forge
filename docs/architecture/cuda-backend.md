@@ -1233,6 +1233,68 @@ selection call site changed behind an unchanged `CUDABackend.
 conv2d_backward` public signature and contract. No public API, Tensor
 semantics, or cross-cutting architectural decision was touched.
 
+## CUDA Conv2d backward: dWeight `blocks_y == 1` split-K reduction (Milestone 43, accepted)
+M42's fresh whole-pipeline re-characterization found `k_dweight_halffused_
+gemm_splitk` (M38, dispatched whenever `Cout <= 16`, i.e. `blocks_y == 1`)
+reaching only 21.7-24.8% of the practical compute ceiling -- roughly half
+of every other GEMM-dispatched Conv2d kernel measured, including the
+structurally identical (non-split-K) forward half-fused GEMM (M41,
+43.5-48.7%). The one documented architectural difference between the two
+kernels is split-K's `atomicAdd` combine step, flagged by M42 as an
+untested hypothesis. This milestone confirmed it directly: ruled out
+register pressure (unchanged, no spill), `Cout`/`blocks_y`-dependent
+redundant work (a dedicated `Cout in {1,2,4,8,16}` sweep showed flat GEMM
+time regardless of `Cout`), and split-count/occupancy shortfall
+(`recommended_num_k_splits` already sits within 3-8% of its own swept
+optimum) -- then measured the atomic combine's own cost directly by
+replacing it with a deterministic two-stage reduction at the *same* split
+count and observing a clean, reproducible win.
+
+**New kernels.** `kernels.cu`'s `k_dweight_halffused_gemm_splitk_partial`
+(byte-for-byte identical tile loads/gather arithmetic to M38's kernel;
+only the final store changes -- each split writes a disjoint slice of a
+`(num_k_splits, Cout, Kdim)` partial buffer instead of an `atomicAdd` into
+a shared output) and `k_dweight_splitk_reduce` (a tiny second kernel, one
+thread per output element, summing the `num_k_splits` axis -- bandwidth-
+trivial, since `Cout*Kdim` is always small). `k_matmul`/`cf_matmul_
+splitk_*`/`im2col`/`grad_output_permute`/M38's own kernel are all
+completely unmodified.
+
+**New module.** `forge/backend/cuda/experimental_conv_dweight_tworeduce.py`:
+`dweight_halffused_gemm_splitk_tworeduce()` -- keeps `grad_output_permute`
+(unchanged) to build `dYcolT`, calls the new partial kernel, then the new
+reduce kernel, at the same `recommended_num_k_splits` value M38's kernel
+already used.
+
+**Production dispatch.** `CUDABackend.conv2d_backward`'s `blocks_y == 1`
+branch (inside the unchanged `weight_elements >= _CONV2D_WEIGHT_IM2COL_
+GEMM_THRESHOLD` arm) now calls `dweight_halffused_gemm_splitk_tworeduce`
+in place of M38's `dweight_halffused_gemm_splitk` (kept, still exported
+and tested, now dead in production); the dispatch *condition* itself
+(`ceil(Cout/16) == 1`) and the `blocks_y >= 2`/below-threshold branches are
+unchanged. Measured (`benchmarks/m43_dweight_splitk_profile.py`,
+interleaved CUDA-event A/B, both representative `blocks_y == 1` shapes, six
+`num_k_splits` values each): 1.11-1.24x faster full dWeight pipeline at
+`mnist_conv2`, 1.02-1.04x at `large_spatial`, at *every* tested split
+count, never a regression. A controlled, same-session A/B through the real
+`CUDABackend.conv2d_backward()` entry point measured 1.076x/1.015x at the
+full call level (dInput+dWeight+dBias+allocation together) -- smaller than
+the isolated dWeight win, exactly the Amdahl dilution M37/M38/M39
+documented for their own full-pipeline numbers. See `docs/performance/
+conv2d-backward-profiling.md`'s **Milestone 43** section for the complete
+evidence, including a real memory-leak bug (the new partial buffer
+allocated without an owning `CUDAStorage` in an early draft) caught by
+this milestone's own repeated-use memory-safety test and fixed before
+acceptance, and the Amdahl-honesty finding that the whole-training-step
+effect (~1.02x projected) is too small to distinguish from this laptop
+GPU's own run-to-run thermal variance, even though the component-level win
+is clearly and reproducibly measurable.
+
+**Why no ADR.** Same reasoning as M21/M32/M34/M36/M37/M38/M39: a kernel-
+selection call site changed behind an unchanged `CUDABackend.
+conv2d_backward` public signature and contract. No public API, Tensor
+semantics, or cross-cutting architectural decision was touched.
+
 ## CUDA Conv2d forward: im2col + GEMM (Milestone 41, accepted)
 M40 measured `k_conv2d_forward` (unchanged since M15) at only 10.7-19.1% of
 the 940MX's practical compute ceiling across a 15-shape sweep -- the least

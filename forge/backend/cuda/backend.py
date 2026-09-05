@@ -1402,13 +1402,34 @@ class CUDABackend(Backend):
         # correct for a hypothetical larger spatial layer on any hardware.
         # See `docs/performance/conv2d-backward-profiling.md`'s **Milestone
         # 39** section for the complete evidence.
+        #
+        # Milestone 43: at `blocks_y == 1`, M38's `dweight_halffused_gemm_
+        # splitk` (`experimental_conv_halffused.py`) reached only 21-25% of
+        # the practical compute ceiling -- roughly half of every other
+        # GEMM-dispatched Conv2d kernel, including forward's structurally
+        # identical (non-split-K) half-fused GEMM. A `num_k_splits`
+        # sensitivity sweep ruled out occupancy/split-count as the cause
+        # (the production `recommended_num_k_splits` formula already sits
+        # within ~3-8% of its own swept optimum) and instead isolated the
+        # split-K reduction mechanism itself: replacing the kernel's
+        # `atomicAdd` combine with a deterministic two-stage reduction
+        # (`dweight_halffused_gemm_splitk_tworeduce`, `experimental_conv_
+        # dweight_tworeduce.py` -- each split writes a disjoint partial
+        # slice instead of atomically combining into a shared output, then
+        # a second small kernel sums the `num_k_splits` axis) measured
+        # 1.14-1.24x faster end-to-end at `mnist_conv2` and 1.02-1.04x
+        # faster at `large_spatial`, at every tested `num_k_splits`, with no
+        # regression. `recommended_num_k_splits` is unchanged -- the win is
+        # from removing the atomic combine, not from a different split
+        # count. See `docs/performance/conv2d-backward-profiling.md`'s
+        # **Milestone 43** section for the complete evidence.
         weight_elements = Cout * Cin * KH * KW
         if weight_elements >= _CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD:
             gemm_blocks_y = (Cout + _MATMUL_TILE - 1) // _MATMUL_TILE
             if gemm_blocks_y == 1:
-                from .experimental_conv_halffused import dweight_halffused_gemm_splitk
+                from .experimental_conv_dweight_tworeduce import dweight_halffused_gemm_splitk_tworeduce
 
-                grad_w = dweight_halffused_gemm_splitk(self, grad_output, x, weight.shape, stride, padding)
+                grad_w = dweight_halffused_gemm_splitk_tworeduce(self, grad_output, x, weight.shape, stride, padding)
             else:
                 from .experimental_conv_im2col_reuse import dweight_im2col_smem_gemm_splitk
 

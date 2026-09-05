@@ -2495,3 +2495,338 @@ remain the next-largest `conv2d_backward` costs at the shapes this
 milestone's own full-pipeline numbers show (`dInput` ~13ms vs. `dWeight`'s
 now-~10.5ms at `large_channel`) -- a future milestone would need to
 re-profile fresh rather than assume this ordering holds at every shape.
+
+# Milestone 43: dWeight `blocks_y == 1` split-K reduction -- atomic combine
+replaced with a deterministic two-stage reduction (accepted)
+
+## Question
+M42's fresh whole-pipeline re-characterization found `k_dweight_halffused_
+gemm_splitk` (M38, dispatched whenever `Cout <= 16`, i.e. `blocks_y == 1`)
+reaching only 21.7-24.8% of the practical compute ceiling -- roughly half
+of every other GEMM-dispatched Conv2d kernel measured, including the
+structurally identical (non-split-K) forward half-fused GEMM (43.5-48.7%).
+The one documented architectural difference between the two kernels is
+split-K's `atomicAdd` combine step, which M42 flagged as an untested
+hypothesis. This milestone's question: is the atomic combine actually the
+cause, and if so, can it be removed without regressing anywhere?
+
+## How to reproduce
+```bash
+python -m benchmarks.m43_dweight_splitk_profile
+python -m pytest tests/test_cuda_conv2d_backward_weight_splitk_optimization.py -q
+```
+
+## Phase 1: profile (`benchmarks/m43_dweight_splitk_profile.py`, fresh, 940MX)
+
+### `nvcc -Xptxas -v` (fresh compile)
+Confirms M42's own figures, unchanged: `k_dweight_halffused_gemm_splitk`
+54/49 registers (f32/f64), 4096/2048 bytes shared memory, **no spill** --
+in the same range as `k_conv2d_forward_halffused_gemm` (40/38 registers,
+identical shared-memory footprint) and `k_matmul_splitk` (32/27 registers
+for the plain non-fused variant). Register pressure and shared-memory
+footprint are not the differentiator, exactly as M42 concluded.
+
+### Representative shapes (`mnist_conv2`, `large_spatial`)
+| shape | Cout | M | Kdim | blocks_x | rec. splits | GEMM (ms) | full (ms) | % ceiling |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| mnist_conv2 | 16 | 10,816 | 72 | 5 | 16 | 0.985-1.001 | 1.120-1.127 | 20.6-21.3% |
+| large_spatial | 16 | 100,352 | 72 | 5 | 16 | 7.84-7.94 | 8.95-8.99 | 24.6-24.7% |
+
+Matches M42's own 21.7-24.8% within normal run-to-run variance -- no drift,
+same kernel.
+
+### `Cout` x reduction-length sweep (`Cout in {1,2,4,8,16}` at small/medium/
+large `N`, fixed `Cin=8,H=W=13,K=3`)
+GEMM time is **flat across `Cout`** at every reduction length tested (e.g.
+medium reduction, `M=10,816`: `Cout=1` -> 0.926-0.950ms, `Cout=16` ->
+0.962-1.017ms -- no monotonic trend, differences within noise). This is an
+important negative result: it means the `blocks_y`/redundant-regather
+mechanism M38 itself documented (`tile_b` regathered `blocks_y` times) is
+**not** the source of the efficiency gap here, since `blocks_y == 1`
+throughout this entire sweep by construction and the *kernel still costs
+the same regardless of how many of its 16 row-slots are actually used*
+(`Cout=1` wastes 15/16 of the tile's row computations, `Cout=16` wastes
+none -- both cost the same). The gap must come from something that does
+not scale with `Cout` at all.
+
+### `num_k_splits` sensitivity, extended sweep (`mnist_conv2`, `1` to `676`
+= `total_tiles`, one tile per split at the extreme)
+| splits | active | atomics | GEMM (ms) |
+|---:|---:|---:|---:|
+| 1 | 1 | 1,152 | 1.486-1.509 |
+| 8 | 8 | 9,216 | 1.035-1.045 |
+| 16 (production) | 16 | 18,432 | 1.012-1.038 |
+| 32 | 32 | 36,864 | 0.980-1.012 |
+| 64 | 64 | 73,728 | 0.982-1.001 |
+| **best (32-96)** | | | **0.968-0.988 (sweet spot)** |
+| 128 | 128 | 147,456 | 1.013-1.061 |
+| 256 | 256 | 294,912 | 1.09-1.16 |
+| 512 | 512 | 589,824 | 1.20-1.24 |
+| 676 (one tile/split) | 676 | 778,752 | 1.37 |
+
+Two findings, both real:
+1. Going from `splits=1` to `splits=8-16` recovers most of the available
+   win (~30%) -- this is the well-understood M37 occupancy fix, unaffected
+   by this milestone.
+2. Production's `recommended_num_k_splits` formula (`min(16, ceil(M/16))`,
+   giving 16 here) already sits within **3-8%** of the swept optimum
+   (32-96) at both representative shapes -- so `num_k_splits` retuning
+   alone cannot explain, or fix, the ~2x gap vs. forward's non-split-K
+   kernel. Pushed **far** past the production value, cost rises clearly
+   and monotonically (128 through 676) -- confirming atomics do have a
+   real, contention-driven cost that grows with split count, just not at
+   the split counts production actually uses.
+
+### K/reduction sweep (`N`, spatial size, `Cin`, `K` varied independently)
+Time scales sub-linearly with both `M` (reduction length) and `Kdim`
+(`blocks_x`) at every axis tested (e.g. `n_small` `M=1,352` -> 0.24-0.28ms
+vs. `n_large` `M=43,264`, 32x the reduction, only ~12-15x the time) --
+consistent with a non-trivial fixed per-call cost (permute, `cudaMemsetAsync`
+of the output buffer, kernel-launch overhead) that dilutes at large shapes
+but does not, by itself, explain the ~2x gap either.
+
+## Phase 2: analyze
+Ruling out register pressure (Phase 1a), `blocks_y`/`Cout` redundant work
+(Phase 1b, flat response), and split-count/occupancy (Phase 1c, production
+already near its own swept optimum) leaves exactly one remaining
+architectural difference between this kernel and forward's structurally
+identical non-split-K half-fused GEMM: **the atomic combine itself**.
+Critically, the extended `num_k_splits` sweep shows atomics only becoming
+*expensive relative to their own baseline* at split counts far beyond
+production's -- it does not, by itself, prove atomics are costly at
+`splits=16`. The only way to test that directly is to remove the atomic at
+the *same* split count and measure the difference -- Phase 3/4.
+
+## Phase 3: design (two genuinely different candidates)
+
+### Candidate A -- reduce atomic frequency (considered, collapsed into a
+non-candidate)
+The milestone brief's Candidate A asks whether more local accumulation
+before each atomic update helps. Inspecting `k_dweight_halffused_gemm_
+splitk` shows this is already maximal: each block accumulates over its
+*entire* assigned tile range (`tiles_per_split` tiles) into one register
+(`acc`) and issues exactly **one** `atomicAdd` per block, at the very end
+of its loop -- not one per tile. There is no "more accumulation before the
+atomic" left to extract without changing the split count itself, which is
+Candidate C (`num_k_splits` retuning, already characterized in Phase 1/2
+and found to offer only 3-8% headroom). Candidate A is therefore not a
+distinct design for this kernel and was not implemented separately.
+
+### Candidate B -- deterministic two-stage reduction (`k_dweight_halffused_
+gemm_splitk_partial` + `k_dweight_splitk_reduce`, `kernels.cu`;
+`experimental_conv_dweight_tworeduce.py`)
+Byte-for-byte identical tile loads and gather arithmetic to the production
+kernel -- the *only* change is the final store: instead of `atomicAdd`ing
+into a shared `(Cout, Kdim)` output, each split writes its own disjoint
+slice of a `(num_k_splits, Cout, Kdim)` partial buffer (a plain store, no
+data hazard with any other split, always executed -- including the
+`tile_start >= tile_end` case, contributing a correct `0` -- so the
+reduction kernel needs no separate zero-fill). A second, tiny kernel
+(`k_dweight_splitk_reduce`, one thread per `(row, col)` output element)
+sums the `num_k_splits` axis. `Cout*Kdim` is always small (dWeight's own
+element count), so this reduction is bandwidth-trivial, never a second
+GEMM.
+
+## Phase 4: benchmark (interleaved CUDA-event A/B, `num_k_splits in
+{16, 32, 64, 96, 128, 256}`, both representative shapes, GEMM-only and full
+pipeline i.e. permute+GEMM)
+
+| shape | splits | atomic GEMM (ms) | Candidate B GEMM (ms) | speedup | atomic full (ms) | Candidate B full (ms) | speedup |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| mnist_conv2 | 16 (production) | 1.013 | 0.823 | **1.232x** | 1.124 | 0.935 | **1.203x** |
+| mnist_conv2 | 32 | 1.012 | 0.820 | **1.235x** | 1.137 | 0.932 | **1.220x** |
+| mnist_conv2 | 64 | 1.031 | 0.840 | **1.227x** | 1.185 | 0.954 | **1.242x** |
+| mnist_conv2 | 128 | 1.061 | 0.889 | **1.193x** | 1.201 | 1.003 | **1.197x** |
+| mnist_conv2 | 256 | 1.129 | 1.014 | **1.113x** | 1.284 | 1.129 | **1.137x** |
+| large_spatial | 16 (production) | 8.007 | 7.725 | **1.037x** | 9.074 | 8.757 | **1.036x** |
+| large_spatial | 32 | 7.942 | 7.698 | **1.032x** | 9.022 | 8.760 | **1.030x** |
+| large_spatial | 64 | 7.809 | 7.596 | **1.028x** | 8.905 | 8.652 | **1.029x** |
+| large_spatial | 128 | 7.816 | 7.622 | **1.025x** | 8.919 | 8.679 | **1.028x** |
+| large_spatial | 256 | 7.868 | 7.735 | **1.017x** | 8.974 | 8.792 | **1.021x** |
+
+**Candidate B wins at every tested `num_k_splits`, at both representative
+shapes, with no regression anywhere.** This confirms the root cause
+directly: at the *same* split count, removing only the atomic combine
+(everything else byte-for-byte identical) recovers 1.11-1.24x at
+`mnist_conv2` and 1.02-1.04x at `large_spatial`. `mnist_conv2`'s larger win
+is consistent with its much smaller `M` (10,816 vs. 100,352) -- the atomic
+combine's fixed per-block cost is a larger fraction of a shorter GEMM.
+
+## Selection
+**Candidate B is accepted**, at the production `recommended_num_k_splits`
+value (no change to the split-count formula -- Phase 1/4 both show the
+production value is already near its own optimum for either mechanism, so
+changing it would conflate two variables). Candidate A was never a
+distinct design (Phase 3). Candidate C (`num_k_splits` retuning alone,
+without Candidate B) was measured in Phase 1 and rejected on its own: only
+3-8% headroom, far short of the ~10% target and nowhere close to closing
+the ~2x gap.
+
+## Production dispatch
+`CUDABackend.conv2d_backward`'s `blocks_y == 1` branch (`backend.py`,
+inside the existing `weight_elements >= _CONV2D_WEIGHT_IM2COL_GEMM_
+THRESHOLD` arm, unchanged since M38) now calls `dweight_halffused_gemm_
+splitk_tworeduce` (`experimental_conv_dweight_tworeduce.py`) in place of
+M38's `dweight_halffused_gemm_splitk` (`experimental_conv_halffused.py`,
+kept, still exported and tested, now dead in production -- same convention
+M37/M39 established for their own superseded functions). The dispatch
+*condition* itself (`weight_elements >= threshold` and `ceil(Cout/16) ==
+1`) is unchanged; only the function called inside that branch differs:
+```python
+weight_elements = Cout * Cin * KH * KW
+if weight_elements >= _CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD:      # 256, M34
+    gemm_blocks_y = ceil(Cout / 16)
+    if gemm_blocks_y == 1:
+        dweight_halffused_gemm_splitk_tworeduce(...)             # M43 (was M38's dweight_halffused_gemm_splitk)
+    else:
+        dweight_im2col_smem_gemm_splitk(...)                     # M39, unchanged
+else:
+    cf_conv2d_backward_weight_{f32,f64}(...)                     # M21, unchanged
+```
+
+## Before/after: full dWeight pipeline
+See Phase 4's table above (production `recommended_num_k_splits` rows):
+**1.20-1.23x at `mnist_conv2`, 1.04x at `large_spatial`**, full pipeline
+(permute + GEMM), interleaved same-session CUDA events.
+
+## Before/after: full `conv2d_backward` (real API level)
+A controlled, interleaved, same-session A/B through the real public
+`CUDABackend.conv2d_backward()` entry point (monkeypatched dispatch target
+for the "old"/M38 measurement, un-patched for "new"/M43, 8 warmup + 40
+iterations, real `grad_x`/`grad_w`/`grad_b` allocation on every call --
+i.e. including the fresh-allocation overhead Section 6 of M42's report
+documented):
+
+| shape | old (M38, ms) | new (M43, ms) | speedup |
+|---|---:|---:|---:|
+| mnist_conv2 | 2.657 | 2.470 | **1.076x** |
+| large_spatial | 17.777 | 17.510 | **1.015x** |
+
+Smaller than the isolated dWeight-pipeline speedup (1.20x/1.04x) because
+`dInput` (M36-optimized, unaffected), `dBias` (unaffected), and per-call
+allocation overhead are all included and unaffected -- exactly the Amdahl
+dilution M37/M38/M39 documented for their own full-pipeline numbers.
+
+## MNIST/training impact
+`mnist_conv2` is a real MNIST layer (M20's second conv layer) and *is*
+`blocks_y == 1` -- unlike M39, this milestone directly affects MNIST.
+Fresh `benchmarks.mnist_profile` (batch=64, this session, through the real
+post-M43 dispatch): `backward:conv2d` (both conv layers combined, only one
+of which is affected) measured 5.183ms, against this same session's fresh
+M42-methodology re-run (`benchmarks.m42_bottleneck_recharacterization`,
+which calls the dWeight sub-stage directly and therefore still measures
+the **old** M38 kernel, unaffected by this milestone's dispatch change)
+measuring 5.261ms for the identical `backward:conv2d` metric -- a modest
+~1.5% absolute drop. Per M42's own Amdahl decomposition, `mnist_conv2`
+(the affected layer) contributes only ~10.2% of the full MNIST training
+step; a 1.20x isolated-component speedup on a 10.2% slice projects to
+**~1.02x overall step speedup** (Amdahl: `1/((1-0.102) + 0.102/1.20) ≈
+1.017x`) -- small enough that it is not reliably distinguishable from this
+laptop GPU's own documented run-to-run thermal/clock variance at the
+whole-training-step level, even though it is clearly, reproducibly
+measurable at the isolated-component and full-`conv2d_backward` levels
+above (Amdahl honesty, per this milestone's own brief).
+
+## Memory
+**One real bug was caught and fixed during this milestone's own
+development**, continuing the pattern M39's own history documents: an
+early draft of `dweight_halffused_gemm_splitk_tworeduce` allocated the
+`(num_k_splits, Cout, Kdim)` partial buffer via a bare `backend._alloc()`
+call with no owning `CUDAStorage` -- permanently leaking it (never
+released back to the M25 caching allocator). Caught immediately by this
+milestone's own repeated-use memory-safety test (`allocated_bytes` grew
+from 768,236 to 8,141,036 bytes over 100 iterations, and `free_count`
+trailed `allocation_count` by more than half). Fixed by wrapping the
+partial buffer in a `CUDAStorage` immediately after allocation, exactly
+like every other Forge CUDA buffer (`dycolT` in the same function is the
+existing precedent). A dedicated 500-iteration stress test through the
+real `nn.Conv2d`/`Tensor.conv2d` API (`allocated_bytes` before/after: `0`
+-> `0`, `cache_hit_count` 4,990 over only 12 fresh allocations) confirms
+no leak at production scale post-fix.
+
+## Tests
+`tests/test_cuda_conv2d_backward_weight_splitk_optimization.py` (32 new
+tests): CPU parity across 10 shape/stride/padding/kernel-size combinations
+(spanning both `blocks_y == 1` and `blocks_y >= 2`, `K=1` and `K=5`,
+`Cin=Cout=1`), one float64 case, correctness at 5 explicit `num_k_splits`
+values including `1` and `64` (this kernel exposes `num_k_splits` as an
+argument, unlike M38's), direct agreement with the M38 atomic baseline
+from identical inputs, finite difference across 3 stride/padding
+combinations, explicit-stream, cross-stream (both directions), 100-
+iteration repeated-use memory safety, allocator cache-hit reuse, and
+production-dispatch coverage (4 shape/`Cout` combinations spanning
+`blocks_y` 1/2 and the below-threshold case) through the real
+`Tensor.conv2d`/`nn.Conv2d` API. Full suite: **1,452 tests total** (1,420
+pre-existing, unmodified + 32 new), all passing on the 940MX after a clean
+rebuild (`python -m pytest tests/ -q`).
+
+## Regression
+- `tests/test_cuda_conv2d_backward_weight_halffused_gemm.py` (M38's own 33
+  tests, still exercising the kept-but-now-dead-in-production atomic
+  kernel directly): all pass, unmodified -- confirms the M38 kernel itself
+  is untouched, only no longer dispatched.
+- Full CUDA test suite (`pytest tests/ -q`): **1,452 passed, 0 failed**,
+  both before and after a clean CUDA rebuild (cached
+  `_forge_cuda_kernels_sm_50.dll` deleted, forced fresh `nvcc`/MSVC
+  recompile, 9.8s).
+- Async pipeline batch sweep (this session, `m42_bottleneck_
+  recharacterization`'s Phase 7): batch=32 90.6% util, batch=64 93.4%,
+  batch=128 89.0% -- within the same healthy band M42 measured (90.5%,
+  89.2%, 83.1%), no regression.
+- `blocks_y >= 2` (M39's `dweight_im2col_smem_gemm_splitk`) and
+  below-threshold (M21 block-reduce) dWeight paths are completely
+  untouched by this milestone -- confirmed by the unchanged M38 test
+  file above and this milestone's own production-dispatch tests covering
+  those branches.
+
+## Limitations
+- **`num_k_splits` was not retuned alongside Candidate B** -- Phase 4's own
+  sweep shows Candidate B might gain another few percent from a slightly
+  higher split count (its own GEMM-only numbers are close to flat from 16
+  through 64), but combining both changes at once would have made it
+  impossible to attribute the measured win to the atomic-vs-plain-write
+  difference specifically, which was this milestone's actual question. A
+  future milestone could retune `num_k_splits` independently, now that
+  Candidate B is production.
+- **The reduction kernel's own cost was not separately isolated** from the
+  partial-GEMM kernel's cost in the benchmark tables above (both are
+  reported together as "Candidate B GEMM (ms)") -- given `Cout*Kdim` is
+  always small at every tested shape, this is expected to be negligible,
+  but was not directly measured in isolation.
+- **The `blocks_y >= 2` regime was not investigated for the same fix** --
+  M39's `dweight_im2col_smem_gemm_splitk` also uses `cf_matmul_splitk_*`
+  (an atomic-combine split-K GEMM), and M42's own roofline table showed
+  that regime already at 42.9-44.2% of ceiling (on par with forward), so
+  there was no measured motivation to touch it -- explicitly out of this
+  milestone's scope per its own brief.
+- Run-to-run hardware variance on this laptop GPU remains large enough at
+  whole-training-step granularity to mask an effect of this size (MNIST/
+  training impact, above) -- the CUDA-event, same-session, interleaved
+  comparisons above remain the trustworthy evidence, matching every prior
+  milestone's own convention. An early draft of this milestone's own
+  profiler additionally hit a *reproducible* (not random) ~3.4x measurement
+  artifact from running `nvcc` (a CPU-only, tens-of-seconds subprocess)
+  between two GPU-timing phases -- the idle 940MX's WDDM driver downclocks
+  aggressively, and the phase measured immediately after the gap was
+  spuriously slow. Fixed by keeping every GPU-timing phase contiguous
+  (`nvcc` first, then all GPU measurement back-to-back); worth flagging
+  explicitly since it is a new, previously undocumented variant of the
+  already-known 940MX thermal/clock variance.
+
+## Next bottleneck
+Re-running `m42_bottleneck_recharacterization`'s roofline classification
+this session (through the *old* dWeight kernel, since that script's own
+`_RawDweightCurrent` calls M38's function directly rather than through
+`backend.py`'s dispatch) still shows `dWeight`'s `blocks_y == 1` regime as
+the single lowest-efficiency GEMM-dispatched Conv2d kernel in relative
+terms pre-fix; post-fix, this milestone's own Phase 4 numbers put
+Candidate B's GEMM-only time close to forward's own half-fused GEMM at
+`mnist_conv2` (0.82-0.89ms two-stage vs. forward's ~0.78-0.90ms range at
+comparable shapes per M42's own table) -- suggesting the two are now much
+closer in absolute efficiency, though a fresh full roofline re-
+characterization (M40/M42-style, through the *current* dispatch this time)
+would be needed to confirm this quantitatively and re-rank the next
+bottleneck properly. `dWeight`'s below-256 block-reduce kernel (M33/M34,
+twice investigated and twice rejected) and `dInput` (M36-optimized, never
+re-examined since) remain the two largest *unexamined-at-the-roofline-
+efficiency-level* costs, per M42's own Section 15 candidate list.

@@ -1,0 +1,838 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "f3c7b15dee6068642be40bb9a45b50794dc00020",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "ceilings": {
+      "compute_gflops": 104.49673913741726,
+      "bandwidth_gbps": 15.088735889890735
+    },
+    "ptxas": {
+      "per_kernel_lines": {
+        "k_dweight_halffused_gemm_splitk": [
+          "ptxas info    : Used 54 registers, used 1 barriers, 4096 bytes smem, 400 bytes cmem[0]",
+          "ptxas info    : Used 49 registers, used 1 barriers, 2048 bytes smem, 400 bytes cmem[0]"
+        ],
+        "k_dweight_halffused_gemm_splitk_partial": [
+          "ptxas info    : Used 52 registers, used 1 barriers, 4096 bytes smem, 400 bytes cmem[0]",
+          "ptxas info    : Used 49 registers, used 1 barriers, 2048 bytes smem, 400 bytes cmem[0]"
+        ],
+        "k_dweight_splitk_reduce": [
+          "ptxas info    : Used 32 registers, used 0 barriers, 348 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 348 bytes cmem[0]"
+        ],
+        "k_conv2d_forward_halffused_gemm": [
+          "ptxas info    : Used 40 registers, used 1 barriers, 4096 bytes smem, 408 bytes cmem[0]",
+          "ptxas info    : Used 38 registers, used 1 barriers, 2048 bytes smem, 408 bytes cmem[0]",
+          "ptxas info    : Used 31 registers, used 0 barriers, 364 bytes cmem[0]",
+          "ptxas info    : Used 31 registers, used 0 barriers, 364 bytes cmem[0]",
+          "ptxas info    : Used 15 registers, used 0 barriers, 352 bytes cmem[0], 20 bytes cmem[2]",
+          "ptxas info    : Used 15 registers, used 0 barriers, 352 bytes cmem[0], 20 bytes cmem[2]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 392 bytes cmem[0]",
+          "ptxas info    : Used 30 registers, used 0 barriers, 392 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 384 bytes cmem[0]",
+          "ptxas info    : Used 30 registers, used 0 barriers, 384 bytes cmem[0]",
+          "ptxas info    : Used 34 registers, used 1 barriers, 388 bytes cmem[0]",
+          "ptxas info    : Used 34 registers, used 1 barriers, 388 bytes cmem[0]",
+          "ptxas info    : Used 28 registers, used 1 barriers, 16 bytes smem, 404 bytes cmem[0]",
+          "ptxas info    : Used 28 registers, used 1 barriers, 16 bytes smem, 404 bytes cmem[0]"
+        ],
+        "k_matmul_splitk": [
+          "ptxas info    : Used 32 registers, used 1 barriers, 4096 bytes smem, 360 bytes cmem[0]",
+          "ptxas info    : Used 27 registers, used 1 barriers, 2048 bytes smem, 360 bytes cmem[0]",
+          "ptxas info    : Used 53 registers, used 1 barriers, 4096 bytes smem, 400 bytes cmem[0]",
+          "ptxas info    : Used 50 registers, used 1 barriers, 2048 bytes smem, 400 bytes cmem[0]",
+          "ptxas info    : Used 49 registers, used 1 barriers, 4096 bytes smem, 396 bytes cmem[0]",
+          "ptxas info    : Used 47 registers, used 1 barriers, 2048 bytes smem, 396 bytes cmem[0]",
+          "ptxas info    : Used 29 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 29 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 384 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 384 bytes cmem[0]",
+          "ptxas info    : Used 37 registers, used 1 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 1 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 47 registers, used 0 barriers, 408 bytes cmem[0]",
+          "ptxas info    : Used 46 registers, used 0 barriers, 408 bytes cmem[0]",
+          "ptxas info    : Used 53 registers, used 0 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 45 registers, used 1 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 47 registers, used 0 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 42 registers, used 1 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 53 registers, used 0 barriers, 408 bytes cmem[0]",
+          "ptxas info    : Used 48 registers, used 0 barriers, 408 bytes cmem[0]",
+          "ptxas info    : Used 128 registers, used 1 barriers, 256 bytes cumulative stack size, 272 bytes smem, 396 bytes cmem[0]",
+          "ptxas info    : Used 126 registers, used 1 barriers, 256 bytes cumulative stack size, 272 bytes smem, 396 bytes cmem[0]",
+          "ptxas info    : Used 48 registers, used 0 barriers, 512 bytes cumulative stack size, 396 bytes cmem[0]",
+          "ptxas info    : Used 70 registers, used 0 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 48 registers, used 0 barriers, 512 bytes cumulative stack size, 396 bytes cmem[0]",
+          "ptxas info    : Used 54 registers, used 0 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 55 registers, used 0 barriers, 408 bytes cmem[0], 4 bytes cmem[2]",
+          "ptxas info    : Used 48 registers, used 0 barriers, 408 bytes cmem[0], 4 bytes cmem[2]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 48 registers, used 0 barriers, 376 bytes cmem[0], 140 bytes cmem[2]",
+          "ptxas info    : Used 30 registers, used 0 barriers, 376 bytes cmem[0], 24 bytes cmem[2]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 368 bytes cmem[0], 208 bytes cmem[2]",
+          "ptxas info    : Used 29 registers, used 0 barriers, 368 bytes cmem[0], 56 bytes cmem[2]",
+          "ptxas info    : Used 20 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 30 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 12 registers, used 1 barriers, 344 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 1 barriers, 344 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 1 barriers, 4096 bytes smem, 356 bytes cmem[0]",
+          "ptxas info    : Used 30 registers, used 1 barriers, 2048 bytes smem, 356 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 344 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 344 bytes cmem[0]",
+          "ptxas info    : Used 26 registers, used 0 barriers, 416 bytes cmem[0], 48 bytes cmem[2]",
+          "ptxas info    : Used 24 registers, used 0 barriers, 416 bytes cmem[0], 16 bytes cmem[2]",
+          "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 26 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 16 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 18 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 22 registers, used 0 barriers, 352 bytes cmem[0], 36 bytes cmem[2]",
+          "ptxas info    : Used 14 registers, used 0 barriers, 352 bytes cmem[0], 12 bytes cmem[2]",
+          "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 9 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 344 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 344 bytes cmem[0]",
+          "ptxas info    : Used 20 registers, used 0 barriers, 344 bytes cmem[0], 104 bytes cmem[2]",
+          "ptxas info    : Used 9 registers, used 0 barriers, 344 bytes cmem[0], 44 bytes cmem[2]",
+          "ptxas info    : Used 16 registers, used 0 barriers, 344 bytes cmem[0], 112 bytes cmem[2]",
+          "ptxas info    : Used 9 registers, used 0 barriers, 344 bytes cmem[0], 12 bytes cmem[2]",
+          "ptxas info    : Used 10 registers, used 0 barriers, 344 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 344 bytes cmem[0]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+          "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]"
+        ]
+      },
+      "returncode": 0
+    },
+    "shapes": [
+      {
+        "name": "mnist_conv2",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "M": 10816,
+        "Kdim": 72,
+        "Cout": 16,
+        "blocks_y": 1,
+        "blocks_x": 5,
+        "total_tiles": 676,
+        "recommended_num_k_splits": 16,
+        "permute_ms": {
+          "mean_ms": 0.1177984004219373,
+          "median_ms": 0.11680000275373459,
+          "min_ms": 0.11603199690580368,
+          "max_ms": 0.14550399780273438,
+          "stdev_ms": 0.005254141644626771
+        },
+        "gemm_only_ms": {
+          "mean_ms": 0.984852260351181,
+          "median_ms": 0.973471999168396,
+          "min_ms": 0.8857280015945435,
+          "max_ms": 1.0651520490646362,
+          "stdev_ms": 0.04100424517328947
+        },
+        "full_pipeline_ms": {
+          "mean_ms": 1.1201023976008098,
+          "median_ms": 1.0983200073242188,
+          "min_ms": 1.0841599702835083,
+          "max_ms": 1.192639946937561,
+          "stdev_ms": 0.03793896301177498
+        },
+        "classification_full_pipeline": {
+          "gflops": 22.248023085547572,
+          "fraction_of_ceiling": 0.2129063860671342,
+          "label": "mixed_or_ambiguous"
+        },
+        "num_k_splits_sweep": [
+          {
+            "num_k_splits": 1,
+            "active_splits": 1,
+            "atomic_count": 1152,
+            "gemm_only_ms": 1.4854048053423563,
+            "gemm_only_stdev_ms": 0.03002640534164777
+          },
+          {
+            "num_k_splits": 2,
+            "active_splits": 2,
+            "atomic_count": 2304,
+            "gemm_only_ms": 1.1345824003219604,
+            "gemm_only_stdev_ms": 0.042908075353620366
+          },
+          {
+            "num_k_splits": 4,
+            "active_splits": 4,
+            "atomic_count": 4608,
+            "gemm_only_ms": 1.046232525507609,
+            "gemm_only_stdev_ms": 0.05487963312738688
+          },
+          {
+            "num_k_splits": 8,
+            "active_splits": 8,
+            "atomic_count": 9216,
+            "gemm_only_ms": 1.0350538790225983,
+            "gemm_only_stdev_ms": 0.03856781805324883
+          },
+          {
+            "num_k_splits": 16,
+            "active_splits": 16,
+            "atomic_count": 18432,
+            "gemm_only_ms": 1.0122666676839194,
+            "gemm_only_stdev_ms": 0.08825783296607789
+          },
+          {
+            "num_k_splits": 24,
+            "active_splits": 24,
+            "atomic_count": 27648,
+            "gemm_only_ms": 0.9915573298931122,
+            "gemm_only_stdev_ms": 0.039684504633413074
+          },
+          {
+            "num_k_splits": 32,
+            "active_splits": 32,
+            "atomic_count": 36864,
+            "gemm_only_ms": 0.9797333339850108,
+            "gemm_only_stdev_ms": 0.03075254311753701
+          },
+          {
+            "num_k_splits": 48,
+            "active_splits": 48,
+            "atomic_count": 55296,
+            "gemm_only_ms": 0.9809695959091187,
+            "gemm_only_stdev_ms": 0.04030688336730732
+          },
+          {
+            "num_k_splits": 64,
+            "active_splits": 64,
+            "atomic_count": 73728,
+            "gemm_only_ms": 0.9821877380212148,
+            "gemm_only_stdev_ms": 0.03330878515724573
+          },
+          {
+            "num_k_splits": 96,
+            "active_splits": 96,
+            "atomic_count": 110592,
+            "gemm_only_ms": 0.9879829367001851,
+            "gemm_only_stdev_ms": 0.028656314149522345
+          },
+          {
+            "num_k_splits": 128,
+            "active_splits": 128,
+            "atomic_count": 147456,
+            "gemm_only_ms": 1.0125653306643168,
+            "gemm_only_stdev_ms": 0.04887819987969836
+          },
+          {
+            "num_k_splits": 192,
+            "active_splits": 192,
+            "atomic_count": 221184,
+            "gemm_only_ms": 1.0492533246676128,
+            "gemm_only_stdev_ms": 0.0314225571957794
+          },
+          {
+            "num_k_splits": 256,
+            "active_splits": 256,
+            "atomic_count": 294912,
+            "gemm_only_ms": 1.090329611301422,
+            "gemm_only_stdev_ms": 0.02618343291622561
+          },
+          {
+            "num_k_splits": 384,
+            "active_splits": 384,
+            "atomic_count": 442368,
+            "gemm_only_ms": 1.159935994942983,
+            "gemm_only_stdev_ms": 0.030495031802526558
+          },
+          {
+            "num_k_splits": 512,
+            "active_splits": 512,
+            "atomic_count": 589824,
+            "gemm_only_ms": 1.1950037280718486,
+            "gemm_only_stdev_ms": 0.052786865116017906
+          }
+        ],
+        "best_num_k_splits": 32,
+        "best_gemm_only_ms": 0.9797333339850108,
+        "recommended_vs_best_gap": 1.0332063149944903
+      },
+      {
+        "name": "large_spatial",
+        "config": {
+          "N": 32,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 56,
+          "W": 56,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "M": 100352,
+        "Kdim": 72,
+        "Cout": 16,
+        "blocks_y": 1,
+        "blocks_x": 5,
+        "total_tiles": 6272,
+        "recommended_num_k_splits": 16,
+        "permute_ms": {
+          "mean_ms": 1.0210207939147948,
+          "median_ms": 1.0201600193977356,
+          "min_ms": 1.0193920135498047,
+          "max_ms": 1.045375943183899,
+          "stdev_ms": 0.0046273704286255496
+        },
+        "gemm_only_ms": {
+          "mean_ms": 7.842506694793701,
+          "median_ms": 7.849632024765015,
+          "min_ms": 7.527775764465332,
+          "max_ms": 8.082880020141602,
+          "stdev_ms": 0.12840258056862494
+        },
+        "full_pipeline_ms": {
+          "mean_ms": 8.964521598815917,
+          "median_ms": 8.96615982055664,
+          "min_ms": 8.772064208984375,
+          "max_ms": 9.11673641204834,
+          "stdev_ms": 0.08594624841225679
+        },
+        "classification_full_pipeline": {
+          "gflops": 25.791784363656355,
+          "fraction_of_ceiling": 0.24681903546998876,
+          "label": "mixed_or_ambiguous"
+        },
+        "num_k_splits_sweep": [
+          {
+            "num_k_splits": 1,
+            "active_splits": 1,
+            "atomic_count": 1152,
+            "gemm_only_ms": 13.980386130015056,
+            "gemm_only_stdev_ms": 0.08535736258218653
+          },
+          {
+            "num_k_splits": 2,
+            "active_splits": 2,
+            "atomic_count": 2304,
+            "gemm_only_ms": 8.973378117879232,
+            "gemm_only_stdev_ms": 0.04839898516075531
+          },
+          {
+            "num_k_splits": 4,
+            "active_splits": 4,
+            "atomic_count": 4608,
+            "gemm_only_ms": 8.425383504231771,
+            "gemm_only_stdev_ms": 0.18781712049953692
+          },
+          {
+            "num_k_splits": 8,
+            "active_splits": 8,
+            "atomic_count": 9216,
+            "gemm_only_ms": 8.529467741648356,
+            "gemm_only_stdev_ms": 0.06502184818000938
+          },
+          {
+            "num_k_splits": 16,
+            "active_splits": 16,
+            "atomic_count": 18432,
+            "gemm_only_ms": 7.899715169270833,
+            "gemm_only_stdev_ms": 0.10933178813031517
+          },
+          {
+            "num_k_splits": 24,
+            "active_splits": 24,
+            "atomic_count": 27648,
+            "gemm_only_ms": 7.746649583180745,
+            "gemm_only_stdev_ms": 0.2036040164732215
+          },
+          {
+            "num_k_splits": 32,
+            "active_splits": 32,
+            "atomic_count": 36864,
+            "gemm_only_ms": 7.933780256907145,
+            "gemm_only_stdev_ms": 0.05297149550011766
+          },
+          {
+            "num_k_splits": 48,
+            "active_splits": 48,
+            "atomic_count": 55296,
+            "gemm_only_ms": 7.760923719406128,
+            "gemm_only_stdev_ms": 0.05205912767056483
+          },
+          {
+            "num_k_splits": 64,
+            "active_splits": 64,
+            "atomic_count": 73728,
+            "gemm_only_ms": 7.8274186452229815,
+            "gemm_only_stdev_ms": 0.077920413670885
+          },
+          {
+            "num_k_splits": 96,
+            "active_splits": 96,
+            "atomic_count": 110592,
+            "gemm_only_ms": 7.811093298594157,
+            "gemm_only_stdev_ms": 0.051175561483023595
+          },
+          {
+            "num_k_splits": 128,
+            "active_splits": 128,
+            "atomic_count": 147456,
+            "gemm_only_ms": 7.814667733510335,
+            "gemm_only_stdev_ms": 0.04982399956027338
+          },
+          {
+            "num_k_splits": 192,
+            "active_splits": 192,
+            "atomic_count": 221184,
+            "gemm_only_ms": 7.820957867304484,
+            "gemm_only_stdev_ms": 0.05952681358210499
+          },
+          {
+            "num_k_splits": 256,
+            "active_splits": 256,
+            "atomic_count": 294912,
+            "gemm_only_ms": 7.856092834472657,
+            "gemm_only_stdev_ms": 0.0557719757539586
+          },
+          {
+            "num_k_splits": 384,
+            "active_splits": 384,
+            "atomic_count": 442368,
+            "gemm_only_ms": 7.90557549794515,
+            "gemm_only_stdev_ms": 0.0457158101991524
+          },
+          {
+            "num_k_splits": 512,
+            "active_splits": 512,
+            "atomic_count": 589824,
+            "gemm_only_ms": 7.947024011611939,
+            "gemm_only_stdev_ms": 0.038619053360225045
+          }
+        ],
+        "best_num_k_splits": 24,
+        "best_gemm_only_ms": 7.746649583180745,
+        "recommended_vs_best_gap": 1.0197589402291307
+      }
+    ],
+    "cout_reduction_sweep": [
+      {
+        "reduction_label": "small",
+        "N": 8,
+        "Cout": 1,
+        "M": 1352,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.24398400237162907
+      },
+      {
+        "reduction_label": "small",
+        "N": 8,
+        "Cout": 2,
+        "M": 1352,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.17946880012750627
+      },
+      {
+        "reduction_label": "small",
+        "N": 8,
+        "Cout": 4,
+        "M": 1352,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.2016960009932518
+      },
+      {
+        "reduction_label": "small",
+        "N": 8,
+        "Cout": 8,
+        "M": 1352,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.20120106587807338
+      },
+      {
+        "reduction_label": "small",
+        "N": 8,
+        "Cout": 16,
+        "M": 1352,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.19429333408673605
+      },
+      {
+        "reduction_label": "medium",
+        "N": 64,
+        "Cout": 1,
+        "M": 10816,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.9495199978351593
+      },
+      {
+        "reduction_label": "medium",
+        "N": 64,
+        "Cout": 2,
+        "M": 10816,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.9263039966424306
+      },
+      {
+        "reduction_label": "medium",
+        "N": 64,
+        "Cout": 4,
+        "M": 10816,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 1.0041077276070913
+      },
+      {
+        "reduction_label": "medium",
+        "N": 64,
+        "Cout": 8,
+        "M": 10816,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 1.0164938728014628
+      },
+      {
+        "reduction_label": "medium",
+        "N": 64,
+        "Cout": 16,
+        "M": 10816,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.9623722632726034
+      },
+      {
+        "reduction_label": "large",
+        "N": 512,
+        "Cout": 1,
+        "M": 86528,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 6.620377604166666
+      },
+      {
+        "reduction_label": "large",
+        "N": 512,
+        "Cout": 2,
+        "M": 86528,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 6.706990877787272
+      },
+      {
+        "reduction_label": "large",
+        "N": 512,
+        "Cout": 4,
+        "M": 86528,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 6.686289040247599
+      },
+      {
+        "reduction_label": "large",
+        "N": 512,
+        "Cout": 8,
+        "M": 86528,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 6.689394124348959
+      },
+      {
+        "reduction_label": "large",
+        "N": 512,
+        "Cout": 16,
+        "M": 86528,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 6.801645882924398
+      }
+    ],
+    "k_reduction_sweep": [
+      {
+        "label": "n_small",
+        "config": {
+          "N": 8,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "M": 1352,
+        "Kdim": 72,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.2657685324549675
+      },
+      {
+        "label": "n_large",
+        "config": {
+          "N": 256,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "M": 43264,
+        "Kdim": 72,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 3.5214400132497152
+      },
+      {
+        "label": "spatial_small",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 7,
+          "W": 7,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "M": 3136,
+        "Kdim": 72,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.38295679887135825
+      },
+      {
+        "label": "spatial_large",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 32,
+          "W": 32,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "M": 65536,
+        "Kdim": 72,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 5.0930357297261555
+      },
+      {
+        "label": "cin_low",
+        "config": {
+          "N": 64,
+          "Cin": 1,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "M": 10816,
+        "Kdim": 9,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.3204533338546753
+      },
+      {
+        "label": "cin_high",
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "M": 10816,
+        "Kdim": 144,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 1.7067925294240316
+      },
+      {
+        "label": "k1",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 1,
+          "S": 1,
+          "P": 1
+        },
+        "M": 14400,
+        "Kdim": 8,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 0.3988319973150889
+      },
+      {
+        "label": "k5",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 5,
+          "S": 1,
+          "P": 1
+        },
+        "M": 7744,
+        "Kdim": 200,
+        "recommended_num_k_splits": 16,
+        "gemm_only_ms": 1.6400213321050008
+      }
+    ],
+    "candidate_b_comparison": [
+      {
+        "name": "mnist_conv2",
+        "recommended_num_k_splits": 16,
+        "sweep": [
+          {
+            "num_k_splits": 16,
+            "atomic_gemm_only_ms": 1.0132757306098938,
+            "tworeduce_gemm_only_ms": 0.8226773341496786,
+            "atomic_full_ms": 1.1244309345881145,
+            "tworeduce_full_ms": 0.9347071965535482,
+            "speedup_gemm_only": 1.2316806219746144,
+            "speedup_full": 1.2029766527251695
+          },
+          {
+            "num_k_splits": 32,
+            "atomic_gemm_only_ms": 1.0120629370212555,
+            "tworeduce_gemm_only_ms": 0.8196256001790364,
+            "atomic_full_ms": 1.137108278274536,
+            "tworeduce_full_ms": 0.9317077298959097,
+            "speedup_gemm_only": 1.234786879277787,
+            "speedup_full": 1.2204559882760377
+          },
+          {
+            "num_k_splits": 64,
+            "atomic_gemm_only_ms": 1.0311743954817454,
+            "tworeduce_gemm_only_ms": 0.8402229328950246,
+            "atomic_full_ms": 1.1847221215566,
+            "tworeduce_full_ms": 0.954229329029719,
+            "speedup_gemm_only": 1.227262855024427,
+            "speedup_full": 1.241548635652659
+          },
+          {
+            "num_k_splits": 96,
+            "atomic_gemm_only_ms": 1.0622496008872986,
+            "tworeduce_gemm_only_ms": 0.8704576015472412,
+            "atomic_full_ms": 1.1875317295392354,
+            "tworeduce_full_ms": 0.984714674949646,
+            "speedup_gemm_only": 1.220334682584363,
+            "speedup_full": 1.2059653011670213
+          },
+          {
+            "num_k_splits": 128,
+            "atomic_gemm_only_ms": 1.0607114752133688,
+            "tworeduce_gemm_only_ms": 0.8889258682727814,
+            "atomic_full_ms": 1.2010794639587403,
+            "tworeduce_full_ms": 1.0031850655873618,
+            "speedup_gemm_only": 1.193250768227022,
+            "speedup_full": 1.1972660929272427
+          },
+          {
+            "num_k_splits": 256,
+            "atomic_gemm_only_ms": 1.1289098620414735,
+            "tworeduce_gemm_only_ms": 1.0143776019414266,
+            "atomic_full_ms": 1.2835978666941326,
+            "tworeduce_full_ms": 1.1291829466819763,
+            "speedup_gemm_only": 1.1129089008677266,
+            "speedup_full": 1.136749249061805
+          }
+        ]
+      },
+      {
+        "name": "large_spatial",
+        "recommended_num_k_splits": 16,
+        "sweep": [
+          {
+            "num_k_splits": 16,
+            "atomic_gemm_only_ms": 8.007217089335123,
+            "tworeduce_gemm_only_ms": 7.724771213531494,
+            "atomic_full_ms": 9.074079990386963,
+            "tworeduce_full_ms": 8.75738452275594,
+            "speedup_gemm_only": 1.036563655802371,
+            "speedup_full": 1.0361632479204372
+          },
+          {
+            "num_k_splits": 32,
+            "atomic_gemm_only_ms": 7.941821813583374,
+            "tworeduce_gemm_only_ms": 7.697996838887533,
+            "atomic_full_ms": 9.02179307937622,
+            "tworeduce_full_ms": 8.759996891021729,
+            "speedup_gemm_only": 1.0316738210990326,
+            "speedup_full": 1.029885420236029
+          },
+          {
+            "num_k_splits": 64,
+            "atomic_gemm_only_ms": 7.809133831659953,
+            "tworeduce_gemm_only_ms": 7.595530652999878,
+            "atomic_full_ms": 8.90467414855957,
+            "tworeduce_full_ms": 8.652323118845622,
+            "speedup_gemm_only": 1.028122219291645,
+            "speedup_full": 1.029165696454898
+          },
+          {
+            "num_k_splits": 96,
+            "atomic_gemm_only_ms": 7.833956257502238,
+            "tworeduce_gemm_only_ms": 7.606029876073202,
+            "atomic_full_ms": 8.93049071629842,
+            "tworeduce_full_ms": 8.662375450134277,
+            "speedup_gemm_only": 1.0299665377526375,
+            "speedup_full": 1.0309517023023964
+          },
+          {
+            "num_k_splits": 128,
+            "atomic_gemm_only_ms": 7.815523131688436,
+            "tworeduce_gemm_only_ms": 7.622347736358643,
+            "atomic_full_ms": 8.919356759389242,
+            "tworeduce_full_ms": 8.678601614634196,
+            "speedup_gemm_only": 1.0253432934328548,
+            "speedup_full": 1.027741237061634
+          },
+          {
+            "num_k_splits": 256,
+            "atomic_gemm_only_ms": 7.868044805526734,
+            "tworeduce_gemm_only_ms": 7.734551509221395,
+            "atomic_full_ms": 8.974319903055827,
+            "tworeduce_full_ms": 8.791573301951091,
+            "speedup_gemm_only": 1.017259345437959,
+            "speedup_full": 1.0207865640003455
+          }
+        ]
+      }
+    ]
+  }
+}

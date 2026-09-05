@@ -2378,6 +2378,145 @@ __global__ void k_dweight_halffused_gemm_splitk(
 DWEIGHT_HALFFUSED_GEMM_SPLITK_LAUNCHER(float, f32)
 DWEIGHT_HALFFUSED_GEMM_SPLITK_LAUNCHER(double, f64)
 
+// -- Milestone 43 Candidate B (production, `blocks_y == 1` dWeight path):
+//    deterministic two-stage split-K reduction --
+//
+// M42 found `k_dweight_halffused_gemm_splitk` (above) reaches only ~half
+// the roofline efficiency of the structurally identical (non-split-K)
+// forward half-fused GEMM, and flagged split-K's atomic-accumulation
+// combine step as the untested root-cause hypothesis. M43's own
+// `num_k_splits` sensitivity sweep (`benchmarks/m43_dweight_splitk_
+// profile.py`) confirms atomics *do* cost something real -- time degrades
+// monotonically once `num_k_splits` is pushed far past the production
+// formula's value (e.g. `mnist_conv2`: 1.00ms at 64 splits vs 1.37ms at
+// 676) -- but the production formula (`min(16, ceil(M/16))`) already sits
+// within ~3-8% of the swept optimum at both representative shapes, so
+// atomics are not costing much *at the split counts actually used*. This
+// candidate replaces the atomic combine with a determinstic two-stage
+// reduction (each split writes its own disjoint partial-output slice, a
+// second small kernel sums the `num_k_splits` axis) so the same question
+// can be asked without atomics as a confound: does removing the combine
+// step's data hazard entirely let more splits pay off, or does per-block
+// fixed overhead dominate either way? `k_dweight_halffused_gemm_splitk_
+// partial` is otherwise byte-for-byte identical to the production kernel
+// (same tile loads, same gather arithmetic) -- only the final store changes
+// from an atomic combine into the shared `out` buffer to a plain write into
+// a private `(num_k_splits, Cout, Kdim)` slice, always executed (even when
+// `tile_start >= tile_end`, contributing a correct `0`) so every slice is
+// fully written and the reduction kernel needs no separate zero-fill.
+
+template <typename T>
+__global__ void k_dweight_halffused_gemm_splitk_partial(
+    const T* dycolT, const T* x, T* partial,
+    int N, int Cin, int H, int W, int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW, int Hout, int Wout,
+    int num_k_splits)
+{
+    __shared__ T tile_a[MATMUL_TILE][MATMUL_TILE];
+    __shared__ T tile_b[MATMUL_TILE][MATMUL_TILE];
+
+    long long Mdim = static_cast<long long>(N) * Hout * Wout;
+    int Kdim = Cin * KH * KW;
+
+    int row = blockIdx.y * MATMUL_TILE + threadIdx.y;  // Cout
+    int col = blockIdx.x * MATMUL_TILE + threadIdx.x;  // Cin*KH*KW
+
+    long long total_tiles = (Mdim + MATMUL_TILE - 1) / MATMUL_TILE;
+    long long tiles_per_split = (total_tiles + num_k_splits - 1) / num_k_splits;
+    long long tile_start = static_cast<long long>(blockIdx.z) * tiles_per_split;
+    long long tile_end = min(tile_start + tiles_per_split, total_tiles);
+
+    T acc = static_cast<T>(0);
+    for (long long t = tile_start; t < tile_end; ++t) {
+        long long a_m = t * MATMUL_TILE + threadIdx.x;
+        long long b_m = t * MATMUL_TILE + threadIdx.y;
+
+        T a_val = static_cast<T>(0);
+        if (row < Cout && a_m < Mdim) {
+            a_val = dycolT[static_cast<long long>(row) * Mdim + a_m];
+        }
+        tile_a[threadIdx.y][threadIdx.x] = a_val;
+
+        T b_val = static_cast<T>(0);
+        if (b_m < Mdim && col < Kdim) {
+            int kw_ = col % KW;
+            int k1 = col / KW;
+            int kh = k1 % KH;
+            int ci = k1 / KH;
+            int wo = static_cast<int>(b_m % Wout);
+            long long m1 = b_m / Wout;
+            int ho = static_cast<int>(m1 % Hout);
+            int n = static_cast<int>(m1 / Hout);
+            int hi = ho * SH - PH + kh;
+            int wi = wo * SW - PW + kw_;
+            if (hi >= 0 && hi < H && wi >= 0 && wi < W) {
+                long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+                b_val = x[x_idx];
+            }
+        }
+        tile_b[threadIdx.y][threadIdx.x] = b_val;
+
+        __syncthreads();
+
+#pragma unroll
+        for (int k = 0; k < MATMUL_TILE; ++k) {
+            acc += tile_a[threadIdx.y][k] * tile_b[k][threadIdx.x];
+        }
+        __syncthreads();
+    }
+
+    if (row < Cout && col < Kdim) {
+        long long slice = static_cast<long long>(blockIdx.z) * Cout * Kdim;
+        partial[slice + static_cast<long long>(row) * Kdim + col] = acc;
+    }
+}
+
+// One thread per `(row, col)` output element -- sums the `num_k_splits`
+// axis of `partial` (shape `(num_k_splits, Cout, Kdim)`) into `out` (shape
+// `(Cout, Kdim)`). `Cout*Kdim` is always small (it is `dWeight`'s own
+// element count), so this is a cheap, bandwidth-trivial cleanup pass, not a
+// second GEMM.
+template <typename T>
+__global__ void k_dweight_splitk_reduce(const T* partial, T* out, int Cout, int Kdim, int num_k_splits) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = Cout * Kdim;
+    if (idx >= total) return;
+    T acc = static_cast<T>(0);
+    for (int s = 0; s < num_k_splits; ++s) {
+        acc += partial[static_cast<long long>(s) * total + idx];
+    }
+    out[idx] = acc;
+}
+
+#define DWEIGHT_HALFFUSED_GEMM_SPLITK_PARTIAL_LAUNCHER(TYPE, SUFFIX)                     \
+    extern "C" __declspec(dllexport) int cf_dweight_halffused_gemm_splitk_partial_##SUFFIX( \
+        const TYPE* dycolT, const TYPE* x, TYPE* partial,                              \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                        \
+        int SH, int SW, int PH, int PW, int Hout, int Wout,                            \
+        int num_k_splits, void* stream) {                                              \
+        int Kdim = Cin * KH * KW;                                                      \
+        dim3 threads(MATMUL_TILE, MATMUL_TILE);                                        \
+        dim3 blocks(                                                                   \
+            (Kdim + MATMUL_TILE - 1) / MATMUL_TILE, (Cout + MATMUL_TILE - 1) / MATMUL_TILE, \
+            num_k_splits);                                                             \
+        k_dweight_halffused_gemm_splitk_partial<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>( \
+            dycolT, x, partial, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout, \
+            num_k_splits);                                                             \
+        return static_cast<int>(cudaGetLastError());                                   \
+    }                                                                                   \
+    extern "C" __declspec(dllexport) int cf_dweight_splitk_reduce_##SUFFIX(             \
+        const TYPE* partial, TYPE* out, int Cout, int Kdim, int num_k_splits, void* stream) { \
+        int total = Cout * Kdim;                                                       \
+        int threads = 256;                                                             \
+        int blocks = (total + threads - 1) / threads;                                  \
+        k_dweight_splitk_reduce<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(    \
+            partial, out, Cout, Kdim, num_k_splits);                                   \
+        return static_cast<int>(cudaGetLastError());                                   \
+    }
+
+DWEIGHT_HALFFUSED_GEMM_SPLITK_PARTIAL_LAUNCHER(float, f32)
+DWEIGHT_HALFFUSED_GEMM_SPLITK_PARTIAL_LAUNCHER(double, f64)
+
 // -- Milestone 39: im2col materialization candidates (profiling-only) -------
 //
 // M38 left `k_im2col_conv2d` itself (above) as the dominant remaining

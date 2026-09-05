@@ -1312,3 +1312,34 @@ spill/occupancy disparity as the cause; the one documented architectural
 difference between the two half-fused-GEMM kernels is split-K's atomic
 accumulation, now the leading root-cause hypothesis for M43. Full
 19-section report: `docs/performance/m42-bottleneck-recharacterization.md`.
+
+### New: `benchmarks/m43_dweight_splitk_profile.py`
+
+Profiles the production `blocks_y==1` dWeight kernel directly (`cf_dweight_
+halffused_gemm_splitk_*`, `num_k_splits` exposed as a raw ctypes argument,
+mirroring `m37_dweight_candidates_profile.py`'s convention): the two real
+representative shapes plus an expanded `Cout in {1,2,4,8,16}` x reduction-
+length sweep, a `num_k_splits` sensitivity sweep (1 through `total_tiles`),
+a K/reduction sweep varying `N`/spatial size/`Cin`/`K` independently, fresh
+`nvcc -Xptxas -v` resource analysis, and an interleaved CUDA-event A/B
+comparison of the production atomic-combine kernel against Candidate B
+(`experimental_conv_dweight_tworeduce.dweight_halffused_gemm_splitk_
+tworeduce`) at six `num_k_splits` values. `nvcc` runs *before* any GPU
+timing (a CPU-only subprocess run between two GPU-timing phases was found
+to cost the phase immediately after it a real, reproducible ~3.4x
+cold-clock penalty on this GPU's WDDM driver -- fixed by keeping every
+GPU-timing phase contiguous).
+
+    python -m benchmarks.m43_dweight_splitk_profile
+
+### Measured example (940MX, real hardware, this session)
+
+Confirmed the atomic combine, not `Cout`/split-count, as the differentiator:
+a `Cout` sweep shows flat GEMM time regardless of `Cout` (ruling out the
+`blocks_y`-based redundant-regather tax as the cause here), and the
+production `recommended_num_k_splits` formula already sits within 3-8% of
+its own swept optimum. Candidate B (deterministic two-stage reduction, same
+split count, no atomics) measured 1.11-1.24x faster at `mnist_conv2` and
+1.02-1.04x faster at `large_spatial`, at every tested split count -- never
+a regression. Accepted into production. Full report: `docs/performance/
+conv2d-backward-profiling.md`'s **Milestone 43** section.

@@ -2523,3 +2523,62 @@ CUDA rebuild (`_forge_cuda_kernels_sm_50.dll` deleted and recompiled).
 
 **Why no ADR.** Measurement and documentation only -- no production code,
 public API, or cross-cutting architectural decision was touched.
+
+### M43 — CUDA dWeight `blocks_y==1` split-K reduction optimization (accepted)
+
+Investigated M42's leading root-cause hypothesis for `k_dweight_halffused_
+gemm_splitk`'s (M38) measured ~2x roofline-efficiency gap vs. forward's
+structurally identical half-fused GEMM: split-K's atomic-accumulation
+combine step. Confirmed it directly (`benchmarks/m43_dweight_splitk_
+profile.py`, new): ruled out register pressure (unchanged, no spill),
+`Cout`-dependent redundant work (a `Cout in {1,2,4,8,16}` sweep at
+small/medium/large reduction lengths showed flat GEMM time regardless of
+`Cout` -- the `blocks_y`-based redundant-regather tax M38 documented is not
+the cause here, since it is a constant 1x throughout `blocks_y==1`), and
+split-count/occupancy shortfall (the production `recommended_num_k_splits`
+formula already sits within 3-8% of its own swept optimum; an extended
+sweep to 676 splits shows atomics' cost only rising sharply *far* past the
+production value, not proof they are costly at `splits=16` specifically).
+
+Replaced the atomic combine with a deterministic two-stage reduction at
+the *same*, unchanged split count: `k_dweight_halffused_gemm_splitk_
+partial` (`kernels.cu`, new -- byte-for-byte identical tile loads/gather to
+M38's kernel, but each split writes a disjoint slice of a `(num_k_splits,
+Cout, Kdim)` buffer instead of an `atomicAdd`) + `k_dweight_splitk_reduce`
+(new, tiny -- sums the `num_k_splits` axis, bandwidth-trivial since
+`Cout*Kdim` is always small). New module: `forge/backend/cuda/
+experimental_conv_dweight_tworeduce.py`. Measured (interleaved CUDA-event
+A/B, both representative `blocks_y==1` shapes, six `num_k_splits` values
+each): **1.11-1.24x faster full dWeight pipeline at `mnist_conv2`,
+1.02-1.04x at `large_spatial`, at every tested split count, never a
+regression** -- confirming the atomic combine itself (not split count) was
+the differentiator. `CUDABackend.conv2d_backward`'s `blocks_y==1` branch
+now calls the new function in place of M38's (kept, still tested, now dead
+in production); the dispatch condition itself is unchanged.
+
+A controlled, same-session A/B through the real public `conv2d_backward()`
+entry point measured 1.076x/1.015x at the full call level (dInput+dWeight+
+dBias+allocation together) -- the expected Amdahl dilution. Per M42's own
+decomposition, the affected `mnist_conv2` layer contributes only ~10.2% of
+the full MNIST training step; projected whole-step effect (~1.02x) is
+honestly reported as too small to distinguish from this laptop GPU's own
+run-to-run thermal variance at that granularity, even though the
+component-level win is clearly and reproducibly measurable (Amdahl
+honesty). One real memory-leak bug was caught by this milestone's own
+repeated-use test (an early draft's partial buffer allocated without an
+owning `CUDAStorage`) and fixed before acceptance.
+
+**Tests.** `tests/test_cuda_conv2d_backward_weight_splitk_optimization.py`
+(32 new): CPU parity across 10 shapes (both `blocks_y` regimes, `K=1`/`K=5`,
+`Cin=Cout=1`), float64, 5 explicit `num_k_splits` values, agreement with
+the M38 atomic baseline, finite difference, explicit/cross-stream, 100-
+iteration memory safety, allocator reuse, and production-dispatch coverage
+through the real `Tensor.conv2d`/`nn.Conv2d` API. Full suite: **1,452
+passed** (1,420 pre-existing + 32 new), verified on a clean CUDA rebuild
+(`_forge_cuda_kernels_sm_50.dll` deleted and recompiled, 9.8s) and a
+dedicated 500-iteration stress test through the real API (no leak).
+
+**Why no ADR.** Same reasoning as M21/M32/M34/M36/M37/M38/M39: a kernel-
+selection call site changed behind an unchanged `CUDABackend.
+conv2d_backward` public signature and contract. Full report: `docs/
+performance/conv2d-backward-profiling.md`'s **Milestone 43** section.
