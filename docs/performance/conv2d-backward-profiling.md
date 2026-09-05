@@ -1484,3 +1484,263 @@ and C are rejected and remain as profiling-only kernels for reference
   occupancy degrades unacceptably (this milestone stopped at the value that
   exactly covers Forge's existing shapes) could extend the dispatch boundary
   for deeper CNNs.
+
+# Milestone 37: dWeight GEMM occupancy fix -- split-K over existing buffers (accepted, modest)
+
+## Question
+M36 left `dWeight` (M34's im2col + existing tiled `k_matmul` GEMM,
+unmodified since M34) as the more clearly dominant of `conv2d_backward`'s
+two kernels at most representative shapes. This milestone asks whether the
+M34 *algorithm* itself is the bottleneck, or whether one of its constituent
+stages is disproportionately expensive -- `PROFILE -> ANALYZE -> DESIGN ->
+BENCHMARK -> SELECT -> IMPLEMENT -> VALIDATE`, with a negative result
+explicitly sanctioned if M34 is already near the practical ceiling.
+
+## Phase 1/2: decomposition and bottleneck diagnosis
+`benchmarks/m37_dweight_profile.py` (new) decomposed M34's pipeline at the 7
+representative shapes into `im2col`, `grad_output` permute, and GEMM,
+timed with CUDA events, plus FLOP/byte/AI/roofline-ceiling accounting
+(`benchmarks/roofline.py`, reusing `benchmarks/results/m35_summary.json`'s
+measured ceilings) and a GEMM launch-geometry model:
+
+| Shape | weight# | GEMM blocks | occupancy | im2col % | permute % | gemm % | %compute ceiling | class |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| mnist_conv1 | 72 | 1 | 4.2% | 12.6% | 7.2% | 80.2% | 1.9% | mixed |
+| mnist_conv2 | 1,152 | 5 | 20.8% | 47.4% | 7.0% | 45.6% | 14.4% | mixed |
+| large_channel | 4,608 | 18 | 75.0% | 55.1% | 7.8% | 37.1% | 32.9% | compute_bound |
+| large_spatial | 1,152 | 5 | 20.8% | 48.9% | 6.9% | 44.2% | 14.9% | mixed |
+| batch_32 | 4,608 | 18 | 75.0% | 55.0% | 7.8% | 37.2% | 32.7% | compute_bound |
+| batch_64 | 4,608 | 18 | 75.0% | 55.0% | 7.8% | 37.2% | 32.6% | compute_bound |
+| batch_128 | 4,608 | 18 | 75.0% | 55.2% | 7.8% | 37.0% | 32.6% | compute_bound |
+
+`occupancy = ceil(Cout/16)*ceil(Cin*KH*KW/16) blocks / 24` (3 SMs x 8
+resident 256-thread blocks on the 940MX, measured directly via
+`cuDeviceGetAttribute` -- thread-count-limited, not register/shared-memory-
+limited: `nvcc -Xptxas -v` found **zero stack frame / spill** on every
+dWeight-related kernel, `k_im2col_conv2d`/`k_conv2d_grad_output_permute`/
+`k_matmul` included, ruling out M36's local-memory failure mode here).
+`Cout`/`Cin*KH*KW` are the GEMM's actual `M`/`N` dimensions -- small (8-64,
+9-288) -- while the huge `N*Hout*Wout` reduction lives entirely inside each
+block's serial inner loop, invisible to block count. Two independent
+findings, both measured rather than inferred from elapsed time alone:
+
+1. **`im2col` + `permute` (zero FLOPs) cost 54-63% of total pipeline time**
+   at every shape -- more than the GEMM itself.
+2. **Occupancy tracks achieved-fraction-of-compute-ceiling almost exactly**:
+   4.2%/20.8%/75.0% occupancy shapes measure 1.9%/14.4%/32.9% of ceiling.
+
+## Phase 3/4: candidates (profiling-only first)
+Two structurally different fixes were designed, implemented, and measured
+(`kernels.cu`, `forge.backend.cuda.experimental_conv_fused`,
+`benchmarks/m37_dweight_candidates_profile.py`), targeting bottleneck 1
+and/or 2:
+
+- **Candidate A** (`k_dweight_fused_gemm`) -- folds both gathers directly
+  into `k_matmul`-shaped tile loads, eliminating `Xcol`/`dYcolT` and their
+  two launches entirely (targets bottleneck 1). Same block geometry as
+  M34's GEMM (occupancy unchanged).
+- **Candidate C** (`k_dweight_fused_gemm_splitk`) -- Candidate A plus
+  splitting the reduction across `num_k_splits` blocks (`blockIdx.z`), each
+  atomically accumulating into a pre-zeroed output (targets both
+  bottlenecks). `atomicAdd`/CAS-emulated `atomic_add_f64` -- contention is
+  bounded by `num_k_splits`, not reduction size, since `out` has only
+  `Cout*Cin*KH*KW` elements (72-4,608).
+- **Candidate E** (`dweight_im2col_gemm_splitk`,
+  `experimental_conv_im2col.py`) -- keeps M34's own `Xcol`/`dYcolT` buffer
+  reads completely unchanged and applies *only* the split-K occupancy fix,
+  via a new `cf_matmul_splitk_*` kernel (a separate, narrowly-scoped GEMM
+  variant -- `k_matmul` itself stays byte-for-byte unmodified, satisfying
+  the brief's ban on unscoped GEMM changes).
+
+All three verified bit-exact-within-tolerance against `CPUBackend.
+conv2d_backward` across shape/stride/padding/kernel-size/dtype combinations
+before any timing was trusted (Phase 4's ordering). `nvcc -Xptxas -v`: zero
+stack frame/spill on every candidate; register counts 47-53 (vs. `k_matmul`'s
+own 30-32) -- register-limited to ~4-5 resident blocks/SM for the fused
+kernels (Candidates A/C), lower than `k_matmul`'s thread-limited 8/SM, a
+real (if secondary) additional occupancy cost specific to the fused
+approach.
+
+## Measured results (honest, full-pipeline, corrected)
+An initial benchmark-harness bug measured Candidate E's split-K GEMM stage
+in isolation against pre-built buffers while comparing it to M34's *full*
+pipeline time (im2col + permute + GEMM) -- an apples-to-oranges comparison
+that implied a dramatic 2.7-9.0x win. This was caught by cross-checking
+against the real, end-to-end `CUDABackend.conv2d_backward` production call,
+which did not show a matching improvement; the harness was fixed to rebuild
+`Xcol`/`dYcolT` on every timed call (matching M34's own "total pipeline"
+methodology) before any candidate was accepted. The corrected, full-pipeline
+numbers are the ones below and the ones this milestone's decision is based
+on -- reported here specifically so the correction is not lost.
+
+| Shape | weight# | M34 total (ms) | A (ms) | A speedup | C best (ms) | C speedup | E best (ms) | E speedup |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| mnist_conv1 | 72 | 3.78 | 7.34 | 0.52x | 1.23 (split 8) | 3.07x | 1.24 (split 16) | 3.04x |
+| mnist_conv2 | 1,152 | 1.64 | 1.69 | 0.97x | 1.26 (split 16) | 1.30x | 1.37 (split 8) | 1.20x |
+| large_channel | 4,608 | 13.54 | 23.04 | 0.59x | 18.75 (split 2) | 0.72x | 13.61 (split 16) | 1.00x |
+| large_spatial | 1,152 | 14.77 | 17.00 | 0.87x | 10.75 (split 16) | 1.37x | 11.72 (split 16) | 1.26x |
+| batch_32 | 4,608 | 6.70 | 11.64 | 0.58x | 9.48 (split 2) | 0.71x | 6.76 (split 16) | 0.99x |
+| batch_64 | 4,608 | 13.64 | 23.12 | 0.59x | 18.76 (split 2) | 0.73x | 13.66 (split 16) | 1.00x |
+| batch_128 | 4,608 | 27.42 | 46.01 | 0.60x | 37.59 (split 8) | 0.73x | 27.42 (split 4) | 1.00x |
+
+**Candidate A: rejected.** Loses at every shape (0.52-0.97x) -- recomputing
+gather indices via integer div/mod on every GEMM tile-loop iteration costs
+more than the eliminated buffer materialization saves, at every tested
+shape.
+
+**Candidate C: rejected.** Wins at the two low-occupancy shapes not already
+covered better by Candidate E (`mnist_conv1` 3.07x, not production-relevant
+below the 256-element threshold; `mnist_conv2` 1.30x; `large_spatial`
+1.37x) but **regresses 27-29%** at every shape with >= 18 GEMM blocks
+(`large_channel`/`batch_*`, 0.71-0.73x) -- the fused-recompute cost is a net
+loss once occupancy is no longer the limiting factor, and unconditionally
+deploying it would be a real regression risk.
+
+**Candidate E: accepted.** Never regresses beyond measurement noise (worst
+case 0.99x, i.e. ~1% within a shape's own run-to-run variance) and wins
+modestly but genuinely at the low-occupancy shapes (`mnist_conv2` 1.20x,
+`large_spatial` 1.26x; `mnist_conv1` 3.04x is a real effect but not
+production-relevant below threshold). At the already-well-occupied 18-block
+shapes (`large_channel`, `batch_32/64/128`) the result is flat (0.99-1.00x)
+-- consistent with the Phase 2 diagnosis that occupancy was never the
+bottleneck there, so fixing it buys nothing, and split-K's own overhead
+(one `cudaMemsetAsync` + atomic accumulation) is negligible rather than
+harmful.
+
+`num_k_splits = min(16, ceil(N*Hout*Wout / 16))`
+(`experimental_conv_im2col.recommended_num_k_splits`) -- swept over
+`{1,2,4,8,16}` at all 7 shapes; 16 (or the largest value not exceeding the
+shape's own reduction-tile count) won or tied everywhere. A follow-up sweep
+to `{32,64,128}` on the two largest-`M` shapes found only an additional
+2-8% at 128 splits -- diminishing enough, relative to the atomic-contention
+risk of a much larger constant, that 16 is kept as the one production value
+rather than a per-shape-tuned formula (Phase 5's simplicity criterion).
+
+## Selected strategy
+`CUDABackend.conv2d_backward`'s dWeight branch (`backend.py`) now calls
+`experimental_conv_im2col.dweight_im2col_gemm_splitk` instead of M34's
+`dweight_im2col_gemm`, unconditionally above the unchanged
+`_CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD = 256`. `im2col`/`grad_output_permute`
+(both M34, unmodified) and `k_matmul` (M11, unmodified) are untouched; the
+new `cf_matmul_splitk_*` kernel is a separate, narrowly-scoped GEMM variant
+used only by this one call site. Candidates A/C remain as rejected,
+correctness-tested profiling-only code
+(`forge.backend.cuda.experimental_conv_fused`) for reference, matching
+M33/M36's convention for a rejected/accepted candidate set.
+
+## Correctness
+`tests/test_cuda_conv2d_backward_weight_splitk_gemm.py` (28 tests): CPU
+parity across 7 shape/stride/padding/kernel-size combinations (f32 + f64),
+finite difference, explicit-stream, cross-stream (both directions),
+repeated-use memory safety (100 iterations), allocator cache-hit reuse, unit
+coverage for `recommended_num_k_splits`'s edge cases (`M` below one tile,
+exactly one tile, exactly 16 tiles), and production-dispatch coverage
+through the real `Tensor.conv2d`/`nn.Conv2d` API. `tests/test_cuda_
+conv2d_backward_weight_fused_gemm_candidates.py` (17 tests): correctness-only
+coverage for the rejected Candidates A/C, so shipped-but-unused profiling
+code cannot silently bit-rot.
+
+## MNIST validation
+CUDA-event-based, same-session, controlled measurement of the real
+production `CUDABackend.conv2d_backward` end-to-end (not the training
+step) at MNIST's own layer shapes showed the expected small, shape-
+dependent effect: `mnist_conv2`-shaped calls (M37's actual second-layer
+shape) improved modestly; `mnist_conv1` is below the GEMM threshold and
+unaffected. A **wall-clock, interleaved A/B of the real M20 CNN's full
+training step** (`examples/mnist/model.build_model`, batch 64, 3 rounds of
+20 iterations each, old-vs-new dWeight dispatch alternated to cancel
+session drift) measured **0.994x** -- statistically indistinguishable from
+1.0x given each variant's own ~25-30% run-to-run coefficient of variation
+at this wall-clock granularity (Python dispatch overhead dominates a
+14ms full step far more than a sub-millisecond dWeight change). Naive
+before/after comparison against the M36 session's own saved
+`benchmarks/results/m36_mnist.json` throughput numbers showed larger
+apparent deltas (e.g. batch=32: 3,527 -> ~4,650-4,720 samples/sec) that did
+**not** reproduce in this milestone's own controlled, interleaved,
+same-session test -- attributed to cross-session hardware/thermal variance
+(this laptop GPU's documented characteristic, see **Hardware variance**
+above), not to this milestone's change, and explicitly not claimed as a
+real effect.
+
+## Roofline update
+| Shape | AI | GFLOP/s before | %ceiling before | GFLOP/s after | %ceiling after | classification after |
+|---|---:|---:|---:|---:|---:|---|
+| mnist_conv1 | 4.00 | 1.95 | 1.9% | 5.80 | 5.6% | mixed_or_ambiguous |
+| mnist_conv2 | 23.89 | 15.09 | 14.4% | 18.23 | 17.4% | mixed_or_ambiguous |
+| large_channel | 47.91 | 34.37 | 32.9% | 33.98 | 32.5% | compute_bound |
+| large_spatial | 23.99 | 15.54 | 14.9% | 19.73 | 18.9% | mixed_or_ambiguous |
+| batch_32 | 47.82 | 34.25 | 32.7% | 34.20 | 32.7% | compute_bound |
+| batch_64 | 47.91 | 34.13 | 32.6% | 33.85 | 32.4% | compute_bound |
+| batch_128 | 47.95 | 34.08 | 32.6% | 33.73 | 32.3% | compute_bound |
+
+No shape reclassifies. The low-occupancy shapes move measurably toward the
+compute ceiling (14.4%->17.4%, 14.9%->18.9%) without crossing the 30%
+`NEAR_CEILING_FRACTION` boundary into `compute_bound`; the already-
+compute-bound shapes are unchanged within noise. dWeight was never
+bandwidth-bound at any tested shape (`im2col`'s own materialization
+traffic, not the GEMM, is the pipeline's dominant cost -- see Phase 1 --
+but that stage is unchanged by this milestone).
+
+## Amdahl analysis
+dWeight's own full-pipeline improvement is 1.00-1.26x across the
+production-dispatched shapes (>= 256 weight elements), and dWeight is
+itself only part of `conv2d_backward` (dInput, M36-optimized, is
+comparable or larger at several shapes -- e.g. ~13ms dInput vs. ~13.5ms
+pre-M37 dWeight at `large_channel`). The controlled same-session full-
+`conv2d_backward` measurement (CUDA events, `m37_dweight_profile.py`
+before/after) found 0.99-1.08x at the production shapes, with the largest
+real effect (1.08x) at `large_spatial`. Composed with `conv2d_backward`'s
+~47% share of the MNIST training step (M36 baseline), the maximum
+plausible end-to-end effect at MNIST's own shapes is on the order of a
+few percent -- consistent with, and explaining, why the wall-clock
+MNIST step A/B (above) could not distinguish the change from noise. This
+is exactly the brief's cautioned scenario: **a real, evidence-backed
+isolated improvement whose end-to-end effect is small enough to be
+unmeasurable at the full-training-step level** -- stated explicitly here
+rather than implied.
+
+## Production decision
+**Accepted, with an honest scope.** `dweight_im2col_gemm_splitk` replaces
+`dweight_im2col_gemm` as the dWeight GEMM call above the existing
+threshold: it never regresses beyond noise, and provides a real (if
+modest) improvement specifically at low-GEMM-occupancy shapes, with no
+added complexity (no new dispatch branch -- the fix applies unconditionally
+above the unchanged M34 threshold). Candidates A and C are rejected and
+kept as profiling-only reference code.
+
+## Limitations
+- **The dominant remaining dWeight cost is `im2col` construction itself**
+  (54-63% of total pipeline time, Phase 1) -- this milestone's split-K fix
+  addresses the GEMM stage only (37-46% of the pipeline) and leaves
+  `im2col`/`permute` completely unchanged. Candidates A/C attempted to
+  remove that cost via fusion and were rejected on measured evidence (net
+  loss once occupancy is fixed by other means); a genuinely cheaper
+  `im2col` formulation (e.g. avoiding redundant re-reads of overlapping
+  receptive fields) remains unexplored and is the clearest named target for
+  a future milestone.
+- **No shape between 256 and 1,152 weight elements has ever been tested**
+  for this dispatch branch (M34's original caveat, still true) -- the
+  threshold itself is out of scope for this milestone (Section 31 of M35,
+  reaffirmed here).
+- **`num_k_splits = 16` is a fixed constant, not a per-shape-tuned value**
+  -- chosen because it won or tied at every tested shape with a wide margin
+  over the alternative it would need to beat (a formula based on device
+  block capacity performed no better in early testing and added
+  complexity without matching gain).
+- Run-to-run hardware variance on this laptop GPU is large enough at
+  wall-clock, full-training-step granularity (~25-30% CV observed) to mask
+  effects of this size entirely -- CUDA-event-based, same-session,
+  controlled comparisons are the only trustworthy evidence for a change
+  this small, and this section reports exactly that data rather than
+  cross-session throughput deltas.
+
+## Future opportunities
+- A genuinely cheaper `im2col` (the now-dominant single cost) -- e.g. a
+  tiled/on-demand formulation that avoids materializing the full `Cin*KH*KW`
+  redundancy, or reduces repeated global-memory re-reads of overlapping
+  receptive fields -- is the clearest next target, per this milestone's own
+  Phase 1 decomposition.
+- Revisiting the 256-weight-element threshold with the now-available
+  256-1,152 gap data (Candidate E measured 3.04x at 72 elements, well below
+  the current threshold) could plausibly lower it, but was left unchanged
+  here as out of this milestone's stated scope.

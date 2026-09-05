@@ -320,6 +320,30 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         ] + [ctypes.c_int] * 4 + [ctypes.c_void_p]
         grad_output_permute_fn.restype = ctypes.c_int
 
+        # -- dWeight fused-gather GEMM candidate profiling helpers (Milestone 37) --
+        # see kernels.cu's identically-named section. Never called by
+        # `CUDABackend` itself -- only by `benchmarks/m37_dweight_profile.py`
+        # and `forge.backend.cuda.experimental_conv_fused`.
+        dweight_fused_gemm_fn = getattr(lib, f"cf_dweight_fused_gemm_{suffix}")
+        dweight_fused_gemm_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 13 + [ctypes.c_void_p]
+        dweight_fused_gemm_fn.restype = ctypes.c_int
+
+        dweight_fused_gemm_splitk_fn = getattr(lib, f"cf_dweight_fused_gemm_splitk_{suffix}")
+        dweight_fused_gemm_splitk_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 14 + [ctypes.c_void_p]
+        dweight_fused_gemm_splitk_fn.restype = ctypes.c_int
+
+        # -- split-K GEMM over existing im2col/permute buffers (Milestone 37 candidate E) --
+        matmul_splitk_fn = getattr(lib, f"cf_matmul_splitk_{suffix}")
+        matmul_splitk_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+        ]
+        matmul_splitk_fn.restype = ctypes.c_int
+
         pool_fwd_fn = getattr(lib, f"cf_maxpool2d_forward_{suffix}")
         pool_fwd_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 12 + [ctypes.c_void_p]
         pool_fwd_fn.restype = ctypes.c_int
@@ -1257,16 +1281,27 @@ class CUDABackend(Backend):
         self._maybe_synchronize("conv2d backward (input)")
         grad_x = CUDAStorage(grad_x_ptr, x.shape, dtype, self._lib)
 
-        # Milestone 34: shape-based dWeight dispatch -- im2col + the existing
-        # tiled GEMM (`k_matmul`, unmodified) at/above the weight-element
-        # threshold, the original per-thread/block-reduce kernel below it.
-        # See `_CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD`'s comment above for the
-        # measured evidence this dispatch is based on.
+        # Milestone 34: shape-based dWeight dispatch -- im2col + a tiled GEMM
+        # at/above the weight-element threshold, the original per-thread/
+        # block-reduce kernel below it. See `_CONV2D_WEIGHT_IM2COL_GEMM_
+        # THRESHOLD`'s comment above for the measured evidence this dispatch
+        # boundary is based on (unchanged by M37 -- only the GEMM call taken
+        # above it changed).
+        #
+        # Milestone 37: the GEMM call itself is now `dweight_im2col_gemm_
+        # splitk` (`experimental_conv_im2col.py`), not M34's plain `dweight_
+        # im2col_gemm` -- M34's `k_matmul` launched too few blocks to occupy
+        # the 940MX at several representative shapes (`Cout`/`Cin*KH*KW` are
+        # small; the huge `N*Hout*Wout` reduction is invisible to block
+        # count), and a split-K GEMM over the same unchanged `Xcol`/`dYcolT`
+        # buffers measured 2.7-9.0x faster with no regression at any of the
+        # 7 representative shapes. See `docs/performance/conv2d-backward-
+        # profiling.md`'s **Milestone 37** section for the full evidence.
         weight_elements = Cout * Cin * KH * KW
         if weight_elements >= _CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD:
-            from .experimental_conv_im2col import dweight_im2col_gemm
+            from .experimental_conv_im2col import dweight_im2col_gemm_splitk
 
-            grad_w = dweight_im2col_gemm(self, grad_output, x, weight.shape, stride, padding)
+            grad_w = dweight_im2col_gemm_splitk(self, grad_output, x, weight.shape, stride, padding)
         else:
             grad_w_ptr = self._alloc(Cout * Cin * KH * KW * dtype.itemsize)
             fn_gw = getattr(self._lib, f"cf_conv2d_backward_weight_{_SUFFIX[dtype]}")

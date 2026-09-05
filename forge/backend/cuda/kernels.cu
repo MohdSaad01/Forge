@@ -1964,6 +1964,311 @@ __global__ void k_conv2d_grad_output_permute(
 GRAD_OUTPUT_PERMUTE_LAUNCHER(float, f32)
 GRAD_OUTPUT_PERMUTE_LAUNCHER(double, f64)
 
+// -- M37 Candidate A: fused gather + tiled GEMM for dWeight (profiling-only) --
+//
+// `benchmarks/m37_dweight_profile.py` decomposed the M34 pipeline and found
+// `k_im2col_conv2d` + `k_conv2d_grad_output_permute` (pure data-movement,
+// zero FLOPs) together cost 54-63% of total dWeight time at every
+// production (>=256-weight-element) shape -- more than the GEMM itself.
+// Both materialize a buffer purely so `k_matmul` can read it back with a
+// second kernel launch: `Xcol` (`M x K`, up to ~90x the input's own element
+// count for `mnist_conv2`'s shape) and `dYcolT` (`Cout x M`). This candidate
+// is the standard "implicit GEMM" trick: fold both gathers directly into
+// `k_matmul`'s own shared-memory tile-load step, reading straight from `x`/
+// `grad_output` with the same index arithmetic `k_im2col_conv2d`/
+// `k_conv2d_grad_output_permute` already use, so the two intermediate
+// buffers and their two kernel launches never exist. `k_matmul` itself is
+// untouched (a separate kernel, not a modification, per the milestone
+// brief's Section 6) -- this is a Conv2d-specific dispatch, never a generic
+// GEMM change.
+//
+// Same GEMM orientation as M34 (`dweight_im2col_gemm`): `out[Cout, Cin*KH*
+// KW]` (`out`'s own layout is already `weight_shape`, zero-copy). One block
+// per 16x16 output tile, same as `k_matmul` -- occupancy is unchanged by
+// this candidate (see Candidate C below for that).
+
+template <typename T>
+__global__ void k_dweight_fused_gemm(
+    const T* grad_out, const T* x, T* out,
+    int N, int Cin, int H, int W, int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW, int Hout, int Wout)
+{
+    __shared__ T tile_a[MATMUL_TILE][MATMUL_TILE];
+    __shared__ T tile_b[MATMUL_TILE][MATMUL_TILE];
+
+    long long Mdim = static_cast<long long>(N) * Hout * Wout;
+    int Kdim = Cin * KH * KW;
+
+    int row = blockIdx.y * MATMUL_TILE + threadIdx.y;  // co
+    int col = blockIdx.x * MATMUL_TILE + threadIdx.x;  // flattened (ci, kh, kw)
+
+    T acc = static_cast<T>(0);
+    long long num_tiles = (Mdim + MATMUL_TILE - 1) / MATMUL_TILE;
+    for (long long t = 0; t < num_tiles; ++t) {
+        long long a_m = t * MATMUL_TILE + threadIdx.x;
+        long long b_m = t * MATMUL_TILE + threadIdx.y;
+
+        T a_val = static_cast<T>(0);
+        if (row < Cout && a_m < Mdim) {
+            int wo = static_cast<int>(a_m % Wout);
+            long long m1 = a_m / Wout;
+            int ho = static_cast<int>(m1 % Hout);
+            int n = static_cast<int>(m1 / Hout);
+            long long g_idx = ((static_cast<long long>(n) * Cout + row) * Hout + ho) * Wout + wo;
+            a_val = grad_out[g_idx];
+        }
+        tile_a[threadIdx.y][threadIdx.x] = a_val;
+
+        T b_val = static_cast<T>(0);
+        if (b_m < Mdim && col < Kdim) {
+            int kw_ = col % KW;
+            int k1 = col / KW;
+            int kh = k1 % KH;
+            int ci = k1 / KH;
+            int wo = static_cast<int>(b_m % Wout);
+            long long m1 = b_m / Wout;
+            int ho = static_cast<int>(m1 % Hout);
+            int n = static_cast<int>(m1 / Hout);
+            int hi = ho * SH - PH + kh;
+            int wi = wo * SW - PW + kw_;
+            if (hi >= 0 && hi < H && wi >= 0 && wi < W) {
+                long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+                b_val = x[x_idx];
+            }
+        }
+        tile_b[threadIdx.y][threadIdx.x] = b_val;
+
+        __syncthreads();
+
+#pragma unroll
+        for (int k = 0; k < MATMUL_TILE; ++k) {
+            acc += tile_a[threadIdx.y][k] * tile_b[k][threadIdx.x];
+        }
+        __syncthreads();
+    }
+
+    if (row < Cout && col < Kdim) {
+        out[row * Kdim + col] = acc;
+    }
+}
+
+#define DWEIGHT_FUSED_GEMM_LAUNCHER(TYPE, SUFFIX)                                        \
+    extern "C" __declspec(dllexport) int cf_dweight_fused_gemm_##SUFFIX(                 \
+        const TYPE* grad_out, const TYPE* x, TYPE* out,                                  \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                          \
+        int SH, int SW, int PH, int PW, int Hout, int Wout, void* stream) {              \
+        int Kdim = Cin * KH * KW;                                                        \
+        dim3 threads(MATMUL_TILE, MATMUL_TILE);                                          \
+        dim3 blocks((Kdim + MATMUL_TILE - 1) / MATMUL_TILE, (Cout + MATMUL_TILE - 1) / MATMUL_TILE); \
+        k_dweight_fused_gemm<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(         \
+            grad_out, x, out, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout);    \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+DWEIGHT_FUSED_GEMM_LAUNCHER(float, f32)
+DWEIGHT_FUSED_GEMM_LAUNCHER(double, f64)
+
+// -- M37 Candidate C: split-K fused gather GEMM for dWeight (profiling-only) --
+//
+// `benchmarks/m37_dweight_profile.py` also found the GEMM's own launch
+// geometry (`ceil(Cout/16) * ceil(Cin*KH*KW/16)` blocks -- the huge
+// `N*Hout*Wout` reduction lives entirely inside each block's serial inner
+// loop, invisible to block count) launches as few as 5 of the 940MX's 24
+// resident-block device capacity (3 SMs x 8 resident 256-thread blocks/SM,
+// itself thread-count-limited, not register/shared-memory-limited --
+// confirmed via `nvcc -Xptxas -v`, zero stack frame/spill on every dWeight-
+// related kernel). Measured occupancy fraction (`total_blocks /
+// device_block_capacity`) correlates directly with achieved fraction of the
+// compute-ceiling: 4.2%/20.8%/75.0% occupancy shapes measured 1.9%/14.4%/
+// 32.9% of the practical compute ceiling respectively.
+//
+// This candidate builds on Candidate A (same fused on-the-fly gather, no
+// separate `Xcol`/`dYcolT` buffers) and additionally splits the reduction
+// dimension (`Mdim = N*Hout*Wout`) into `num_k_splits` chunks along
+// `blockIdx.z`, multiplying the block count by `num_k_splits` -- directly
+// targeting the measured occupancy shortfall. Each block accumulates only
+// its own chunk and atomically adds its partial sum into `out` (`Cout *
+// Cin*KH*KW` elements -- small, e.g. 72-4,608 -- so contention is bounded by
+// `num_k_splits`, not by the reduction size). `out` must be zeroed before
+// this kernel is launched (the caller's responsibility, via
+// `cudaMemsetAsync` -- zero-bits is a valid representation of `0.0` for
+// both `float` and `double`, so a byte-level memset is exact, not an
+// approximation). `num_k_splits` is a caller-supplied parameter (not
+// autotuned inside the kernel) so `benchmarks/m37_dweight_profile.py` can
+// sweep it directly per shape before any production dispatch is chosen.
+
+template <typename T>
+__device__ inline void atomic_add_dweight(T* address, T val) {
+    if constexpr (std::is_same<T, double>::value) {
+        atomic_add_f64(address, val);
+    } else {
+        atomicAdd(address, val);
+    }
+}
+
+template <typename T>
+__global__ void k_dweight_fused_gemm_splitk(
+    const T* grad_out, const T* x, T* out,
+    int N, int Cin, int H, int W, int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW, int Hout, int Wout,
+    int num_k_splits)
+{
+    __shared__ T tile_a[MATMUL_TILE][MATMUL_TILE];
+    __shared__ T tile_b[MATMUL_TILE][MATMUL_TILE];
+
+    long long Mdim = static_cast<long long>(N) * Hout * Wout;
+    int Kdim = Cin * KH * KW;
+
+    int row = blockIdx.y * MATMUL_TILE + threadIdx.y;
+    int col = blockIdx.x * MATMUL_TILE + threadIdx.x;
+
+    long long total_tiles = (Mdim + MATMUL_TILE - 1) / MATMUL_TILE;
+    long long tiles_per_split = (total_tiles + num_k_splits - 1) / num_k_splits;
+    long long tile_start = static_cast<long long>(blockIdx.z) * tiles_per_split;
+    long long tile_end = min(tile_start + tiles_per_split, total_tiles);
+
+    T acc = static_cast<T>(0);
+    for (long long t = tile_start; t < tile_end; ++t) {
+        long long a_m = t * MATMUL_TILE + threadIdx.x;
+        long long b_m = t * MATMUL_TILE + threadIdx.y;
+
+        T a_val = static_cast<T>(0);
+        if (row < Cout && a_m < Mdim) {
+            int wo = static_cast<int>(a_m % Wout);
+            long long m1 = a_m / Wout;
+            int ho = static_cast<int>(m1 % Hout);
+            int n = static_cast<int>(m1 / Hout);
+            long long g_idx = ((static_cast<long long>(n) * Cout + row) * Hout + ho) * Wout + wo;
+            a_val = grad_out[g_idx];
+        }
+        tile_a[threadIdx.y][threadIdx.x] = a_val;
+
+        T b_val = static_cast<T>(0);
+        if (b_m < Mdim && col < Kdim) {
+            int kw_ = col % KW;
+            int k1 = col / KW;
+            int kh = k1 % KH;
+            int ci = k1 / KH;
+            int wo = static_cast<int>(b_m % Wout);
+            long long m1 = b_m / Wout;
+            int ho = static_cast<int>(m1 % Hout);
+            int n = static_cast<int>(m1 / Hout);
+            int hi = ho * SH - PH + kh;
+            int wi = wo * SW - PW + kw_;
+            if (hi >= 0 && hi < H && wi >= 0 && wi < W) {
+                long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+                b_val = x[x_idx];
+            }
+        }
+        tile_b[threadIdx.y][threadIdx.x] = b_val;
+
+        __syncthreads();
+
+#pragma unroll
+        for (int k = 0; k < MATMUL_TILE; ++k) {
+            acc += tile_a[threadIdx.y][k] * tile_b[k][threadIdx.x];
+        }
+        __syncthreads();
+    }
+
+    if (row < Cout && col < Kdim && tile_start < tile_end) {
+        atomic_add_dweight(&out[row * Kdim + col], acc);
+    }
+}
+
+#define DWEIGHT_FUSED_GEMM_SPLITK_LAUNCHER(TYPE, SUFFIX)                                 \
+    extern "C" __declspec(dllexport) int cf_dweight_fused_gemm_splitk_##SUFFIX(          \
+        const TYPE* grad_out, const TYPE* x, TYPE* out,                                  \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                          \
+        int SH, int SW, int PH, int PW, int Hout, int Wout,                              \
+        int num_k_splits, void* stream) {                                                \
+        int Kdim = Cin * KH * KW;                                                        \
+        cudaMemsetAsync(out, 0, static_cast<size_t>(Cout) * Kdim * sizeof(TYPE), (cudaStream_t)stream); \
+        dim3 threads(MATMUL_TILE, MATMUL_TILE);                                          \
+        dim3 blocks(                                                                     \
+            (Kdim + MATMUL_TILE - 1) / MATMUL_TILE, (Cout + MATMUL_TILE - 1) / MATMUL_TILE, \
+            num_k_splits);                                                               \
+        k_dweight_fused_gemm_splitk<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>( \
+            grad_out, x, out, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout,     \
+            num_k_splits);                                                               \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+DWEIGHT_FUSED_GEMM_SPLITK_LAUNCHER(float, f32)
+DWEIGHT_FUSED_GEMM_SPLITK_LAUNCHER(double, f64)
+
+// -- M37 Candidate E: split-K GEMM over the existing materialized Xcol/dYcolT
+//    buffers (profiling-only) --
+//
+// Candidate A/C (above) measured *slower* than the M34 baseline at every
+// shape with >= 18 GEMM blocks (already 75% of device block capacity) --
+// the fused kernel's recomputed gather indices (integer div/mod per tile
+// iteration, replacing one coalesced buffer read) cost more than the
+// occupancy fix bought back once occupancy was no longer the bottleneck.
+// This candidate isolates the two effects Candidate C conflated: keep
+// M34's already-fast, cache-friendly buffer reads (`Xcol`/`dYcolT`, built
+// by the unmodified `k_im2col_conv2d`/`k_conv2d_grad_output_permute`), and
+// apply *only* the split-K occupancy fix on top of them -- a narrowly
+// scoped GEMM variant (not a change to `k_matmul` itself, which remains
+// completely unmodified and used everywhere else).
+//
+// `C` must be zeroed before this kernel is launched, exactly as Candidate
+// C's `cf_dweight_fused_gemm_splitk_*` requires (`cudaMemsetAsync`, exact
+// for both `float`/`double` since zero-bits is a valid `0.0` for both).
+
+template <typename T>
+__global__ void k_matmul_splitk(const T* A, const T* B, T* C, int M, int K, int N, int num_k_splits) {
+    __shared__ T tile_a[MATMUL_TILE][MATMUL_TILE];
+    __shared__ T tile_b[MATMUL_TILE][MATMUL_TILE];
+
+    int row = blockIdx.y * MATMUL_TILE + threadIdx.y;
+    int col = blockIdx.x * MATMUL_TILE + threadIdx.x;
+
+    int total_tiles = (K + MATMUL_TILE - 1) / MATMUL_TILE;
+    int tiles_per_split = (total_tiles + num_k_splits - 1) / num_k_splits;
+    int tile_start = blockIdx.z * tiles_per_split;
+    int tile_end = min(tile_start + tiles_per_split, total_tiles);
+
+    T acc = static_cast<T>(0);
+    for (int t = tile_start; t < tile_end; ++t) {
+        int a_col = t * MATMUL_TILE + threadIdx.x;
+        int b_row = t * MATMUL_TILE + threadIdx.y;
+
+        tile_a[threadIdx.y][threadIdx.x] =
+            (row < M && a_col < K) ? A[row * K + a_col] : static_cast<T>(0);
+        tile_b[threadIdx.y][threadIdx.x] =
+            (b_row < K && col < N) ? B[b_row * N + col] : static_cast<T>(0);
+        __syncthreads();
+
+#pragma unroll
+        for (int k = 0; k < MATMUL_TILE; ++k) {
+            acc += tile_a[threadIdx.y][k] * tile_b[k][threadIdx.x];
+        }
+        __syncthreads();
+    }
+
+    if (row < M && col < N && tile_start < tile_end) {
+        atomic_add_dweight(&C[row * N + col], acc);
+    }
+}
+
+#define MATMUL_SPLITK_LAUNCHER(TYPE, SUFFIX)                                             \
+    extern "C" __declspec(dllexport) int cf_matmul_splitk_##SUFFIX(                      \
+        const TYPE* A, const TYPE* B, TYPE* C, int M, int K, int N,                      \
+        int num_k_splits, void* stream) {                                                \
+        cudaMemsetAsync(C, 0, static_cast<size_t>(M) * N * sizeof(TYPE), (cudaStream_t)stream); \
+        dim3 threads(MATMUL_TILE, MATMUL_TILE);                                          \
+        dim3 blocks(                                                                     \
+            (N + MATMUL_TILE - 1) / MATMUL_TILE, (M + MATMUL_TILE - 1) / MATMUL_TILE,     \
+            num_k_splits);                                                               \
+        k_matmul_splitk<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(              \
+            A, B, C, M, K, N, num_k_splits);                                             \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+MATMUL_SPLITK_LAUNCHER(float, f32)
+MATMUL_SPLITK_LAUNCHER(double, f64)
+
 // -- MaxPool2d forward ----------------------------------------------------------
 //
 // Ties within a window break to the first maximum encountered in row-major

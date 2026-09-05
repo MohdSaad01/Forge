@@ -2097,3 +2097,65 @@ kernel's internal thread mapping changed behind an unchanged `CUDABackend.
 conv2d_backward` / `cf_conv2d_backward_input_*` signature and contract. No
 public API, Tensor semantics, or cross-cutting architectural decision was
 touched.
+
+### M37 — CUDA Conv2d dWeight GEMM occupancy fix: split-K over existing buffers (accepted, modest)
+Decomposed M34's im2col+GEMM `dWeight` pipeline (`benchmarks/m37_dweight_
+profile.py`, new) at the 7 M32-M36 representative shapes and found two
+independent, measured bottlenecks: (1) `im2col`+`permute` (zero FLOPs) cost
+54-63% of total pipeline time -- more than the GEMM itself; (2) the GEMM's
+own launch geometry (`ceil(Cout/16)*ceil(Cin*KH*KW/16)` blocks -- the huge
+`N*Hout*Wout` reduction lives entirely inside each block's serial inner
+loop, invisible to block count) launches as few as 5 of the 940MX's 24
+resident-block device capacity (confirmed via `cuDeviceGetAttribute`), and
+achieved-fraction-of-compute-ceiling tracked that occupancy shortfall
+almost exactly. `nvcc -Xptxas -v` found zero stack frame/spill on every
+dWeight-related kernel -- ruling out M36's local-memory failure mode here.
+
+Two structurally different, evidence-targeted candidates were implemented
+profiling-only and benchmarked (`kernels.cu`, `forge.backend.cuda.
+experimental_conv_fused`, `benchmarks/m37_dweight_candidates_profile.py`):
+**Candidate A/C** (fusing `im2col`/`permute`'s gathers directly into the
+GEMM's tile loads, optionally plus a split-K reduction) -- **rejected**:
+recomputing gather indices via integer div/mod every tile iteration cost
+more than either bottleneck fix bought back once occupancy was no longer
+limiting, regressing 27-29% at every shape with >= 18 GEMM blocks.
+**Candidate E** (`dweight_im2col_gemm_splitk`, keeping M34's own `Xcol`/
+`dYcolT` buffer reads unchanged and applying *only* a new, narrowly-scoped
+split-K GEMM kernel, `cf_matmul_splitk_*` -- `k_matmul` itself untouched)
+-- **accepted**: never regressed beyond measurement noise (worst case
+0.99x) and won modestly (1.20-1.26x) at the two low-occupancy production
+shapes, flat (0.99-1.00x) at the already-well-occupied ones. An initial
+benchmark-harness bug (isolated GEMM-only timing compared against a full-
+pipeline baseline) had implied a much larger 2.7-9.0x win; caught by
+cross-checking against real end-to-end `CUDABackend.conv2d_backward`
+timing before any candidate was accepted, and documented in full in
+`docs/performance/conv2d-backward-profiling.md`'s **Milestone 37** section
+alongside the corrected numbers.
+
+**Decision: accepted, modest.** `CUDABackend.conv2d_backward`
+(`backend.py`) now calls `dweight_im2col_gemm_splitk` instead of M34's
+`dweight_im2col_gemm`, unconditionally above the unchanged
+`_CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD = 256`. A controlled, same-session,
+interleaved wall-clock A/B of the real M20 CNN's full training step
+measured 0.994x -- statistically indistinguishable from 1.0x at that
+granularity (Python dispatch overhead dominates a ~14ms step far more than
+a sub-millisecond dWeight change) -- explicitly reported as a real,
+evidence-backed isolated improvement whose end-to-end effect is too small
+to measure at the full-training-step level, per the milestone brief's own
+Amdahl-analysis requirement. `im2col`/`grad_output_permute` (M34) and
+`k_matmul` (M11) are completely unmodified; `im2col`'s own materialization
+cost (the pipeline's actual dominant term) is named as the clearest
+remaining target for a future milestone.
+
+**Tests.** 1,303 tests total (1,258 pre-existing + 45 new: 28 in
+`tests/test_cuda_conv2d_backward_weight_splitk_gemm.py` -- CPU parity,
+finite difference, explicit/cross-stream, memory/allocator safety,
+production-dispatch coverage; 17 in `tests/test_cuda_conv2d_backward_
+weight_fused_gemm_candidates.py` -- correctness-only coverage for the
+rejected Candidates A/C, guarding shipped-but-unused profiling code against
+bit rot), all passing on the 940MX after a clean rebuild.
+
+**Why no ADR.** Same reasoning as M21/M32/M34/M36: a kernel-selection call
+site changed behind an unchanged `CUDABackend.conv2d_backward` signature
+and contract. No public API, Tensor semantics, or cross-cutting
+architectural decision was touched.

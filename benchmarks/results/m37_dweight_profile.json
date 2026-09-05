@@ -1,0 +1,729 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "8ef018904e5ce931fc1cc711de57a131c7bb584a",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "ceilings": {
+      "compute_gflops": 104.5694232061303,
+      "bandwidth_gbps": 15.08799523531136
+    },
+    "shapes": [
+      {
+        "name": "mnist_conv1",
+        "config": {
+          "N": 64,
+          "Cin": 1,
+          "Cout": 8,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 72,
+        "M": 50176,
+        "K": 9,
+        "Cout": 8,
+        "gemm_launch_geometry": {
+          "gemm_m": 8,
+          "gemm_n": 9,
+          "blocks_y": 1,
+          "blocks_x": 1,
+          "total_blocks": 1,
+          "device_block_capacity": 24,
+          "occupancy_fraction": 0.041666666666666664
+        },
+        "flops": 7225344,
+        "bytes_minimum": 1806624,
+        "arithmetic_intensity": 3.999362346564642,
+        "gemm_arithmetic_intensity": 2.117468325940375,
+        "current_kernel_ms": {
+          "mean_ms": 2.1761855999628703,
+          "median_ms": 2.15447998046875,
+          "min_ms": 2.1473278999328613,
+          "max_ms": 2.2464640140533447,
+          "stdev_ms": 0.038350997878881216
+        },
+        "im2col_ms": {
+          "mean_ms": 0.47444053292274474,
+          "median_ms": 0.47440001368522644,
+          "min_ms": 0.47356799244880676,
+          "max_ms": 0.47539201378822327,
+          "stdev_ms": 0.0004675130612409377
+        },
+        "permute_ms": {
+          "mean_ms": 0.2696544021368027,
+          "median_ms": 0.2696639895439148,
+          "min_ms": 0.2688640058040619,
+          "max_ms": 0.270687997341156,
+          "stdev_ms": 0.00046121432356888137
+        },
+        "gemm_ms": {
+          "mean_ms": 3.0212031841278075,
+          "median_ms": 3.0079360008239746,
+          "min_ms": 2.998784065246582,
+          "max_ms": 3.060447931289673,
+          "stdev_ms": 0.025819941540152463
+        },
+        "summed_total_experimental_ms": 3.7652981191873547,
+        "measured_total_pipeline_ms": {
+          "mean_ms": 3.711989331245422,
+          "median_ms": 3.70961594581604,
+          "min_ms": 3.702944040298462,
+          "max_ms": 3.730112075805664,
+          "stdev_ms": 0.00700977839894891
+        },
+        "full_conv2d_backward_ms": {
+          "mean_ms": 4.253338638941447,
+          "median_ms": 3.8428479433059692,
+          "min_ms": 3.436415910720825,
+          "max_ms": 12.359135627746582,
+          "stdev_ms": 1.7430492040262509
+        },
+        "stage_share_pct": {
+          "im2col": 12.600344458917395,
+          "permute": 7.161568449592004,
+          "gemm": 80.23808709149061
+        },
+        "dweight_pct_of_full_backward": 87.27236757638576,
+        "roofline_total_pipeline": {
+          "achieved_gflops": 1.9464883530728792,
+          "achieved_gbps": 0.4866996746981095,
+          "fraction_of_compute_ceiling": 0.018614316627107184,
+          "fraction_of_bandwidth_ceiling": 0.03225741174407693,
+          "classification": "mixed_or_ambiguous"
+        },
+        "roofline_gemm_only": {
+          "achieved_gflops": 2.391545208862173,
+          "achieved_gbps": 1.1294361193337235,
+          "fraction_of_compute_ceiling": 0.022870406429878545,
+          "fraction_of_bandwidth_ceiling": 0.07485660630979223,
+          "classification": "mixed_or_ambiguous"
+        },
+        "roofline_current_kernel": {
+          "achieved_gflops": 3.3201873958375963,
+          "achieved_gbps": 0.8301791906126134,
+          "fraction_of_compute_ceiling": 0.0317510348057744,
+          "fraction_of_bandwidth_ceiling": 0.05502249819576388,
+          "classification": "mixed_or_ambiguous"
+        }
+      },
+      {
+        "name": "mnist_conv2",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 1152,
+        "M": 10816,
+        "K": 72,
+        "Cout": 16,
+        "gemm_launch_geometry": {
+          "gemm_m": 16,
+          "gemm_n": 72,
+          "blocks_y": 1,
+          "blocks_x": 5,
+          "total_blocks": 5,
+          "device_block_capacity": 24,
+          "occupancy_fraction": 0.20833333333333334
+        },
+        "flops": 24920064,
+        "bytes_minimum": 1042944,
+        "arithmetic_intensity": 23.8939617083947,
+        "gemm_arithmetic_intensity": 6.537541974479517,
+        "current_kernel_ms": {
+          "mean_ms": 1.9590154568354288,
+          "median_ms": 1.9575200080871582,
+          "min_ms": 1.9396159648895264,
+          "max_ms": 1.9737279415130615,
+          "stdev_ms": 0.00909688013165394
+        },
+        "im2col_ms": {
+          "mean_ms": 0.7852490663528442,
+          "median_ms": 0.7852799892425537,
+          "min_ms": 0.78438401222229,
+          "max_ms": 0.7864639759063721,
+          "stdev_ms": 0.0005005217086416013
+        },
+        "permute_ms": {
+          "mean_ms": 0.1168085331718127,
+          "median_ms": 0.1167840026319027,
+          "min_ms": 0.1159679964184761,
+          "max_ms": 0.1178240031003952,
+          "stdev_ms": 0.0004489400650986852
+        },
+        "gemm_ms": {
+          "mean_ms": 0.7558976034323375,
+          "median_ms": 0.7560319900512695,
+          "min_ms": 0.7499200105667114,
+          "max_ms": 0.7631040215492249,
+          "stdev_ms": 0.0029425981477873243
+        },
+        "summed_total_experimental_ms": 1.6579552029569944,
+        "measured_total_pipeline_ms": {
+          "mean_ms": 1.6511680006980896,
+          "median_ms": 1.6516960263252258,
+          "min_ms": 1.643455982208252,
+          "max_ms": 1.6562880277633667,
+          "stdev_ms": 0.003426130164471824
+        },
+        "full_conv2d_backward_ms": {
+          "mean_ms": 3.02651838461558,
+          "median_ms": 2.978224039077759,
+          "min_ms": 2.8281280994415283,
+          "max_ms": 3.455872058868408,
+          "stdev_ms": 0.1965270431059068
+        },
+        "stage_share_pct": {
+          "im2col": 47.36250201165494,
+          "permute": 7.045337109439536,
+          "gemm": 45.592160878905524
+        },
+        "dweight_pct_of_full_backward": 54.556681667334935,
+        "roofline_total_pipeline": {
+          "achieved_gflops": 15.09238550496628,
+          "achieved_gbps": 0.6316401477978367,
+          "fraction_of_compute_ceiling": 0.14432885868764647,
+          "fraction_of_bandwidth_ceiling": 0.041863755783775075,
+          "classification": "mixed_or_ambiguous"
+        },
+        "roofline_gemm_only": {
+          "achieved_gflops": 32.967512910272994,
+          "achieved_gbps": 5.042799425069494,
+          "fraction_of_compute_ceiling": 0.31526914751443613,
+          "fraction_of_bandwidth_ceiling": 0.33422594230859254,
+          "classification": "memory_bandwidth_bound"
+        },
+        "roofline_current_kernel": {
+          "achieved_gflops": 12.720708207303064,
+          "achieved_gbps": 0.5323817105990373,
+          "fraction_of_compute_ceiling": 0.12164844958767376,
+          "fraction_of_bandwidth_ceiling": 0.03528511921537937,
+          "classification": "mixed_or_ambiguous"
+        }
+      },
+      {
+        "name": "large_channel",
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 4608,
+        "M": 50176,
+        "K": 144,
+        "Cout": 32,
+        "gemm_launch_geometry": {
+          "gemm_m": 32,
+          "gemm_n": 144,
+          "blocks_y": 2,
+          "blocks_x": 9,
+          "total_blocks": 18,
+          "device_block_capacity": 24,
+          "occupancy_fraction": 0.75
+        },
+        "flops": 462422016,
+        "bytes_minimum": 9652224,
+        "arithmetic_intensity": 47.90833863781031,
+        "gemm_arithmetic_intensity": 13.084081821869386,
+        "current_kernel_ms": {
+          "mean_ms": 43.70218900044759,
+          "median_ms": 44.366655349731445,
+          "min_ms": 39.21577453613281,
+          "max_ms": 44.579681396484375,
+          "stdev_ms": 1.7698918276231292
+        },
+        "im2col_ms": {
+          "mean_ms": 7.385254367192586,
+          "median_ms": 7.427839994430542,
+          "min_ms": 7.224800109863281,
+          "max_ms": 7.429088115692139,
+          "stdev_ms": 0.08217871041968679
+        },
+        "permute_ms": {
+          "mean_ms": 1.048243192831675,
+          "median_ms": 1.0482239723205566,
+          "min_ms": 1.0476160049438477,
+          "max_ms": 1.0493119955062866,
+          "stdev_ms": 0.0004123490493606161
+        },
+        "gemm_ms": {
+          "mean_ms": 4.974443737665812,
+          "median_ms": 4.973151922225952,
+          "min_ms": 4.946271896362305,
+          "max_ms": 5.012703895568848,
+          "stdev_ms": 0.015175776523593271
+        },
+        "summed_total_experimental_ms": 13.407941297690073,
+        "measured_total_pipeline_ms": {
+          "mean_ms": 13.452593040466308,
+          "median_ms": 13.449359893798828,
+          "min_ms": 13.413472175598145,
+          "max_ms": 13.488800048828125,
+          "stdev_ms": 0.014143217352705708
+        },
+        "full_conv2d_backward_ms": {
+          "mean_ms": 27.650288009643553,
+          "median_ms": 27.66703987121582,
+          "min_ms": 27.276960372924805,
+          "max_ms": 27.860960006713867,
+          "stdev_ms": 0.11171903945939733
+        },
+        "stage_share_pct": {
+          "im2col": 55.08119556329593,
+          "permute": 7.818077134722144,
+          "gemm": 37.100727301981934
+        },
+        "dweight_pct_of_full_backward": 48.652632608291334,
+        "roofline_total_pipeline": {
+          "achieved_gflops": 34.37419199473316,
+          "achieved_gbps": 0.7174991446604724,
+          "fraction_of_compute_ceiling": 0.32872125465370267,
+          "fraction_of_bandwidth_ceiling": 0.047554306153362584,
+          "classification": "compute_bound"
+        },
+        "roofline_gemm_only": {
+          "achieved_gflops": 92.95954289292759,
+          "achieved_gbps": 7.104781532132455,
+          "fraction_of_compute_ceiling": 0.8889744252455426,
+          "fraction_of_bandwidth_ceiling": 0.4708896988186143,
+          "classification": "compute_bound"
+        },
+        "roofline_current_kernel": {
+          "achieved_gflops": 10.581209467453998,
+          "achieved_gbps": 0.22086362767551856,
+          "fraction_of_compute_ceiling": 0.10118836982198907,
+          "fraction_of_bandwidth_ceiling": 0.014638368068848396,
+          "classification": "mixed_or_ambiguous"
+        }
+      },
+      {
+        "name": "large_spatial",
+        "config": {
+          "N": 32,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 56,
+          "W": 56,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 1152,
+        "M": 100352,
+        "K": 72,
+        "Cout": 16,
+        "gemm_launch_geometry": {
+          "gemm_m": 16,
+          "gemm_n": 72,
+          "blocks_y": 1,
+          "blocks_x": 5,
+          "total_blocks": 5,
+          "device_block_capacity": 24,
+          "occupancy_fraction": 0.20833333333333334
+        },
+        "flops": 231211008,
+        "bytes_minimum": 9638400,
+        "arithmetic_intensity": 23.98852589641434,
+        "gemm_arithmetic_intensity": 6.544600802886914,
+        "current_kernel_ms": {
+          "mean_ms": 21.40593713124593,
+          "median_ms": 21.39788818359375,
+          "min_ms": 21.23980712890625,
+          "max_ms": 21.733375549316406,
+          "stdev_ms": 0.10488623036957674
+        },
+        "im2col_ms": {
+          "mean_ms": 7.388654947280884,
+          "median_ms": 7.427776098251343,
+          "min_ms": 7.224224090576172,
+          "max_ms": 7.429440021514893,
+          "stdev_ms": 0.08037112641383236
+        },
+        "permute_ms": {
+          "mean_ms": 1.0482122619946799,
+          "median_ms": 1.0482239723205566,
+          "min_ms": 1.047104001045227,
+          "max_ms": 1.0493439435958862,
+          "stdev_ms": 0.0004556123814565862
+        },
+        "gemm_ms": {
+          "mean_ms": 6.68569704691569,
+          "median_ms": 6.65662407875061,
+          "min_ms": 6.6372480392456055,
+          "max_ms": 6.792223930358887,
+          "stdev_ms": 0.055499887045167395
+        },
+        "summed_total_experimental_ms": 15.122564256191254,
+        "measured_total_pipeline_ms": {
+          "mean_ms": 14.878791427612304,
+          "median_ms": 14.876607894897461,
+          "min_ms": 14.859807968139648,
+          "max_ms": 14.913663864135742,
+          "stdev_ms": 0.012081299164836527
+        },
+        "full_conv2d_backward_ms": {
+          "mean_ms": 23.569683265686034,
+          "median_ms": 23.532400131225586,
+          "min_ms": 23.395456314086914,
+          "max_ms": 23.925151824951172,
+          "stdev_ms": 0.15320309878553529
+        },
+        "stage_share_pct": {
+          "im2col": 48.85847943582671,
+          "permute": 6.931445251194992,
+          "gemm": 44.2100753129783
+        },
+        "dweight_pct_of_full_backward": 63.1268195668697,
+        "roofline_total_pipeline": {
+          "achieved_gflops": 15.539636342432683,
+          "achieved_gbps": 0.6477945501751506,
+          "fraction_of_compute_ceiling": 0.14860592959187027,
+          "fraction_of_bandwidth_ceiling": 0.04293443496449928,
+          "classification": "mixed_or_ambiguous"
+        },
+        "roofline_gemm_only": {
+          "achieved_gflops": 34.58293224738092,
+          "achieved_gbps": 5.284192770340692,
+          "fraction_of_compute_ceiling": 0.3307174428915997,
+          "fraction_of_bandwidth_ceiling": 0.35022497607725717,
+          "classification": "memory_bandwidth_bound"
+        },
+        "roofline_current_kernel": {
+          "achieved_gflops": 10.801256052579202,
+          "achieved_gbps": 0.45026760290400786,
+          "fraction_of_compute_ceiling": 0.10329268079912281,
+          "fraction_of_bandwidth_ceiling": 0.029842772076850804,
+          "classification": "mixed_or_ambiguous"
+        }
+      }
+    ],
+    "batch_sweep": [
+      {
+        "name": "batch_32",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 32
+        },
+        "weight_elements": 4608,
+        "M": 25088,
+        "K": 144,
+        "Cout": 32,
+        "gemm_launch_geometry": {
+          "gemm_m": 32,
+          "gemm_n": 144,
+          "blocks_y": 2,
+          "blocks_x": 9,
+          "total_blocks": 18,
+          "device_block_capacity": 24,
+          "occupancy_fraction": 0.75
+        },
+        "flops": 231211008,
+        "bytes_minimum": 4835328,
+        "arithmetic_intensity": 47.81702668360864,
+        "gemm_arithmetic_intensity": 13.077261670334762,
+        "current_kernel_ms": {
+          "mean_ms": 21.489674758911132,
+          "median_ms": 22.302736282348633,
+          "min_ms": 19.705984115600586,
+          "max_ms": 22.405216217041016,
+          "stdev_ms": 1.2210385393529002
+        },
+        "im2col_ms": {
+          "mean_ms": 3.617025057474772,
+          "median_ms": 3.617103934288025,
+          "min_ms": 3.6157119274139404,
+          "max_ms": 3.6180479526519775,
+          "stdev_ms": 0.0006679404243248443
+        },
+        "permute_ms": {
+          "mean_ms": 0.513809065024058,
+          "median_ms": 0.513727992773056,
+          "min_ms": 0.5127360224723816,
+          "max_ms": 0.5174400210380554,
+          "stdev_ms": 0.0008494608472584396
+        },
+        "gemm_ms": {
+          "mean_ms": 2.4473450581232705,
+          "median_ms": 2.4451359510421753,
+          "min_ms": 2.426431894302368,
+          "max_ms": 2.474368095397949,
+          "stdev_ms": 0.010951945828900427
+        },
+        "summed_total_experimental_ms": 6.578179180622101,
+        "measured_total_pipeline_ms": {
+          "mean_ms": 6.751646916071574,
+          "median_ms": 6.750767946243286,
+          "min_ms": 6.738463878631592,
+          "max_ms": 6.779391765594482,
+          "stdev_ms": 0.0082298656556813
+        },
+        "full_conv2d_backward_ms": {
+          "mean_ms": 14.649836699167887,
+          "median_ms": 14.509759902954102,
+          "min_ms": 14.23971176147461,
+          "max_ms": 16.694047927856445,
+          "stdev_ms": 0.49009795446773674
+        },
+        "stage_share_pct": {
+          "im2col": 54.9852011956401,
+          "permute": 7.8108098140231395,
+          "gemm": 37.20398899033675
+        },
+        "dweight_pct_of_full_backward": 46.08684079362516,
+        "roofline_total_pipeline": {
+          "achieved_gflops": 34.245127281408465,
+          "achieved_gbps": 0.7161701522764792,
+          "fraction_of_compute_ceiling": 0.3274870055838739,
+          "fraction_of_bandwidth_ceiling": 0.04746622338535621,
+          "classification": "compute_bound"
+        },
+        "roofline_gemm_only": {
+          "achieved_gflops": 94.4742169611761,
+          "achieved_gbps": 7.224311889046851,
+          "fraction_of_compute_ceiling": 0.9034592911060222,
+          "fraction_of_bandwidth_ceiling": 0.47881191479563506,
+          "classification": "compute_bound"
+        },
+        "roofline_current_kernel": {
+          "achieved_gflops": 10.759167395221914,
+          "achieved_gbps": 0.22500703497129163,
+          "fraction_of_compute_ceiling": 0.1028901859199618,
+          "fraction_of_bandwidth_ceiling": 0.014912984227665573,
+          "classification": "mixed_or_ambiguous"
+        }
+      },
+      {
+        "name": "batch_64",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 64
+        },
+        "weight_elements": 4608,
+        "M": 50176,
+        "K": 144,
+        "Cout": 32,
+        "gemm_launch_geometry": {
+          "gemm_m": 32,
+          "gemm_n": 144,
+          "blocks_y": 2,
+          "blocks_x": 9,
+          "total_blocks": 18,
+          "device_block_capacity": 24,
+          "occupancy_fraction": 0.75
+        },
+        "flops": 462422016,
+        "bytes_minimum": 9652224,
+        "arithmetic_intensity": 47.90833863781031,
+        "gemm_arithmetic_intensity": 13.084081821869386,
+        "current_kernel_ms": {
+          "mean_ms": 43.68491121927897,
+          "median_ms": 44.33742332458496,
+          "min_ms": 38.986270904541016,
+          "max_ms": 44.54633712768555,
+          "stdev_ms": 1.76379200244689
+        },
+        "im2col_ms": {
+          "mean_ms": 7.374459743499756,
+          "median_ms": 7.427919864654541,
+          "min_ms": 7.296319961547852,
+          "max_ms": 7.430975914001465,
+          "stdev_ms": 0.06081710373786225
+        },
+        "permute_ms": {
+          "mean_ms": 1.048474661509196,
+          "median_ms": 1.0483199954032898,
+          "min_ms": 1.047327995300293,
+          "max_ms": 1.0497920513153076,
+          "stdev_ms": 0.0006162355351822469
+        },
+        "gemm_ms": {
+          "mean_ms": 4.989756727218628,
+          "median_ms": 4.989503860473633,
+          "min_ms": 4.955935955047607,
+          "max_ms": 5.022304058074951,
+          "stdev_ms": 0.017683186930420352
+        },
+        "summed_total_experimental_ms": 13.41269113222758,
+        "measured_total_pipeline_ms": {
+          "mean_ms": 13.548441632588704,
+          "median_ms": 13.548111915588379,
+          "min_ms": 13.516960144042969,
+          "max_ms": 13.58176040649414,
+          "stdev_ms": 0.014747274711640933
+        },
+        "full_conv2d_backward_ms": {
+          "mean_ms": 27.86828810373942,
+          "median_ms": 27.97804832458496,
+          "min_ms": 27.171039581298828,
+          "max_ms": 28.424543380737305,
+          "stdev_ms": 0.28893766830567236
+        },
+        "stage_share_pct": {
+          "im2col": 54.98120899675862,
+          "permute": 7.8170342638395285,
+          "gemm": 37.20175673940185
+        },
+        "dweight_pct_of_full_backward": 48.61598093917634,
+        "roofline_total_pipeline": {
+          "achieved_gflops": 34.13101141371968,
+          "achieved_gbps": 0.7124231894525088,
+          "fraction_of_compute_ceiling": 0.32639571269738804,
+          "fraction_of_bandwidth_ceiling": 0.04721788271679601,
+          "classification": "compute_bound"
+        },
+        "roofline_gemm_only": {
+          "achieved_gflops": 92.67426074652774,
+          "achieved_gbps": 7.082977774690109,
+          "fraction_of_compute_ceiling": 0.8862462649702632,
+          "fraction_of_bandwidth_ceiling": 0.4694445924872366,
+          "classification": "compute_bound"
+        },
+        "roofline_current_kernel": {
+          "achieved_gflops": 10.585394432389839,
+          "achieved_gbps": 0.2209509812564365,
+          "fraction_of_compute_ceiling": 0.10122839074596023,
+          "fraction_of_bandwidth_ceiling": 0.014644157677047204,
+          "classification": "mixed_or_ambiguous"
+        }
+      },
+      {
+        "name": "batch_128",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 128
+        },
+        "weight_elements": 4608,
+        "M": 100352,
+        "K": 144,
+        "Cout": 32,
+        "gemm_launch_geometry": {
+          "gemm_m": 32,
+          "gemm_n": 144,
+          "blocks_y": 2,
+          "blocks_x": 9,
+          "total_blocks": 18,
+          "device_block_capacity": 24,
+          "occupancy_fraction": 0.75
+        },
+        "flops": 924844032,
+        "bytes_minimum": 19286016,
+        "arithmetic_intensity": 47.95412551768079,
+        "gemm_arithmetic_intensity": 13.087494566004926,
+        "current_kernel_ms": {
+          "mean_ms": 85.62237319946288,
+          "median_ms": 88.23076629638672,
+          "min_ms": 77.96012878417969,
+          "max_ms": 88.74006652832031,
+          "stdev_ms": 4.570986325057747
+        },
+        "im2col_ms": {
+          "mean_ms": 14.931344000498454,
+          "median_ms": 14.9617600440979,
+          "min_ms": 14.442336082458496,
+          "max_ms": 14.965439796447754,
+          "stdev_ms": 0.11639428400002572
+        },
+        "permute_ms": {
+          "mean_ms": 2.1048351923624673,
+          "median_ms": 2.1047840118408203,
+          "min_ms": 2.103679895401001,
+          "max_ms": 2.106048107147217,
+          "stdev_ms": 0.00047206760878257096
+        },
+        "gemm_ms": {
+          "mean_ms": 10.017035706837971,
+          "median_ms": 10.020656108856201,
+          "min_ms": 9.938976287841797,
+          "max_ms": 10.082847595214844,
+          "stdev_ms": 0.028944234599262094
+        },
+        "summed_total_experimental_ms": 27.053214899698894,
+        "measured_total_pipeline_ms": {
+          "mean_ms": 27.133672523498536,
+          "median_ms": 27.079023361206055,
+          "min_ms": 27.042879104614258,
+          "max_ms": 27.529056549072266,
+          "stdev_ms": 0.14492724208004112
+        },
+        "full_conv2d_backward_ms": {
+          "mean_ms": 54.84804395039876,
+          "median_ms": 54.84432029724121,
+          "min_ms": 54.70131301879883,
+          "max_ms": 55.014305114746094,
+          "stdev_ms": 0.07734377193783916
+        },
+        "stage_share_pct": {
+          "im2col": 55.19249396368283,
+          "permute": 7.780351430195065,
+          "gemm": 37.02715460612211
+        },
+        "dweight_pct_of_full_backward": 49.470629341014565,
+        "roofline_total_pipeline": {
+          "achieved_gflops": 34.08473479581721,
+          "achieved_gbps": 0.7107779451269547,
+          "fraction_of_compute_ceiling": 0.3259531682471691,
+          "fraction_of_bandwidth_ceiling": 0.04710883944763433,
+          "classification": "compute_bound"
+        },
+        "roofline_gemm_only": {
+          "achieved_gflops": 92.32711742942773,
+          "achieved_gbps": 7.0546059800666185,
+          "fraction_of_compute_ceiling": 0.8829265247779919,
+          "fraction_of_bandwidth_ceiling": 0.4675641707227141,
+          "classification": "compute_bound"
+        },
+        "roofline_current_kernel": {
+          "achieved_gflops": 10.801429549792037,
+          "achieved_gbps": 0.22524505312498141,
+          "fraction_of_compute_ceiling": 0.10329433995729272,
+          "fraction_of_bandwidth_ceiling": 0.014928759560967158,
+          "classification": "mixed_or_ambiguous"
+        }
+      }
+    ]
+  }
+}

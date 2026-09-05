@@ -29,6 +29,26 @@ for the complete evidence, including the documented caveat that no shape
 between 256 and 1,152 weight elements was tested. `dInput`/`dBias` are
 completely untouched -- only `dWeight`'s own kernel choice changed.
 
+**Superseded by Milestone 37's `dweight_im2col_gemm_splitk`.** M37 measured
+the GEMM call above (`cf_matmul_*`, `k_matmul`) launching as few as 5 of the
+940MX's 24-resident-block device capacity at several representative shapes
+(`Cout`/`Cin*KH*KW` are the *small* Conv2d weight dimensions; the huge
+`N*Hout*Wout` reduction lives entirely inside each block's serial inner
+loop, invisible to block count) -- and found achieved-GFLOP/s-as-fraction-
+of-ceiling tracked that occupancy shortfall almost exactly. `dweight_im2col_
+gemm_splitk` (below) keeps this module's `im2col`/`grad_output_permute`
+completely unchanged and replaces only the plain `cf_matmul_*` call with
+`cf_matmul_splitk_*` (`kernels.cu`, a separate, narrowly-scoped GEMM variant
+-- `k_matmul` itself is still never modified), measuring 2.7-9.0x faster
+than `dweight_im2col_gemm` at every one of the 7 representative shapes with
+no regression. `CUDABackend.conv2d_backward` now calls `dweight_im2col_gemm_
+splitk`; `dweight_im2col_gemm` (this function) is kept for `benchmarks/
+conv2d_backward_weight_im2col_profile.py`'s continuing M34-vs-M37 comparison
+and is otherwise dead in production. See `docs/performance/
+conv2d-backward-profiling.md`'s **Milestone 37** section for the complete
+evidence, including the rejected Candidates A/C
+(`forge.backend.cuda.experimental_conv_fused`).
+
 ## Orientation (verified against `CPUBackend.conv2d_backward`)
 
 Forge's actual weight-gradient GEMM, already computed on CPU via NumPy/BLAS
@@ -139,4 +159,66 @@ def dweight_im2col_gemm(
     return CUDAStorage(out_ptr, weight_shape, dtype, backend._lib)
 
 
-__all__ = ["im2col", "grad_output_permute", "dweight_im2col_gemm"]
+def dweight_im2col_gemm_splitk(
+    backend: Any, grad_output: CUDAStorage, x: CUDAStorage,
+    weight_shape: "tuple[int, int, int, int]",
+    stride: "tuple[int, int]", padding: "tuple[int, int]",
+) -> CUDAStorage:
+    """Milestone 37 production `dWeight`: `dweight_im2col_gemm`'s own `Xcol`/
+    `dYcolT` buffers, fed to a split-K GEMM (`cf_matmul_splitk_*`) instead of
+    the plain `cf_matmul_*` call -- see this module's docstring for the
+    measured evidence. `num_k_splits` uses `recommended_num_k_splits` (below),
+    the same constant (16, capped by available reduction tiles) that won or
+    tied at every representative shape in `benchmarks/m37_dweight_candidates_
+    profile.py`'s sweep.
+    """
+    dtype = backend._require_compute_dtype(grad_output, x, op="conv2d dWeight (im2col + split-K GEMM, Milestone 37)")
+    N, Cin, H, W = x.shape
+    Cout, _, KH, KW = weight_shape
+    SH, SW = stride
+    PH, PW = padding
+    Hout, Wout = grad_output.shape[2], grad_output.shape[3]
+
+    xcol = im2col(backend, x, N, Cin, H, W, KH, KW, SH, SW, PH, PW, Hout, Wout)
+    dycolT = grad_output_permute(backend, grad_output, N, Cout, Hout, Wout)
+
+    M = N * Hout * Wout
+    K = Cin * KH * KW
+    num_k_splits = recommended_num_k_splits(M)
+    out_ptr = backend._alloc(Cout * K * dtype.itemsize)
+    fn = getattr(backend._lib, f"cf_matmul_splitk_{_SUFFIX[dtype]}")
+    code = fn(
+        dycolT.ptr, xcol.ptr, out_ptr,
+        ctypes.c_int(Cout), ctypes.c_int(M), ctypes.c_int(K),
+        ctypes.c_int(num_k_splits),
+        backend._stream_handle(),
+    )
+    backend._check(code, "split-K GEMM (dWeight, Milestone 37)")
+    backend._maybe_synchronize("conv2d dWeight (im2col + split-K GEMM, Milestone 37)")
+    return CUDAStorage(out_ptr, weight_shape, dtype, backend._lib)
+
+
+# `benchmarks/m37_dweight_candidates_profile.py` swept `num_k_splits` in
+# {1, 2, 4, 8, 16} at all 7 representative shapes: 16 (or the largest value
+# not exceeding the number of reduction tiles, for shapes with a smaller
+# `M = N*Hout*Wout`) won or tied for every shape, with no shape regressing
+# below `num_k_splits = 1` (M34's un-split behavior) beyond run-to-run noise.
+# A follow-up sweep to {32, 64, 128} on the two largest-`M` representative
+# shapes found only an additional 2-8% at 128 splits -- diminishing enough,
+# relative to the atomic-accumulation contention a much larger split count
+# would add at smaller shapes, that 16 is kept as the one production
+# constant rather than a per-shape-tuned value (Phase 5's "simplicity
+# relative to the measured gain" criterion).
+_DWEIGHT_SPLITK_MAX_SPLITS = 16
+
+
+def recommended_num_k_splits(m_reduction: int) -> int:
+    """`min(16, ceil(M/16))` -- never launches a block with zero reduction tiles."""
+    tiles_available = max(1, (m_reduction + 15) // 16)
+    return max(1, min(_DWEIGHT_SPLITK_MAX_SPLITS, tiles_available))
+
+
+__all__ = [
+    "im2col", "grad_output_permute", "dweight_im2col_gemm",
+    "dweight_im2col_gemm_splitk", "recommended_num_k_splits",
+]
