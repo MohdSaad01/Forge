@@ -2643,3 +2643,61 @@ CUDA rebuild (`_forge_cuda_kernels_sm_50.dll` deleted and recompiled in
 
 **Why no ADR.** Measurement and documentation only -- no production code,
 public API, or cross-cutting architectural decision was touched.
+
+### M45 — CUDA dWeight below-256 warp-shuffle reduction (investigated, rejected)
+
+Benchmarked M44's recommended warp-shuffle cooperative reduction for the
+below-`CONV2D_WEIGHT_REDUCE_THRESHOLD` (256) dWeight path (`k_conv2d_
+backward_weight_reduce`, still production, unchanged since M21) before
+accepting M44's occupancy-bound diagnosis, per `PROFILE -> ANALYZE ->
+DESIGN -> BENCHMARK -> SELECT`. Reused M33's existing `k_conv2d_backward_
+weight_warp`/`cf_conv2d_backward_weight_warpreduce_*` (one 32-lane warp per
+weight element) unmodified, and added one new candidate, `k_conv2d_
+backward_weight_warp_subgroup`/`cf_conv2d_backward_weight_warpsubgroup_*`
+(configurable 8/16/32-lane sub-warp groups per weight element) -- both
+profiling-only, never called by `CUDABackend`.
+
+**Result: rejected.** A fresh, same-session sweep independently varying
+weight-element count (9-252, `benchmarks/m45_dweight_below256_profile.py`,
+new), reduction size (256-204,800, `weight_elements` fixed at 72), and
+`K`-configuration (1/3/5) found neither candidate clears the milestone's
+1.15x acceptance bar at `mnist_conv1`'s own shape: 1.003x isolated-kernel
+speedup, 0.985x in a complete `conv2d_backward` A/B -- both within noise --
+and four sweep points regressed outright (0.58-0.95x). `nvcc -Xptxas -v`
+showed no spill/register-pressure difference among the production kernel
+and both candidates (42-53 registers, 0/1024 bytes shared memory).
+
+**Root-cause correction to M44's hypothesis**: the production block-reduce
+kernel already launches 256 threads *per weight element*
+(`weight_elements x 256` total, 18,432-64,512 across the tested shapes) --
+both warp candidates launch *fewer* total threads per weight element (32,
+or 8/16 for sub-groups), an 8-32x *reduction* in launched parallelism
+relative to the kernel already in production. The below-256 path was
+therefore never as parallelism-starved as M44's per-thread-kernel-relative
+framing suggested at MNIST's own real scale. The one clear win (1.93x) was
+at the smallest tested reduction length (256 elements) -- consistent with
+fixed `__syncthreads()`/shared-memory-allocation overhead dominating only
+when the reduction itself is nearly free, an edge case no real Forge shape
+reaches (`mnist_conv1`'s own reduction length is 50,176).
+
+**Decision**: `CUDABackend.conv2d_backward`, the M21 dispatch threshold,
+and both production kernels are byte-for-byte unchanged. Both candidates
+remain in `kernels.cu` as documented, tested, profiling-only code. Full
+14-section report (baseline, resource analysis, three independent sweeps,
+complete-pipeline A/B, boundary test, fresh Amdahl fraction, root-cause
+correction, correctness, memory, production decision, updated ranking,
+limitations): `docs/performance/conv2d-backward-profiling.md`'s
+**Milestone 45** section.
+
+**Tests.** 67 new (`tests/test_cuda_conv2d_backward_weight_below256_
+optimization.py`): `warpsubgroup` correctness across shapes/dtypes/group
+sizes, `warpreduce` extended to the below-256 regime, finite difference,
+explicit-stream execution, a 255/256/257 production-dispatch boundary
+check, and a repeated-use memory-safety check. Full suite: **1,519 passed**
+(1,452 + 67 new), verified on a clean CUDA rebuild. `benchmarks.
+pipeline_profile` re-run fresh: 82.2-87.0% compute-stream utilization
+(within historical range), allocator/pinned-memory counters clean.
+
+**Why no ADR.** No production code, public API, or cross-cutting
+architectural decision was touched -- a rejected profiling-only
+experiment, the same category as Milestone 33's own rejected candidates.

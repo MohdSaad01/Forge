@@ -1776,6 +1776,102 @@ __global__ void k_conv2d_backward_weight_warp(
 CONV2D_BACKWARD_WEIGHT_WARP_LAUNCHER(float, f32)
 CONV2D_BACKWARD_WEIGHT_WARP_LAUNCHER(double, f64)
 
+// -- dWeight sub-warp cooperative candidate (Milestone 45) -------------------
+//
+// M44 identified the below-`CONV2D_WEIGHT_REDUCE_THRESHOLD` block-reduce path
+// (`k_conv2d_backward_weight_reduce`, still production, unchanged since M21)
+// as occupancy/parallelism-bound: only `weight_elements`-many independent
+// units of work (72-243 at every below-threshold shape measured), each doing
+// a long serial reduction. The M33 warp candidate above
+// (`k_conv2d_backward_weight_warp`, one full 32-lane warp per weight element)
+// already multiplies that parallelism 32x and is reused unmodified as this
+// milestone's primary candidate. This kernel adds the one warp-shuffle
+// variant M33 never tried at this target: a configurable sub-warp group size
+// (`group_size` in {8, 16, 32} lanes per weight element, must evenly divide
+// 32), so multiple weight elements can share one warp when a full 32-lane
+// group is more parallelism than a single weight element's reduction length
+// can usefully absorb. `widx` and each group's early-return condition are
+// uniform across every lane of that group (`group_in_warp = lane /
+// group_size` is fixed per group), so the per-group `__shfl_down_sync` mask
+// (`((1u << group_size) - 1u) << (group_in_warp * group_size)`) never
+// includes a lane that has already returned -- the same warp-uniformity
+// argument the M33 kernel's own comment makes, applied per-group instead of
+// per-warp. Profiling-only, like every other M33+ dWeight candidate above --
+// never called by `CUDABackend`.
+
+template <typename T>
+__global__ void k_conv2d_backward_weight_warp_subgroup(
+    const T* grad_out, const T* x, T* grad_w,
+    int N, int Cin, int H, int W,
+    int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout, long long total_weights, int group_size)
+{
+    int lane = threadIdx.x & 31;
+    int group_in_warp = lane / group_size;
+    int lane_in_group = lane % group_size;
+    int groups_per_warp = 32 / group_size;
+    int warp_in_block = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    long long widx = (static_cast<long long>(blockIdx.x) * warps_per_block + warp_in_block)
+                      * groups_per_warp + group_in_warp;
+    if (widx >= total_weights) return;
+
+    int kw_ = static_cast<int>(widx % KW);
+    long long t1 = widx / KW;
+    int kh = static_cast<int>(t1 % KH);
+    long long t2 = t1 / KH;
+    int ci = static_cast<int>(t2 % Cin);
+    int co = static_cast<int>(t2 / Cin);
+
+    long long reduce_total = static_cast<long long>(N) * Hout * Wout;
+    T acc = static_cast<T>(0);
+    for (long long r = lane_in_group; r < reduce_total; r += group_size) {
+        int wo = static_cast<int>(r % Wout);
+        long long r1 = r / Wout;
+        int ho = static_cast<int>(r1 % Hout);
+        int n = static_cast<int>(r1 / Hout);
+
+        int hi = ho * SH - PH + kh;
+        int wi = wo * SW - PW + kw_;
+        if (hi < 0 || hi >= H || wi < 0 || wi >= W) continue;
+
+        long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+        long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+        acc += grad_out[g_idx] * x[x_idx];
+    }
+
+    unsigned mask = (group_size == 32)
+        ? 0xFFFFFFFFu
+        : (((1u << group_size) - 1u) << (group_in_warp * group_size));
+#pragma unroll
+    for (int offset = group_size / 2; offset > 0; offset >>= 1) {
+        acc += __shfl_down_sync(mask, acc, offset);
+    }
+    if (lane_in_group == 0) grad_w[widx] = acc;
+}
+
+#define CONV2D_BACKWARD_WEIGHT_WARP_SUBGROUP_LAUNCHER(TYPE, SUFFIX)                       \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_weight_warpsubgroup_##SUFFIX( \
+        const TYPE* grad_out, const TYPE* x, TYPE* grad_w,                               \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                          \
+        int SH, int SW, int PH, int PW, int Hout, int Wout,                              \
+        int warps_per_block, int group_size, void* stream) {                             \
+        long long total = static_cast<long long>(Cout) * Cin * KH * KW;                  \
+        int groups_per_warp = 32 / group_size;                                           \
+        int threads = warps_per_block * 32;                                              \
+        long long groups_per_block = static_cast<long long>(warps_per_block) * groups_per_warp; \
+        long long blocks64 = (total + groups_per_block - 1) / groups_per_block;          \
+        int blocks = blocks64 < 1 ? 1 : static_cast<int>(blocks64);                      \
+        k_conv2d_backward_weight_warp_subgroup<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>( \
+            grad_out, x, grad_w, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout,  \
+            total, group_size);                                                          \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+CONV2D_BACKWARD_WEIGHT_WARP_SUBGROUP_LAUNCHER(float, f32)
+CONV2D_BACKWARD_WEIGHT_WARP_SUBGROUP_LAUNCHER(double, f64)
+
 // -- Conv2d backward: bias (sum grad_output over batch and spatial dims) --
 
 template <typename T>

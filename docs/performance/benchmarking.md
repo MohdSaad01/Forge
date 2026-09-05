@@ -1386,3 +1386,55 @@ serial reduction). M45 is recommended to target it with a genuinely new
 angle -- warp-shuffle cooperative reduction -- distinct from both prior
 rejected techniques. Full 20-section report: `docs/performance/
 m44-bottleneck-recharacterization.md`.
+
+## Milestone 45: dWeight below-256 warp-shuffle reduction (investigated, rejected)
+
+### New: `benchmarks/m45_dweight_below256_profile.py`
+
+Profiles and benchmarks M44's recommended warp-shuffle cooperative
+reduction for the below-`CONV2D_WEIGHT_REDUCE_THRESHOLD` (256) dWeight
+path (`k_conv2d_backward_weight_reduce`, still production, unchanged since
+M21) before accepting M44's occupancy-bound diagnosis. Reuses M33's
+existing `k_conv2d_backward_weight_warp`/`cf_conv2d_backward_weight_
+warpreduce_*` (one full 32-lane warp per weight element) unmodified, and
+adds one new candidate this milestone, `k_conv2d_backward_weight_warp_
+subgroup`/`cf_conv2d_backward_weight_warpsubgroup_*` (configurable 8/16/32-
+lane sub-warp groups per weight element -- `group_size=32` degenerates to
+`warpreduce` itself, so only 8/16 are separately swept). Both are
+profiling-only, never called by `CUDABackend`.
+
+Independently sweeps weight-element count (9-252, fixed MNIST-like
+reduction), reduction size (256-204,800, fixed `weight_elements=72`), and
+channel/kernel-size configuration (`K` in {1,3,5}) -- the independent
+variation M44 explicitly flagged as missing from its own below-256 sweep.
+Also runs `nvcc -Xptxas -v` resource analysis on all four relevant kernels,
+a complete-`conv2d_backward` A/B (dInput+dWeight+dBias, dWeight swapped to
+the best candidate) at three representative shapes, a 255/256/257 boundary
+check, and a fresh same-session Amdahl fraction via `m35_mnist`.
+
+    python -m benchmarks.m45_dweight_below256_profile
+
+### Measured example (940MX, real hardware, this session)
+
+**Rejected** -- neither candidate clears the milestone's 1.15x acceptance
+bar at `mnist_conv1`'s own shape: current 2.10ms vs. best candidate 2.10ms
+(1.00x, essentially identical), and the complete `conv2d_backward` A/B at
+the same shape measured 0.985x (a small regression, within noise). Several
+sweep points regress outright (`we_32`: 0.57x, `we_64`: 0.89x, `we_128`:
+0.91x, `k1_wide`: 0.95x). `nvcc -Xptxas -v` shows no spill/local-memory
+difference among any of the four kernels (42-53 registers, 0 shared memory
+for the two warp candidates) -- ruling out register pressure identically
+to M33's own finding. **Root-cause correction to M44's hypothesis**: the
+production block-reduce kernel already launches 256 threads *per weight
+element* (`weight_elements x 256` total threads, 18k-64k at the tested
+shapes) -- both warp candidates launch *fewer* total threads per weight
+element (32, or 8/16 for sub-groups), so the below-256 path was never as
+parallelism-starved as M44's per-thread-kernel-relative framing suggested;
+occupancy at MNIST's own scale is not the binding constraint. The one place
+a warp candidate does win clearly is at very small reduction lengths
+(`reduction_small`, N*Hout*Wout=256: 1.93x) -- consistent with `__syncthreads()`-
+based tree-reduction/shared-memory-allocation overhead dominating only when
+the reduction itself is nearly free, an edge case no real Forge shape
+reaches. Production dispatch, `k_conv2d_backward_weight_reduce`, and
+`k_conv2d_backward_weight` are byte-for-byte unchanged. Full report:
+`docs/performance/conv2d-backward-profiling.md`'s **Milestone 45** section.

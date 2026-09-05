@@ -306,6 +306,15 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         ] + [ctypes.c_int] * 14 + [ctypes.c_void_p]
         conv_bwd_weight_warpreduce_fn.restype = ctypes.c_int
 
+        # -- dWeight sub-warp cooperative profiling helper (Milestone 45) --
+        # see kernels.cu's identically-named section. Never called by
+        # `CUDABackend` itself -- only by `benchmarks/m45_dweight_below256_profile.py`.
+        conv_bwd_weight_warpsubgroup_fn = getattr(lib, f"cf_conv2d_backward_weight_warpsubgroup_{suffix}")
+        conv_bwd_weight_warpsubgroup_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 15 + [ctypes.c_void_p]
+        conv_bwd_weight_warpsubgroup_fn.restype = ctypes.c_int
+
         # -- dInput candidate profiling helpers (Milestone 36) --
         # see kernels.cu's identically-named section. Never called by
         # `CUDABackend` itself -- only by `benchmarks/conv2d_backward_dinput_profile.py`.

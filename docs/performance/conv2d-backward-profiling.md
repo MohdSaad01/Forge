@@ -2830,3 +2830,303 @@ bottleneck properly. `dWeight`'s below-256 block-reduce kernel (M33/M34,
 twice investigated and twice rejected) and `dInput` (M36-optimized, never
 re-examined since) remain the two largest *unexamined-at-the-roofline-
 efficiency-level* costs, per M42's own Section 15 candidate list.
+
+# Milestone 45: dWeight below-256 warp-shuffle reduction (investigated, rejected)
+
+## Question
+M44's fresh post-M43 re-characterization found the below-
+`CONV2D_WEIGHT_REDUCE_THRESHOLD` (256) dWeight dispatch path
+(`k_conv2d_backward_weight_reduce`, unchanged since M21) unambiguously the
+single largest contributor to the real MNIST training step (20.19%), at
+only 3.1-3.2% of the practical compute ceiling -- flat across a
+`weight_elements` sweep (72-243) that M44 itself flagged as not
+independently varying reduction size. M44 hypothesized this was
+occupancy/parallelism-bound (`weight_elements`-many independent units, each
+a fully serial reduction) and recommended a genuinely untried angle at this
+target: warp-shuffle cooperative reduction. This milestone's question: does
+warp-shuffle cooperation actually beat the current kernel once reduction
+size and weight-element count are varied independently, and is the
+occupancy diagnosis actually correct?
+
+## How to reproduce
+```bash
+python -m benchmarks.m45_dweight_below256_profile
+python -m pytest tests/test_cuda_conv2d_backward_weight_below256_optimization.py -q
+```
+
+## 1. Baseline architecture (confirmed against the actual compiled source)
+`CUDABackend.conv2d_backward` (`backend.py`): `weight_elements = Cout*Cin*
+KH*KW`. Below `_CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD` (256, `kernels.cu`'s
+own `CONV2D_WEIGHT_REDUCE_THRESHOLD`), dispatch goes straight to
+`cf_conv2d_backward_weight_*`, which itself (a `kernels.cu` macro, not a
+Python-side branch) picks `k_conv2d_backward_weight_reduce` below 256 and
+`k_conv2d_backward_weight` (naive per-thread) at/above it. `k_conv2d_
+backward_weight_reduce`: one 256-thread block per `(co,ci,kh,kw)` weight
+element (`CONV2D_REDUCE_THREADS = 256`), each thread striding through a
+slice of the `N*Hout*Wout` reduction via a grid-stride loop, combined by a
+shared-memory (`256*sizeof(T)` bytes/block) tree reduction with 8
+`__syncthreads()` rounds. Total launched threads = `weight_elements * 256`
+(18,432-64,512 across this milestone's below-256 sweep). Memory access:
+`grad_out` read is broadcast across the 256 threads of a block at a given
+reduction offset (same `(n,co,ho,wo)` address for the whole block at that
+iteration); `x` read varies with the fast-varying spatial index. One kernel
+launch per `conv2d_backward` call at this weight-element range (unchanged
+since M21) -- this is the exact production baseline M33/M34 already
+investigated and left standing.
+
+## 2. Candidate designs
+
+**Candidate A -- `warpreduce`** (M33's existing `k_conv2d_backward_weight_
+warp`/`cf_conv2d_backward_weight_warpreduce_*`, reused unmodified): one full
+32-lane warp per weight element, `__shfl_down_sync`-reduced (5 shuffle
+rounds, no shared memory, no `__syncthreads()`), multiple warps packed per
+block via `warps_per_block` (this milestone swept 1/2/4/8/16). M33 measured
+this once at `mnist_conv1` (72 elements) in a different session and found
+it roughly matched (not clearly beat) the production block-reduce kernel,
+but never turned that single data point into an accept/reject decision at
+this specific target -- M33's own focus was the >= 1,152-weight-element
+regime, where both this kernel and Candidate A/M33's block-reduce forced
+variant lost badly to the per-thread kernel.
+
+**Candidate B -- `warpsubgroup`** (new this milestone, `k_conv2d_backward_
+weight_warp_subgroup`/`cf_conv2d_backward_weight_warpsubgroup_*`): a
+configurable sub-warp group size (`group_size` in {8, 16, 32} lanes per
+weight element, must evenly divide 32) so more independent weight-element
+groups can share one warp when a full 32-lane group is more parallelism
+than one weight element's reduction usefully absorbs. `group_size=32`
+degenerates to exactly Candidate A's own algorithm (verified: identical
+per-lane work, identical mask), so it was not separately re-tested --
+only `group_size in (8, 16)` x `warps_per_block in (2, 4, 8)` were swept (6
+configurations, not 9). `widx` and each group's early-return condition are
+uniform across every lane of that group (`group_in_warp = lane /
+group_size` is fixed per group), so the per-group `__shfl_down_sync` mask
+(`((1u << group_size) - 1u) << (group_in_warp * group_size)`) never
+includes a lane that has already returned. Correctness verified directly
+against a hand-written smoke test before any benchmarking (all group
+sizes, all warps-per-block, three shapes including a non-warp-multiple
+weight-element count) and again by the full test suite below.
+
+Both candidates preserve numerical semantics (same summation order per
+lane/group as the block-reduce kernel's own grid-stride loop, modulo
+floating-point non-associativity already inherent to *any* parallel-
+reduction reordering -- the same caveat every prior cooperative-reduction
+candidate in this file carries), avoid atomics entirely, and are
+profiling-only (`cf_conv2d_backward_weight_{warpreduce,warpsubgroup}_*`,
+never called by `CUDABackend`).
+
+## 3. Resource analysis (`nvcc -Xptxas -v`, fresh compile, this session)
+
+| kernel | registers (f32/f64) | shared mem | spill |
+|---|---|---|---|
+| `k_conv2d_backward_weight_reduce` (M21, production below 256) | 45/42 | 1024 bytes (256 threads x 4/8 bytes) | none |
+| `k_conv2d_backward_weight_warp` (M33, Candidate A) | 47/46 | 0 bytes | none |
+| `k_conv2d_backward_weight_warp_subgroup` (M45, Candidate B) | 48/48 | 0 bytes | none |
+| `k_conv2d_backward_weight` (M21, production >= 256, comparison only) | 53/47 | 0 bytes | none |
+
+No spill or local-memory usage anywhere, and register counts sit within a
+narrow 42-53 band across all four kernels -- **register pressure is ruled
+out identically to M33's own finding**, this time confirmed directly at
+the below-256 target rather than inferred from the >= 1,152 regime.
+
+## 4. Benchmark results (940MX, real hardware, this session, interleaved same-session A/B, 30 iterations/5 warmup, CUDA-event timed)
+
+### Weight-element-count sweep (fixed reduction = mnist_conv1's own N=64,H=W=28,K=3 -> N*Hout*Wout=50,176)
+| shape | weight# | current (ms) | best candidate (ms) | speedup | best config | cur % ceil | cand % ceil |
+|---|---:|---:|---:|---:|---|---:|---:|
+| we_16 | 9 | 1.3321 | 1.2346 | 1.079x | warpsubgroup(16x2) | 2.0% | 2.2% |
+| we_32 | 27 | 0.7940 | 1.3796 | 0.576x | warpsubgroup(16x4) | 6.7% | 3.9% |
+| we_64 | 63 | 1.8215 | 2.0547 | 0.887x | warpsubgroup(16x2) | 5.8% | 5.2% |
+| we_72 | 72 | 2.1046 | 2.0983 | 1.003x | warpsubgroup(16x2) | 5.7% | 5.7% |
+| we_128 | 126 | 3.6807 | 4.0452 | 0.910x | warpsubgroup(16x4) | 3.3% | 3.0% |
+| we_192 | 189 | 5.5502 | 5.3633 | 1.035x | warpsubgroup(16x2) | 3.3% | 3.4% |
+| we_255 | 252 | 7.4583 | 7.6670 | 0.973x | warpsubgroup(8x4) | 3.2% | 3.2% |
+
+`we_72` is `mnist_conv1`'s own exact shape: **1.003x -- no meaningful
+difference**, far short of the 1.15x acceptance bar. Three points regress
+outright (`we_32`, `we_64`, `we_128`, 0.58-0.91x).
+
+### Reduction-size sweep (fixed weight_elements=72, `mnist_conv1`'s own Cin=1/Cout=8/K=3 split)
+| shape | reduction size | current (ms) | best candidate (ms) | speedup |
+|---|---:|---:|---:|---:|
+| reduction_small | 256 | 0.0363 | 0.0188 | **1.93x** |
+| reduction_medium | 4,096 | 0.1957 | 0.1722 | 1.14x |
+| reduction_mnist | 50,176 | 2.1195 | 2.0979 | 1.01x |
+| reduction_large | 204,800 | 8.7581 | 8.6866 | 1.01x |
+
+The only clear win in this entire milestone is at the smallest tested
+reduction length (256 elements) -- see Section 6's root-cause discussion.
+At `mnist_conv1`'s own real reduction length (50,176) and above, the gap
+collapses to within 1%.
+
+### Channel/kernel-size sweep (`K` in {1,3,5})
+| shape | Cin,Cout,K | weight# | current (ms) | best candidate (ms) | speedup |
+|---|---|---:|---:|---:|---:|
+| k1_wide | 4,16,1 | 64 | 2.2484 | 2.3679 | 0.950x (regression) |
+| k3_mnist | 1,8,3 | 72 | 2.0920 | 2.0797 | 1.006x |
+| k5_narrow | 1,4,5 | 100 | 2.5547 | 2.6476 | 0.965x |
+
+No K-value shows a meaningful win; `K=1` (least spatial reuse) regresses.
+
+### Complete `conv2d_backward` (dInput+dWeight+dBias) A/B, best candidate substituted for dWeight only
+| shape | current (ms) | candidate (ms) | speedup |
+|---|---:|---:|---:|
+| mnist_conv1 | 3.1266 | 3.1751 | 0.985x |
+| we_192 | 6.8225 | 6.7545 | 1.010x |
+| reduction_large | 12.8225 | 12.9899 | 0.987x |
+
+At the complete-pipeline level (dInput/dBias unchanged, held fixed), the
+candidate is a wash at every tested shape -- never a clear win, and twice a
+small regression within measurement noise.
+
+### Boundary test (255 / 256 / 257 weight elements)
+| weight_elements | dispatched path |
+|---:|---|
+| 255 | block-reduce (below 256) -- this milestone's target, confirmed still reached |
+| 256 | per-thread (>= 256) -- unaffected |
+| 257 | per-thread (>= 256) -- unaffected |
+
+Confirms the M21 dispatch threshold is completely unaffected by this
+milestone's new profiling-only kernel additions (also covered by
+`tests/test_cuda_conv2d_backward_weight_below256_optimization.py::
+test_production_dispatch_unaffected_at_and_above_threshold`, which runs
+the real production entry point, not a forced kernel, at all three values).
+
+## 5. Fresh Amdahl fraction (this session, `m35_mnist` re-run)
+`mnist_conv1`'s own below-256 dWeight call: **18.66%** of the full,
+fresh-this-session MNIST training step (11.28ms total; `backward:conv2d`
+as a whole op is 47.54% for context) -- consistent with M44's 20.19% within
+normal cross-session run-to-run variance (not directly comparable, per this
+milestone's own instruction). Even if a candidate had cleared the
+acceptance bar, the Amdahl ceiling here is modest: a full 2x kernel speedup
+projects to only 1.103x whole-step speedup, and the actually-measured
+1.00-1.01x kernel-level result at every representative shape projects to
+no measurable whole-step effect at all.
+
+## 6. Root-cause correction to M44's hypothesis
+M44 framed the below-256 kernel as under-parallelized by analogy to the
+per-thread kernel used at/above the 256 threshold (`weight_elements`-many
+threads total). But the kernel *actually in production* below 256 is not
+that one -- it is `k_conv2d_backward_weight_reduce`, which already launches
+**256 threads per weight element** (`weight_elements * 256` total resident
+threads: 18,432-64,512 across this milestone's own sweep, comfortably
+enough to saturate the 940MX's 3 SMs many times over). Both warp
+candidates launch *fewer* total threads per weight element (32 for
+`warpreduce`, 8 or 16 for the sub-group variant) -- an 8-32x *reduction* in
+total launched parallelism relative to the kernel already running in
+production, not an increase. Measured against its actual competitor (not
+the per-thread kernel M44's prose analogy invoked), the below-256 path was
+never as parallelism-starved as the occupancy-bound framing suggested at
+MNIST's own real scale.
+
+The one clear counter-example -- `reduction_small` (256-element reduction),
+1.93x faster -- is consistent with a *different* explanation: at a
+reduction length this close to the block-reduce kernel's own 256 threads
+(1 element/thread), its 8-round `__syncthreads()` tree reduction and
+per-block shared-memory allocation still pay their full fixed cost even
+though there is almost no work to reduce, while a warp/sub-warp shuffle
+reduction (no barrier, no shared memory) pays almost none of that fixed
+cost. This is a genuine, mechanistically distinct effect from occupancy --
+launch/synchronization-overhead dominance at a reduction length so small
+that even a modest thread count already over-provisions parallelism -- but
+it is an edge case no real Forge shape reaches (`mnist_conv1`'s own
+reduction length is 50,176, `mnist_conv2`'s is 10,816, both solidly in the
+"no meaningful difference" regime measured above).
+
+## 7. Correctness validation
+`tests/test_cuda_conv2d_backward_weight_below256_optimization.py` (new, 67
+tests): `warpsubgroup` (`f32`, 5 shapes x 3 group sizes x 3 warps-per-block
+= 45 cases, spanning 9-255 weight elements, strided/no-padding variants;
+plus 3 `f64` shapes), `warpreduce` extended to the below-256 regime
+specifically (5 shapes x 3 warps-per-block, M33's own coverage focused on
+>= 1,152 elements), a direct finite-difference check of `warpsubgroup`'s
+own output (not just analytic-vs-CPU), explicit-stream execution
+(`forge.cuda.Stream()`, not the default/null stream), the 255/256/257
+production-dispatch boundary check (Section 4 above), and a 20-iteration x
+2-configuration repeated-use memory-safety check. All pass at
+`rtol=atol=1e-4` (f32) / `1e-6` (f64) / `1e-2` (finite difference). A real
+bug was caught and fixed while writing this test file's boundary check: an
+early draft's CUDA reference helper generated its own independent random
+input instead of reusing the exact array the CPU reference was computed
+from, producing a spurious 100%-element mismatch that was not a kernel bug
+-- fixed by threading the same `x_data` through both paths, matching every
+other correctness test in this file.
+
+## 8. Memory results
+`test_warpsubgroup_repeated_use_does_not_grow_active_memory` (20 iterations
+x 2 configurations = 40 launches): `allocated_bytes`/`reserved_bytes`/
+`pending_bytes` all return to baseline. No new CUDA workspace was
+introduced (both candidates write directly into the same `grad_w` buffer
+layout as the production kernel) -- no new leak surface.
+
+## 9. Full regression check
+Full suite: **1,519 tests passed** (1,452 pre-existing + 67 new), verified
+on a clean CUDA rebuild (`_forge_cuda_kernels_sm_50.dll` deleted and
+recompiled) immediately before running. `benchmarks.pipeline_profile`
+re-run fresh: 82.2-87.0% compute-stream utilization across batch sizes
+32/64/128 (within M40/M42/M44's own 83-94%/84-93% historical ranges),
+allocator and pinned-memory counters both returned cleanly to baseline
+after `gc.collect()` + `empty_cache()`. No regression anywhere outside this
+milestone's own new, inert profiling-only kernel surface.
+
+## 10. Production decision
+**Rejected.** Neither `warpreduce` (M33's existing kernel, reused
+unmodified) nor `warpsubgroup` (new this milestone) clears the acceptance
+bar (>= 1.15x at `mnist_conv1`'s own shape, no regression elsewhere) --
+`mnist_conv1` itself measured 1.003x (isolated kernel) and 0.985x (complete
+`conv2d_backward`), and four sweep points regressed outright. `CUDABackend.
+conv2d_backward`, the M21 dispatch threshold, and both production kernels
+(`k_conv2d_backward_weight`, `k_conv2d_backward_weight_reduce`) are
+byte-for-byte unchanged. Both candidate kernels remain in `kernels.cu` as
+documented, tested, profiling-only code so this negative result stays
+reproducible.
+
+Per Section 15's own precedent (M33's rejection), this is not a failure of
+process -- the milestone brief's own explicit instruction (Section 15: "if
+M45's own profiling instead finds occupancy is not, in fact, the limiter
+... M45 should report that finding rather than force the warp-shuffle
+direction") anticipated exactly this outcome as a valid result.
+
+## 11. Updated bottleneck ranking
+The below-256 block-reduce kernel remains the largest single absolute
+contributor (18.66% this session, consistent with M44's 20.19% within
+cross-session variance) -- **unchanged by this milestone**, since nothing
+was accepted into production. It has now been investigated at three
+distinct algorithmic angles across three milestones (M21's original
+block-reduce design choice itself, M33's alternative shared-memory/warp
+designs at the >= 1,152 regime, M45's warp-shuffle/sub-warp designs at the
+< 256 regime) without displacing the current M21 kernel. `dInput` (15.39%
+per M44, second-largest, extensively optimized in M36, no fresh finding
+this session) and `dWeight`'s `blocks_y==1`/`blocks_y>=2` GEMM paths
+(already optimized in M38/M39/M43) remain unchanged and healthy.
+
+## 12. Limitations
+- **Sub-warp group sizes below 8 were not tested** -- `group_size` must
+  divide 32, and 1/2/4-lane groups were judged unlikely to reverse the
+  trend (a single lane is not a "shuffle reduction" at all, and 2/4-lane
+  groups would only push further in the same low-parallelism-per-group
+  direction that already regressed at 8/16 relative to the full-warp
+  candidate at several shapes) -- not measured, so not claimed.
+- **The `reduction_small` win (1.93x) was not chased into production** --
+  no real Forge shape reaches a reduction length this small (the smallest
+  real shape, `mnist_conv2`, has 10,816), so building a *second* dispatch
+  branch purely for this regime was judged speculative optimization for a
+  workload Forge does not currently have, per the milestone's own "no
+  speculative optimization" hard constraint.
+- **`N`/`H`/`W` were not independently varied inside the channel/kernel-size
+  sweep** (Section 4's third table) -- each `K` value used a fixed spatial
+  shape; the reduction-size sweep (second table) already independently
+  isolates that variable, so this is a minor completeness gap rather than
+  a threat to the accept/reject decision.
+- **940MX thermal/clock variance**: all comparisons in this milestone are
+  same-session and interleaved (the primary evidence per every prior
+  milestone's own convention); the cross-session Amdahl-fraction comparison
+  against M44 (18.66% vs. 20.19%) is directional only, not a precise
+  measurement of drift.
+
+## Why no ADR
+No production code, public API, or cross-cutting architectural decision was
+touched -- a rejected profiling-only kernel-selection experiment, the same
+category as Milestone 33's own rejected candidates.
+
+## Suggested Commit Message
+`perf: characterize CUDA dWeight below-256 warp-shuffle reduction (rejected)`
