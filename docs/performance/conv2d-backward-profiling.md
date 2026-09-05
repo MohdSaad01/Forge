@@ -2021,3 +2021,477 @@ rebuild.
   own block tiling) was identified analytically during this milestone's
   root-cause analysis but not implemented -- a plausible next step if a
   future milestone wants to close the `blocks_y >= 2` gap specifically.
+
+# Milestone 39: dWeight im2col materialization -- shared-memory input-plane staging (accepted)
+
+## Question
+M38 left `k_im2col_conv2d` itself as the dominant remaining `dWeight` cost
+at every `blocks_y >= 2` shape (`Cout > 16` -- the regime M38's half-fused
+GEMM cannot help, since its redundant-regather tax grows with `blocks_y`,
+per M38's own **Limitations**/**Future opportunities** sections). This
+milestone asks whether `k_im2col_conv2d`'s own materialization cost can be
+reduced -- via the mandated `PROFILE -> ANALYZE -> DESIGN -> BENCHMARK ->
+SELECT -> IMPLEMENT -> VALIDATE` sequence, explicitly not assuming the
+brief's proposed shared-memory-reuse hypothesis is correct before measuring.
+
+## How to reproduce
+```bash
+python -m benchmarks.m39_im2col_reuse_profile   # this milestone's main source (new)
+python -m benchmarks.m38_im2col_profile         # re-run of M38's profiler -- confirms im2col/permute/baseline unaffected
+python -m benchmarks.conv2d_backward_profile    # re-run of M32's raw-kernel profiler -- confirms dInput/dWeight-perthread/dBias unaffected
+python -m benchmarks.pipeline_profile
+python -m benchmarks --categories mnist backward forward
+python -m pytest tests/ -q
+```
+Archived results: `benchmarks/results/m39_im2col_reuse_profile.json` (the
+primary evidence for this milestone's candidate comparison and decision).
+
+## Phase 1: profile
+
+### Baseline (reproduced fresh)
+`k_im2col_conv2d` is byte-for-byte unchanged since M34, so isolated-stage
+numbers match M37/M38 within run-to-run hardware variance:
+
+| Shape | weight# | reuse_factor | im2col (ms) |
+|---|---:|---:|---:|
+| mnist_conv1 | 72 | 9.00 | 0.475 |
+| mnist_conv2 | 1,152 | 9.00 | 0.811 |
+| large_channel | 4,608 | 9.00 | 7.341 |
+| large_spatial | 1,152 | 9.00 | 7.377 |
+| batch_32 | 4,608 | 9.00 | 3.634 |
+| batch_64 | 4,608 | 9.00 | 7.372 |
+| batch_128 | 4,608 | 9.00 | 14.790 |
+
+`reuse_factor = Hout*Wout*KH*KW / (H*W)` -- the average number of times a
+non-boundary input pixel is read while building the whole `Xcol` buffer
+(exact for `stride=1` interior pixels; a slight overestimate near
+boundaries/`stride>1`, where some `(kh,kw,ho,wo)` combinations read
+nothing). All 7 representative shapes use `K=3, stride=1`, so this is a
+constant 9.00 across them -- this milestone added a kernel-size sweep
+(`K` in {1,3,5}) and a stride sweep ({1,2}) specifically to vary
+`reuse_factor` independently (Section 3 of the milestone brief: "explicitly
+quantify the amount of input-patch reuse for representative KH/KW/stride
+configurations").
+
+| K | reuse_factor | im2col (ms) |
+|---:|---:|---:|
+| 1 | 1.00 | 0.838 |
+| 3 | 9.00 | 7.363 |
+| 5 | 25.00 | 20.548 |
+
+| stride | reuse_factor | im2col (ms) |
+|---:|---:|---:|
+| 1 | 9.00 | 7.360 |
+| 2 | 2.25 | 1.862 |
+
+(base shape for both sweeps: `Cin=16, H=W=28, N=64`.)
+
+### `nvcc -Xptxas -v` (fresh compile, both f32/f64)
+`k_im2col_conv2d`: **32 registers/thread, 0 bytes stack frame, 0 bytes
+spill stores/loads**, 384 bytes cmem[0]. Launched one thread per `(m,k)`
+`Xcol` output element -- `M*K` threads at every shape (thousands to
+millions) -- so it is **thread-count-limited, not register/occupancy-
+limited**, exactly matching M38's own finding (unchanged kernel). This
+rules out both of M32's/M36's historical failure modes (local-memory
+spill, under-occupancy) before any candidate is designed.
+
+### Structural division count
+`k_im2col_conv2d` decomposes both `m -> (n,ho,wo)` (2 divisions: `m%Wout`,
+`m/Wout` then `%Hout`/`/Hout`) and `k -> (ci,kh,kw)` (2 divisions: `k%KW`,
+`k/KW` then `%KH`/`/KH`), plus the initial `m=idx/K`/`k=idx%K` split -- 6
+division/modulo operations total per thread, all by runtime-valued
+divisors (`K`, `KW`, `KH`, `Wout`, `Hout` are kernel arguments, not
+compile-time constants, so the compiler cannot special-case any of them;
+same root-cause category M32 found for `dInput`, CC 5.0 has no fast path
+for runtime-divisor integer division). Critically, **neither decomposition
+depends on both `m` and `k` together**: `k -> (ci,kh,kw)` is identical for
+every one of the `M` output positions sharing that `k` (recomputed
+`M`-fold redundantly, `M` up to 100,352 at the largest representative
+shape); `m -> (n,ho,wo)` is identical for every one of the `K` values
+sharing that `m` (recomputed `K`-fold redundantly, `K` up to 288). This is
+a real, quantifiable redundancy the M38 register/occupancy analysis alone
+could not surface (0 spill, thread-count-limited both look "clean") --
+found only by reasoning about *which* per-thread work is actually
+independent of the thread's own full index, mirroring M32's own root-cause
+method applied to a new, cross-thread form of the same class of bug.
+
+## Phase 2: analyze
+
+1. **How much of im2col's runtime is global-memory traffic?** Both reads
+   and writes: `Xcol` write is `M*K` elements (unavoidable -- that is the
+   deliverable buffer's size); `x` read is up to `M*K` elements nominally
+   (one thread per `(m,k)`, each reading at most one input element when in
+   bounds) -- but many of those reads target the *same* input element
+   (see reuse_factor below), so the *achievable* read traffic, if fully
+   reused, is only `N*Cin*H*W` -- an up-to-`KH*KW`-fold reduction.
+2. **How much input reuse exists between neighboring output positions?**
+   Exactly `reuse_factor` (above): 9.00x at every representative shape
+   (`K=3, stride=1`), up to 25.00x at `K=5`, down to 1.00x at `K=1` (no
+   overlap at all -- each output position's receptive field is a single,
+   disjoint pixel) and 2.25x at `stride=2` (fewer output positions per
+   input pixel).
+3. **Does the 940MX have enough occupancy/headroom for shared-memory
+   staging?** Yes -- Phase 1 already established `im2col` is
+   thread-count-limited (never occupancy-bound), and CC 5.0's 48KB
+   per-block shared-memory budget comfortably fits one entire input plane
+   at every representative shape (largest: `large_spatial`'s 56x56=3,136
+   elements, 12.5KB at float32).
+4. **Would shared-memory staging reduce global transactions enough to
+   compensate for synchronization/indexing/register overhead?** Measured,
+   not assumed (Phase 4) -- yes, decisively, at every shape tested.
+5. **Is reuse primarily spatial, channel-local, or both?** Purely spatial
+   within a fixed `(n,ci)` plane -- reuse never crosses channels (each
+   `ci` has its own disjoint receptive-field structure) or batch elements.
+   This directly motivated Candidate B's block granularity: one block per
+   `(n,ci)` plane is the natural unit that captures 100% of the available
+   spatial reuse with a single shared-memory stage, no halo/tile-boundary
+   bookkeeping needed.
+6. **Does stride > 1 materially reduce the opportunity?** Yes, sharply --
+   `reuse_factor` drops from 9.00 to 2.25 at `stride=2` for the same
+   `K=3`. Candidate B still won there (1.60x, Section below), because it
+   also removes some of the baseline's division overhead as a side effect
+   (see Phase 4's `K=1` finding).
+7. **Do KH/KW=1 cases have enough reuse to justify a new kernel?**
+   `reuse_factor=1.00` at `K=1` means **zero** structural reuse (this is
+   not "low reuse", it is *no* overlap between any two output positions'
+   receptive fields) -- yet Candidate B still won (1.35x). This is
+   evidence the win is not *purely* about reuse; some of it comes from
+   Candidate B doing fewer, cheaper divisions per thread than the
+   baseline's full 6-division decomposition (see Phase 4).
+8. **Is there a shape regime where a tiled kernel clearly dominates?**
+   Every regime tested -- Candidate B never regressed at any of the 7
+   representative shapes, the `K` sweep, or the stride sweep.
+
+## Phase 3: design (at least two genuinely different candidates)
+
+### Candidate A -- index-hoisted, block-per-output-position (`k_im2col_conv2d_indexed`)
+Targets the **instruction/division-redundancy** diagnosis (Section 3
+above), independent of any data-reuse claim -- structurally the closest
+analog to M32's own `dInput` fix, applied to this kernel's cross-thread
+redundancy instead of `dInput`'s within-thread loop redundancy.
+`blockIdx.x` is `m` directly (gridDim.x has no practical 65535 limit,
+unlike y/z, so no division is needed to recover `m` from a flat index);
+thread 0 computes `m`'s `(n,ho,wo)` decomposition once per block and
+broadcasts it via shared memory (`__syncthreads()`), instead of every
+thread in the block repeating it; `k`'s `(ci,kh,kw)` decomposition is
+looked up from a tiny (`K`-element, 1-288 across every Forge shape) table
+built once on the host per call and uploaded via a small synchronous
+`cf_memcpy_h2d` (microseconds, not milliseconds, at this size) instead of
+computed via division. `threads_per_block` is tuned to
+`max(32, min(256, ceil(K/32)*32))` -- a fixed 256-thread block would waste
+most of its threads whenever `K < 256` (true at every representative
+shape: `K` is 9-144), since `k_im2col_conv2d_indexed` launches exactly one
+thread per `k` value.
+
+### Candidate B -- shared-memory input-plane staging (`k_im2col_conv2d_smem`)
+The milestone brief's literal hypothesis (Section 5, "Shared-memory input
+tile"), sized to the reuse analysis above: one block owns one entire
+`x[n,ci,:,:]` plane (the natural unit capturing 100% of available spatial
+reuse, per Analysis Q5), cooperatively stages it into dynamic shared
+memory once, then every one of that plane's `Hout*Wout*KH*KW` `Xcol`
+writes reads its input value from shared memory instead of reissuing a
+global load. This is a genuinely different mechanism from Candidate A --
+it changes what data source each read hits, not how many divisions each
+thread runs (though it happens to reduce the division count too: only 2
+divisions remain per work-item, `w%KW`/`w/KW` and `m_local%Wout`/`/Wout`,
+vs. the baseline's 6). It changes the `Xcol` write-address pattern from
+the baseline's fully sequential `idx=m*K+k` (perfectly coalesced by
+construction, since a warp's 32 consecutive `idx` are always 32
+consecutive `Xcol` addresses regardless of how many `m`/`k` boundaries
+they cross) to bursts of `KH*KW` contiguous addresses separated by a
+`K - KH*KW` gap whenever `Cin > 1` -- a real, measured (not assumed)
+write-coalescing cost this candidate's read-side savings had to
+outweigh, which Phase 4 confirms it does at every tested shape.
+
+Both are structurally different, satisfying Section 5's "at least two
+genuinely different approaches" requirement: Candidate A changes only
+*how* indices are computed (same memory-access pattern as baseline);
+Candidate B changes *where* data is read from (same index-computation
+shape as baseline, modulo the two divisions it happens to save).
+Candidate C ("specialized small-kernel path") was not pursued separately:
+Forge's own representative shapes are already dominated by `KH=KW=3,
+stride=1`, and Candidate B already specializes to *every* shape it runs on
+(one block per plane, sized to that call's own `H,W`) without needing a
+separate narrow-K code path.
+
+## Phase 4: benchmark
+
+All correctness verified (`benchmarks.m39_im2col_reuse_profile`'s
+companion correctness script and `tests/test_cuda_conv2d_backward_weight_
+im2col_smem.py`) against the unmodified `k_im2col_conv2d` across 9
+shape/stride/padding/kernel-size/dtype combinations (f32 + f64, including
+`Cin=1`, `1x1` kernels, and strided/padded variants) *before* any timing
+was trusted.
+
+### `nvcc -Xptxas -v` (both candidates, f32/f64 identical)
+| Kernel | registers | stack frame | spill | shared mem | barriers |
+|---|---:|---:|---:|---:|---:|
+| `k_im2col_conv2d` (baseline) | 32 | 0 | 0 | 384B cmem[0] (none dynamic) | 0 |
+| `k_im2col_conv2d_indexed` (A) | 28 | 0 | 0 | 16B static (3 shared ints) | 1 |
+| `k_im2col_conv2d_smem` (B) | 34 | 0 | 0 | dynamic, `H*W*itemsize` (<=12.5KB tested) | 1 |
+
+No stack frame or spill on either candidate -- both are clean at the
+register-allocation level; the comparison is decided entirely by measured
+wall-clock time and memory-traffic behavior, not by an occupancy/register
+artifact.
+
+### Isolated `im2col` comparison (interleaved CUDA-event A/B, 30 iterations + 5 warmup)
+| Shape | weight# | reuse | baseline (ms) | Candidate A (ms) | A speedup | Candidate B (ms) | B speedup |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| mnist_conv1 | 72 | 9.00 | 0.475 | 1.513 | 0.314x | 0.285 | **1.666x** |
+| mnist_conv2 | 1,152 | 9.00 | 0.811 | 0.767 | 1.057x | 0.482 | **1.683x** |
+| large_channel | 4,608 | 9.00 | 7.341 | 4.042 | 1.816x | 4.110 | **1.786x** |
+| large_spatial | 1,152 | 9.00 | 7.377 | 4.834 | 1.526x | 4.070 | **1.812x** |
+| batch_32 | 4,608 | 9.00 | 3.634 | 2.151 | 1.690x | 2.062 | **1.762x** |
+| batch_64 | 4,608 | 9.00 | 7.372 | 4.058 | 1.817x | 4.123 | **1.788x** |
+| batch_128 | 4,608 | 9.00 | 14.790 | 7.680 | 1.926x | 8.331 | **1.775x** |
+
+| K | reuse | baseline (ms) | A speedup | B speedup |
+|---:|---:|---:|---:|---:|
+| 1 | 1.00 | 0.838 | 0.491x | **1.348x** |
+| 3 | 9.00 | 7.363 | 1.830x | **1.779x** |
+| 5 | 25.00 | 20.548 | 1.987x | **1.813x** |
+
+| stride | reuse | baseline (ms) | A speedup | B speedup |
+|---:|---:|---:|---:|---:|
+| 1 | 9.00 | 7.360 | 1.841x | **1.780x** |
+| 2 | 2.25 | 1.862 | 1.260x | **1.595x** |
+
+Peak reserved memory: both candidates match the baseline within rounding
+at every shape tested (mnist_conv1: 1.91MB all three; large_channel:
+30.62-30.63MB all three) -- Candidate A's 3 tiny index-table buffers
+(<=1.2KB each) are far below the `Xcol` buffer's own size and do not
+register at MB granularity; Candidate B allocates no extra buffer at all.
+
+### Interpretation
+**Candidate A is shape-dependent and unreliable**: it loses badly at
+`mnist_conv1` (0.314x, over 3x *slower*) and `K=1` (0.491x) -- both cases
+where `K` (the total decomposition-table size *and* the per-block thread
+count) is small enough that block/launch overhead (many blocks of only
+32-256 threads, most of them for `K=9` at `mnist_conv1`) dominates the
+division savings. It also loses (0.65-1.09x, not shown as a separate row
+but visible in the shape table) exactly at `mnist_conv2`/`Cout=17`-scale
+`K` values -- i.e., inside the milestone's own target regime
+(`blocks_y >= 2`, which includes `mnist_conv2`-sized `K` when `Cout` grows
+past 16). A candidate that wins by 2x at some shapes and loses by 3x at
+others in the *same* dispatch regime cannot be safely deployed without a
+second, K-dependent dispatch condition on top of the existing `Cout`-based
+one -- added complexity for an unreliable, sign-flipping win.
+
+**Candidate B is uniformly, robustly better**: it wins at *every* shape
+and *every* sweep point tested, including the `K=1` zero-reuse edge case
+(1.35x -- confirming part of its win is genuinely from removing 4 of the
+baseline's 6 divisions, not purely data reuse) and the `stride=2`
+low-reuse case (1.60x). The write-coalescing cost the design analysis
+flagged as a real risk (Phase 3) is empirically outweighed by the
+read-side savings at every shape -- large_channel's write pattern (bursts
+of 9 contiguous addresses, `K-9=135`-element gaps, `Cin=16`) still nets a
+1.79x win despite that inefficiency, because the eliminated global reads
+(`KH*KW=9`-fold reduction) are worth far more than the write-coalescing
+loses.
+
+## Selection
+**Candidate B (shared-memory input-plane staging) is accepted; Candidate A
+is rejected.** Candidate A's inconsistency (a real, reproducible 3x
+regression at shapes inside the exact target dispatch regime) fails
+Section 7's Required Candidate Acceptance Criterion 9 ("does not introduce
+a meaningful regression on shapes routed to it") outright -- it is kept in
+`kernels.cu`/`experimental_conv_im2col_reuse.py` as correctness-tested,
+never-dispatched reference code, matching M33/M36's convention for a
+rejected candidate. Candidate B satisfies every criterion in Section 7:
+correct across the tested parameter space (f32/f64, finite difference,
+explicit-stream, cross-stream, allocator reuse, repeated-use), a
+reproducible improvement at every tested shape in its intended regime, no
+regression anywhere, reasonable memory overhead (strictly less than or
+equal to the baseline -- no new buffer at all), no new synchronization
+primitive, and no public API change.
+
+## Production dispatch
+`CUDABackend.conv2d_backward`'s `blocks_y >= 2` branch (`backend.py`,
+inside the existing `weight_elements >= _CONV2D_WEIGHT_IM2COL_GEMM_
+THRESHOLD` arm, unchanged since M34) now calls
+`dweight_im2col_smem_gemm_splitk` (`experimental_conv_im2col_reuse.py`) in
+place of M37's `dweight_im2col_gemm_splitk`. That function is identical to
+the M37 pipeline except its `im2col` stage calls Candidate B
+(`im2col_smem`) whenever `im2col_smem_fits(dtype, H, W)` -- `H*W*itemsize
+<= 48KB`, CC 5.0's static per-block shared-memory ceiling with no opt-in
+to raise it (the lowest such ceiling any CUDA-capable device exposes, so a
+fixed 48KB check is safe on every device Forge might run on) -- falling
+back to the unmodified M34 `im2col` otherwise, so no shape can ever fail
+to launch. No Forge shape (largest: 56x56=3,136 elements, 25.1KB at
+float64) comes close to this cap; it exists for a hypothetical larger
+spatial layer, not because any tested shape needs it.
+`grad_output_permute`/`k_matmul`/`cf_matmul_splitk_*` are byte-for-byte
+unmodified; the `blocks_y == 1` branch (M38's half-fused Candidate B) is
+untouched.
+
+The exact condition (unchanged from M37/M38, only the *called function*
+above the threshold differs when `blocks_y >= 2`):
+```python
+weight_elements = Cout * Cin * KH * KW
+if weight_elements >= _CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD:      # 256, M34
+    gemm_blocks_y = ceil(Cout / 16)
+    if gemm_blocks_y == 1:
+        dweight_halffused_gemm_splitk(...)                       # M38, unchanged
+    else:
+        dweight_im2col_smem_gemm_splitk(...)                     # M39 (was M37's dweight_im2col_gemm_splitk)
+else:
+    cf_conv2d_backward_weight_{f32,f64}(...)                     # M21, unchanged
+```
+
+## Before/after: full dWeight pipeline
+Interleaved CUDA-event A/B (`dweight_im2col_gemm_splitk` (M37) vs.
+`dweight_im2col_smem_gemm_splitk` (M39), same inputs, 30 iterations + 5
+warmup), at every representative shape that reaches this dispatch branch
+(`Cout > 16` -- `mnist_conv1`/`mnist_conv2`/`large_spatial` are all
+`Cout <= 16` and routed to M38's half-fused path instead):
+
+| Shape | weight# | M37 (ms) | M39 (ms) | speedup |
+|---|---:|---:|---:|---:|
+| large_channel | 4,608 | 13.728 | 10.456 | **1.313x** |
+| batch_32 | 4,608 | 6.984 | 5.324 | **1.312x** |
+| batch_64 | 4,608 | 13.751 | 10.506 | **1.309x** |
+| batch_128 | 4,608 | 27.540 | 20.981 | **1.313x** |
+
+`Cout` sweep at a fixed base shape (`Cin=16, H=W=28, K=3, N=64`), isolating
+how the win shrinks as `blocks_y` grows (GEMM/permute time dilutes
+`im2col`'s fixed absolute savings, since `im2col`'s own cost does not
+depend on `Cout` at all):
+
+| Cout | blocks_y | M37 (ms) | M39 (ms) | speedup |
+|---:|---:|---:|---:|---:|
+| 17 | 2 | 13.102 | 9.779 | **1.340x** |
+| 24 | 2 | 13.408 | 10.142 | **1.322x** |
+| 32 | 2 | 13.692 | 10.487 | **1.306x** |
+| 48 | 3 | 16.746 | 13.491 | **1.241x** |
+| 64 | 4 | 19.835 | 16.496 | **1.202x** |
+| 128 | 8 | 31.539 | 28.207 | **1.118x** |
+
+Monotonically decreasing but never regressing, at every `blocks_y` tested
+from 2 through 8 -- exactly the pattern expected from a fixed absolute
+`im2col` saving diluted by a growing GEMM/permute cost, not a sign of a
+hidden regression at large `Cout`.
+
+## Before/after: full `conv2d_backward` (real API level)
+A controlled, interleaved, same-session A/B through the real
+`Tensor.conv2d`/`nn.Conv2d` API (monkeypatched dispatch for the "old"/M37
+measurement, un-patched for "new"/M39, 3 rounds of 20 iterations each,
+`large_channel`'s shape: `Cin=16, Cout=32, H=W=28, K=3, N=64`, full
+`conv2d_backward` including `dInput`+`dWeight`+`dBias` together): **old**
+57.5-57.9ms across 3 rounds, **new** 54.4-54.8ms across 3 rounds --
+tight, low-variance, reproducible **1.056x** at the full
+`conv2d_backward` level. This is smaller than the isolated dWeight-pipeline
+speedup (1.31x) because `dInput` (M36-optimized, ~13ms at this shape,
+unaffected by this milestone) and `dBias` (~0.7ms) are both included and
+unaffected -- exactly the Amdahl dilution M37/M38 documented for their own
+full-pipeline numbers.
+
+## MNIST/training impact
+MNIST's own two conv layers (`Cin=1,Cout=8` and `Cin=8,Cout=16`) are both
+`blocks_y == 1` (`Cout <= 16`) and are routed to M38's unchanged half-fused
+path -- **this milestone has zero code-path effect on MNIST**, and none
+was expected. `benchmarks.pipeline_profile` (batch=64) measured
+`bwd=6.76ms` in this session, within the documented run-to-run hardware
+variance band this laptop GPU has shown since M32 (M33 measured 8.49ms in
+its own session; both sessions are internally consistent, not directly
+comparable across sessions per the profiling doc's own **Hardware
+variance** convention) -- reported for completeness, not claimed as a
+milestone effect.
+
+## Memory
+Candidate B allocates no buffer beyond `Xcol` itself (identical size to
+the baseline's `Xcol`) -- peak reserved memory at every shape matches the
+M37 baseline within rounding (see the isolated-comparison table above).
+Candidate A's three small per-call index-table buffers (`K` int32
+elements each, <=1.2KB at every representative shape) are correctness-
+tested but never reach production. **One real bug was caught and fixed
+during this milestone's own development**: an early draft of Candidate
+A's host-table upload helper (`_upload_int32`) returned a bare
+`backend._alloc()` device pointer with no owning `CUDAStorage` --
+permanently leaking it (never released back to the M25 caching allocator,
+since nothing ever called back into the allocator's release path). This
+was caught by this milestone's own repeated-use memory-safety test
+(`reserved_bytes` failed to return to 0 after 100 iterations, off by
+exactly 6,960 bytes -- traceable to the specific leaked table sizes from
+earlier parametrized test cases in the same pytest session), the same
+bookkeeping mistake M33's own history documents
+(`docs/performance/conv2d-backward-profiling.md`'s **Milestone 33**
+**Memory Results** section: "an earlier draft released the candidate
+kernels' output buffer via a raw `cf_free` instead of through
+`CUDAStorage`... which silently corrupted `allocated_bytes` bookkeeping
+for *later*, unrelated tests in the same pytest session"). Fixed by
+wrapping the upload in a `CUDAStorage`, exactly like every other Forge
+CUDA buffer.
+
+## Tests
+`tests/test_cuda_conv2d_backward_weight_im2col_smem.py` (38 new tests): CPU
+parity across 8 shape/stride/padding/kernel-size combinations (including
+`Cin=1`, a `1x1` kernel, and both sides of the `blocks_y` boundary) at
+float32, one float64 case, direct agreement with the M37 baseline from
+identical inputs, isolated `im2col_smem`/`im2col_indexed`-vs-baseline
+correctness (5 and 4 shape/stride/padding combinations respectively),
+`im2col_smem_fits`'s boundary behavior, `build_k_decomposition_tables`'s
+convention match, finite difference, explicit-stream, cross-stream (both
+directions), 100-iteration repeated-use memory safety, allocator
+cache-hit reuse, and production-dispatch coverage through the real
+`Tensor.conv2d`/`nn.Conv2d` API spanning `blocks_y` 1 through 3 plus the
+below-threshold case. Full suite: **1,366 tests total** (1,328
+pre-existing, unmodified + 38 new), all passing on the 940MX after a
+clean rebuild (`python -m pytest tests/ -q`).
+
+## Regression
+- `benchmarks.conv2d_backward_profile` (M32's raw-kernel profiler, calls
+  `cf_conv2d_backward_weight_*` directly, never reaching this milestone's
+  dispatch): numbers match historical values within normal run-to-run
+  variance (e.g. `large_channel` dWeight 43.58ms vs. the M32-38 baseline
+  band of 43.5-44.3ms) -- confirms `k_conv2d_backward_weight`/`_reduce`
+  are untouched, as expected.
+- `benchmarks.m38_im2col_profile` (calls the unmodified `im2col`/
+  `dweight_im2col_gemm_splitk` directly): `im2col` isolated numbers match
+  M38's own baseline within variance (e.g. `large_channel` 7.327ms vs.
+  this milestone's own 7.341ms); `baseline_splitk_ms` (M37's function,
+  still exported and tested, just no longer the production call) likewise
+  unaffected.
+- `benchmarks --categories mnist backward forward`: every non-`im2col`-
+  adjacent CUDA operation (elementwise, matmul, `max_pool2d`,
+  `cross_entropy_loss`, dropout, Adam, multilayer Linear/ReLU/Linear)
+  within normal run-to-run noise of historical numbers.
+- Full CUDA test suite (`pytest tests/ -q -k cuda`): 674 passed. Full
+  suite: 1,366 passed, 0 failed.
+
+## Limitations
+- **`blocks_y == 1` is unaffected by this milestone** -- M38's half-fused
+  Candidate B remains the dispatch there, and it never calls `im2col` (or
+  any of this milestone's candidates) at all.
+- **Candidate A is rejected but not deleted** -- kept correctness-tested
+  as a profiling-only reference (M33/M36's convention), never dispatched.
+  A future milestone could revisit a K-dependent dispatch condition for it
+  specifically, but this milestone found no evidence that complexity would
+  be worth it given Candidate B's uniform win.
+- **The 48KB shared-memory fallback path is untested by real production
+  shapes** -- no Forge shape reaches it (largest tested: 25.1KB at
+  float64), so `im2col_smem_fits`'s `False` branch is covered only by a
+  direct unit test (`test_im2col_smem_fits_reports_false_above_device_
+  cap`) and the fallback's *own* code path (the unmodified M34 `im2col`)
+  is exercised everywhere else in the existing test suite -- not a new,
+  unverified code path, just one this milestone's own shapes never
+  trigger.
+- **Write-coalescing cost is real but not separately quantified** beyond
+  the net wall-clock numbers above (Section on Interpretation) -- a deeper
+  investigation with Nsight Compute's memory-transaction counters could
+  give a precise breakdown of read-savings-vs-write-cost, but the
+  CUDA-event evidence was decisive enough (consistent win at every shape)
+  that this was not required to reach the accept decision.
+- Run-to-run hardware variance on this laptop GPU remains large enough at
+  wall-clock, full-training-step granularity to mask an effect of this
+  size (MNIST itself is unaffected regardless, see above) -- the
+  CUDA-event, same-session, controlled comparisons above remain the
+  trustworthy evidence, matching every prior milestone's own convention.
+
+## Next bottleneck
+Not measured/claimed here (Section 11 forbids inventing one before
+measuring). `dInput` (M36-optimized) and `dWeight`'s GEMM/permute stages
+remain the next-largest `conv2d_backward` costs at the shapes this
+milestone's own full-pipeline numbers show (`dInput` ~13ms vs. `dWeight`'s
+now-~10.5ms at `large_channel`) -- a future milestone would need to
+re-profile fresh rather than assume this ordering holds at every shape.

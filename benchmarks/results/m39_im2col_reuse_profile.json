@@ -1,0 +1,536 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "dbae10e68b7454166fc2fbec12ea10ac1ee348cb",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "shapes": [
+      {
+        "name": "mnist_conv1",
+        "config": {
+          "N": 64,
+          "Cin": 1,
+          "Cout": 8,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 72,
+        "M": 50176,
+        "K": 9,
+        "Hout": 28,
+        "Wout": 28,
+        "xcol_mb": 1.72265625,
+        "reuse_factor": 9.0,
+        "baseline_ms": {
+          "mean_ms": 0.47453973193963367,
+          "median_ms": 0.4745279997587204,
+          "min_ms": 0.47360000014305115,
+          "max_ms": 0.4758079946041107,
+          "stdev_ms": 0.0005744942454845895
+        },
+        "indexed_ms": {
+          "mean_ms": 1.5126165390014648,
+          "median_ms": 1.4832159876823425,
+          "min_ms": 1.4144320487976074,
+          "max_ms": 1.8000320196151733,
+          "stdev_ms": 0.10613214256415714
+        },
+        "smem_ms": {
+          "mean_ms": 0.2847871998945872,
+          "median_ms": 0.2849919945001602,
+          "min_ms": 0.2810559868812561,
+          "max_ms": 0.28755199909210205,
+          "stdev_ms": 0.0019362924287727077
+        },
+        "speedup_indexed": 0.31372110492253064,
+        "speedup_smem": 1.6662958592074455,
+        "peak_reserved_mb_baseline": 1.9140625,
+        "peak_reserved_mb_indexed": 1.9141654968261719,
+        "peak_reserved_mb_smem": 1.9140625
+      },
+      {
+        "name": "mnist_conv2",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 1152,
+        "M": 10816,
+        "K": 72,
+        "Hout": 13,
+        "Wout": 13,
+        "xcol_mb": 2.970703125,
+        "reuse_factor": 9.0,
+        "baseline_ms": {
+          "mean_ms": 0.8107893347740174,
+          "median_ms": 0.8125759959220886,
+          "min_ms": 0.7844160199165344,
+          "max_ms": 0.9967679977416992,
+          "stdev_ms": 0.037307987392130176
+        },
+        "indexed_ms": {
+          "mean_ms": 0.7672629336516062,
+          "median_ms": 0.7750720083713531,
+          "min_ms": 0.6850559711456299,
+          "max_ms": 0.8954240083694458,
+          "stdev_ms": 0.07561011643976237
+        },
+        "smem_ms": {
+          "mean_ms": 0.4817215989033381,
+          "median_ms": 0.4816640019416809,
+          "min_ms": 0.48096001148223877,
+          "max_ms": 0.48310399055480957,
+          "stdev_ms": 0.0004834354514916546
+        },
+        "speedup_indexed": 1.0567294459478938,
+        "speedup_smem": 1.6831077049893912,
+        "peak_reserved_mb_baseline": 3.30078125,
+        "peak_reserved_mb_indexed": 3.301605224609375,
+        "peak_reserved_mb_smem": 3.30078125
+      },
+      {
+        "name": "large_channel",
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 4608,
+        "M": 50176,
+        "K": 144,
+        "Hout": 28,
+        "Wout": 28,
+        "xcol_mb": 27.5625,
+        "reuse_factor": 9.0,
+        "baseline_ms": {
+          "mean_ms": 7.341309849421183,
+          "median_ms": 7.425583839416504,
+          "min_ms": 7.220799922943115,
+          "max_ms": 7.428415775299072,
+          "stdev_ms": 0.1005524090127337
+        },
+        "indexed_ms": {
+          "mean_ms": 4.04159681002299,
+          "median_ms": 4.037520170211792,
+          "min_ms": 3.8955841064453125,
+          "max_ms": 4.24838399887085,
+          "stdev_ms": 0.08749105118419621
+        },
+        "smem_ms": {
+          "mean_ms": 4.110164276758829,
+          "median_ms": 4.110031843185425,
+          "min_ms": 4.107135772705078,
+          "max_ms": 4.112544059753418,
+          "stdev_ms": 0.0011822389831541587
+        },
+        "speedup_indexed": 1.8164379562095465,
+        "speedup_smem": 1.7861353841580154,
+        "peak_reserved_mb_baseline": 30.625,
+        "peak_reserved_mb_indexed": 30.62664794921875,
+        "peak_reserved_mb_smem": 30.625
+      },
+      {
+        "name": "large_spatial",
+        "config": {
+          "N": 32,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 56,
+          "W": 56,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "weight_elements": 1152,
+        "M": 100352,
+        "K": 72,
+        "Hout": 56,
+        "Wout": 56,
+        "xcol_mb": 27.5625,
+        "reuse_factor": 9.0,
+        "baseline_ms": {
+          "mean_ms": 7.377052847544352,
+          "median_ms": 7.427119970321655,
+          "min_ms": 7.221792221069336,
+          "max_ms": 7.428607940673828,
+          "stdev_ms": 0.08766756492572911
+        },
+        "indexed_ms": {
+          "mean_ms": 4.834198395411174,
+          "median_ms": 4.844671964645386,
+          "min_ms": 4.625696182250977,
+          "max_ms": 5.084447860717773,
+          "stdev_ms": 0.08902484108457995
+        },
+        "smem_ms": {
+          "mean_ms": 4.07029226620992,
+          "median_ms": 4.063055992126465,
+          "min_ms": 4.056416034698486,
+          "max_ms": 4.117504119873047,
+          "stdev_ms": 0.016054857392731905
+        },
+        "speedup_indexed": 1.5260136726177733,
+        "speedup_smem": 1.8124135479867012,
+        "peak_reserved_mb_baseline": 30.625,
+        "peak_reserved_mb_indexed": 30.625823974609375,
+        "peak_reserved_mb_smem": 30.625
+      }
+    ],
+    "batch_sweep": [
+      {
+        "name": "batch_32",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 32
+        },
+        "weight_elements": 4608,
+        "M": 25088,
+        "K": 144,
+        "Hout": 28,
+        "Wout": 28,
+        "xcol_mb": 13.78125,
+        "reuse_factor": 9.0,
+        "baseline_ms": {
+          "mean_ms": 3.6342474540074665,
+          "median_ms": 3.6159039735794067,
+          "min_ms": 3.614720106124878,
+          "max_ms": 3.718656063079834,
+          "stdev_ms": 0.038953951549050084
+        },
+        "indexed_ms": {
+          "mean_ms": 2.151033624013265,
+          "median_ms": 2.1471840143203735,
+          "min_ms": 2.0349440574645996,
+          "max_ms": 2.6749119758605957,
+          "stdev_ms": 0.12725812329889052
+        },
+        "smem_ms": {
+          "mean_ms": 2.0624287923177085,
+          "median_ms": 2.0406559705734253,
+          "min_ms": 2.0373120307922363,
+          "max_ms": 2.1001598834991455,
+          "stdev_ms": 0.028178397405108687
+        },
+        "speedup_indexed": 1.6895353998357836,
+        "speedup_smem": 1.7621202087289451,
+        "peak_reserved_mb_baseline": 15.3125,
+        "peak_reserved_mb_indexed": 15.31414794921875,
+        "peak_reserved_mb_smem": 15.3125
+      },
+      {
+        "name": "batch_64",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 64
+        },
+        "weight_elements": 4608,
+        "M": 50176,
+        "K": 144,
+        "Hout": 28,
+        "Wout": 28,
+        "xcol_mb": 27.5625,
+        "reuse_factor": 9.0,
+        "baseline_ms": {
+          "mean_ms": 7.371916818618774,
+          "median_ms": 7.426815986633301,
+          "min_ms": 7.221792221069336,
+          "max_ms": 7.428287982940674,
+          "stdev_ms": 0.09122643421854869
+        },
+        "indexed_ms": {
+          "mean_ms": 4.057681099573771,
+          "median_ms": 4.0611841678619385,
+          "min_ms": 3.8206400871276855,
+          "max_ms": 4.3949761390686035,
+          "stdev_ms": 0.12071970475423369
+        },
+        "smem_ms": {
+          "mean_ms": 4.122727473576863,
+          "median_ms": 4.15504002571106,
+          "min_ms": 4.061056137084961,
+          "max_ms": 4.181056022644043,
+          "stdev_ms": 0.05706683140941869
+        },
+        "speedup_indexed": 1.816780727148109,
+        "speedup_smem": 1.7881164510306393,
+        "peak_reserved_mb_baseline": 30.625,
+        "peak_reserved_mb_indexed": 30.62664794921875,
+        "peak_reserved_mb_smem": 30.625
+      },
+      {
+        "name": "batch_128",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 128
+        },
+        "weight_elements": 4608,
+        "M": 100352,
+        "K": 144,
+        "Hout": 28,
+        "Wout": 28,
+        "xcol_mb": 55.125,
+        "reuse_factor": 9.0,
+        "baseline_ms": {
+          "mean_ms": 14.789861392974853,
+          "median_ms": 14.84603214263916,
+          "min_ms": 14.43881607055664,
+          "max_ms": 14.849472045898438,
+          "stdev_ms": 0.1401860769161241
+        },
+        "indexed_ms": {
+          "mean_ms": 7.679636287689209,
+          "median_ms": 7.650079965591431,
+          "min_ms": 7.5326080322265625,
+          "max_ms": 8.053279876708984,
+          "stdev_ms": 0.1251832024677835
+        },
+        "smem_ms": {
+          "mean_ms": 8.330906677246094,
+          "median_ms": 8.330912113189697,
+          "min_ms": 8.328448295593262,
+          "max_ms": 8.333312034606934,
+          "stdev_ms": 0.0011761759868158775
+        },
+        "speedup_indexed": 1.9258544075431858,
+        "speedup_smem": 1.775300332359966,
+        "peak_reserved_mb_baseline": 61.25,
+        "peak_reserved_mb_indexed": 61.25164794921875,
+        "peak_reserved_mb_smem": 61.25
+      }
+    ],
+    "kernel_size_sweep": [
+      {
+        "K": 1,
+        "reuse_factor": 1.0,
+        "baseline_ms": 0.8379711985588074,
+        "indexed_ms": 1.7065802693367005,
+        "smem_ms": 0.6216789325078328,
+        "speedup_indexed": 0.491023606457435,
+        "speedup_smem": 1.3479163515779096
+      },
+      {
+        "K": 3,
+        "reuse_factor": 9.0,
+        "baseline_ms": 7.3628639856974285,
+        "indexed_ms": 4.022652777036031,
+        "smem_ms": 4.139884805679321,
+        "speedup_indexed": 1.830350366735488,
+        "speedup_smem": 1.7785190485485607
+      },
+      {
+        "K": 5,
+        "reuse_factor": 25.0,
+        "baseline_ms": 20.548140970865884,
+        "indexed_ms": 10.343106079101563,
+        "smem_ms": 11.331357924143473,
+        "speedup_indexed": 1.9866508971017693,
+        "speedup_smem": 1.8133873370184888
+      }
+    ],
+    "stride_sweep": [
+      {
+        "stride": 1,
+        "reuse_factor": 9.0,
+        "baseline_ms": 7.359673563639323,
+        "indexed_ms": 3.9976170619328815,
+        "smem_ms": 4.135378122329712,
+        "speedup_indexed": 1.8410151471789193,
+        "speedup_smem": 1.7796857617201804
+      },
+      {
+        "stride": 2,
+        "reuse_factor": 2.25,
+        "baseline_ms": 1.8624554514884948,
+        "indexed_ms": 1.478052266438802,
+        "smem_ms": 1.1678229331970216,
+        "speedup_indexed": 1.2600741487822134,
+        "speedup_smem": 1.5948097939726646
+      }
+    ],
+    "cout_regime_sweep": [
+      {
+        "name": "cout_17",
+        "config": {
+          "Cin": 16,
+          "Cout": 17,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 64
+        },
+        "weight_elements": 2448,
+        "M": 50176,
+        "K": 144,
+        "Hout": 28,
+        "Wout": 28,
+        "xcol_mb": 27.5625,
+        "reuse_factor": 9.0,
+        "baseline_ms": {
+          "mean_ms": 7.340669854482015,
+          "median_ms": 7.2248640060424805,
+          "min_ms": 7.222239971160889,
+          "max_ms": 7.483583927154541,
+          "stdev_ms": 0.12852306568801605
+        },
+        "indexed_ms": {
+          "mean_ms": 4.033387716611227,
+          "median_ms": 4.009823799133301,
+          "min_ms": 3.911360025405884,
+          "max_ms": 4.254784107208252,
+          "stdev_ms": 0.07259804842570843
+        },
+        "smem_ms": {
+          "mean_ms": 4.197730127970377,
+          "median_ms": 4.207535982131958,
+          "min_ms": 4.175551891326904,
+          "max_ms": 4.2123517990112305,
+          "stdev_ms": 0.01460092951861305
+        },
+        "speedup_indexed": 1.8199762507953245,
+        "speedup_smem": 1.7487236269834392,
+        "peak_reserved_mb_baseline": 30.625,
+        "peak_reserved_mb_indexed": 30.62664794921875,
+        "peak_reserved_mb_smem": 30.625
+      },
+      {
+        "name": "cout_32",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 64
+        },
+        "weight_elements": 4608,
+        "M": 50176,
+        "K": 144,
+        "Hout": 28,
+        "Wout": 28,
+        "xcol_mb": 27.5625,
+        "reuse_factor": 9.0,
+        "baseline_ms": {
+          "mean_ms": 7.35838508605957,
+          "median_ms": 7.426368236541748,
+          "min_ms": 7.222623825073242,
+          "max_ms": 7.429312229156494,
+          "stdev_ms": 0.09687283032802806
+        },
+        "indexed_ms": {
+          "mean_ms": 4.025586128234863,
+          "median_ms": 4.0071680545806885,
+          "min_ms": 3.869663953781128,
+          "max_ms": 4.185823917388916,
+          "stdev_ms": 0.08375828054517152
+        },
+        "smem_ms": {
+          "mean_ms": 4.136839501063029,
+          "median_ms": 4.112560033798218,
+          "min_ms": 4.1078081130981445,
+          "max_ms": 4.180191993713379,
+          "stdev_ms": 0.03296546221157014
+        },
+        "speedup_indexed": 1.8279040248198766,
+        "speedup_smem": 1.778745606197367,
+        "peak_reserved_mb_baseline": 30.625,
+        "peak_reserved_mb_indexed": 30.62664794921875,
+        "peak_reserved_mb_smem": 30.625
+      },
+      {
+        "name": "cout_64",
+        "config": {
+          "Cin": 16,
+          "Cout": 64,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 64
+        },
+        "weight_elements": 9216,
+        "M": 50176,
+        "K": 144,
+        "Hout": 28,
+        "Wout": 28,
+        "xcol_mb": 27.5625,
+        "reuse_factor": 9.0,
+        "baseline_ms": {
+          "mean_ms": 7.3900906880696615,
+          "median_ms": 7.4282238483428955,
+          "min_ms": 7.223392009735107,
+          "max_ms": 7.430079936981201,
+          "stdev_ms": 0.07816454378613664
+        },
+        "indexed_ms": {
+          "mean_ms": 4.060000014305115,
+          "median_ms": 4.020159959793091,
+          "min_ms": 3.8811519145965576,
+          "max_ms": 4.554111957550049,
+          "stdev_ms": 0.13886629436770617
+        },
+        "smem_ms": {
+          "mean_ms": 4.1210793654123945,
+          "median_ms": 4.111199855804443,
+          "min_ms": 4.0649919509887695,
+          "max_ms": 4.177951812744141,
+          "stdev_ms": 0.02867611340845781
+        },
+        "speedup_indexed": 1.8202193748845354,
+        "speedup_smem": 1.793241535237975,
+        "peak_reserved_mb_baseline": 30.625,
+        "peak_reserved_mb_indexed": 30.62664794921875,
+        "peak_reserved_mb_smem": 30.625
+      }
+    ]
+  }
+}

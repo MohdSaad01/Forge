@@ -1161,6 +1161,78 @@ call site changed behind an unchanged `CUDABackend.conv2d_backward` public
 signature and contract. No public API, Tensor semantics, or cross-cutting
 architectural decision was touched.
 
+## CUDA Conv2d backward: dWeight im2col shared-memory staging (Milestone 39, accepted)
+M38 left `k_im2col_conv2d` itself as the dominant remaining `dWeight` cost
+at every `blocks_y >= 2` shape (`Cout > 16` -- the regime M38's half-fused
+GEMM cannot help). This milestone measured `k_im2col_conv2d` fresh
+(`nvcc -Xptxas -v`: 32 registers/thread, 0 spill, thread-count-limited --
+unchanged since M34, not occupancy-bound) and found its own index-
+decomposition math does 6 division/modulo operations per thread by
+runtime-valued divisors, most of them redundant across threads (the
+`k -> (ci,kh,kw)` mapping is identical for every one of the `M` output
+positions sharing that `k`; the `m -> (n,ho,wo)` mapping is identical for
+every one of the `K` values sharing that `m`) -- the same root-cause
+*category* M32 found for `dInput`, applied to a cross-thread rather than
+within-thread redundancy.
+
+Two structurally different candidates were designed, implemented as
+profiling-only kernels, and measured (`benchmarks/
+m39_im2col_reuse_profile.py`, 7 representative shapes plus a kernel-size
+sweep and a stride sweep isolating the reuse-factor hypothesis directly):
+
+- **Candidate A** (`k_im2col_conv2d_indexed`): removes the redundant
+  division by hoisting `m`'s decomposition to one thread per block
+  (shared-memory broadcast) and looking `k`'s decomposition up from a
+  tiny host-built table. **Rejected**: shape-dependent, a real 3x
+  regression at small `K` (0.31-0.49x at `mnist_conv1`/`K=1`) despite
+  winning at larger `K` (1.7-2.0x) -- including losses inside the exact
+  target dispatch regime, too unreliable to deploy safely.
+- **Candidate B** (`k_im2col_conv2d_smem`): the literal shared-memory-
+  reuse hypothesis -- one block owns one `x[n,ci,:,:]` plane, stages it
+  into shared memory once, then serves every one of that plane's
+  `Hout*Wout*KH*KW` `Xcol` writes from shared memory instead of a fresh
+  global load. **Accepted**: won at *every* shape and sweep point tested
+  (1.05-1.96x), including the `K=1` zero-reuse edge case (1.35x, showing
+  part of the win is genuinely from removing 4 of the baseline's 6
+  divisions, not purely data reuse) and `stride=2` (1.60x) -- never a
+  measured regression.
+
+**New module.** `forge/backend/cuda/experimental_conv_im2col_reuse.py`:
+`dweight_im2col_smem_gemm_splitk()` -- identical to M37's `dweight_im2col_
+gemm_splitk` except its `im2col` stage calls Candidate B (`im2col_smem`)
+whenever the per-block shared-memory request fits CC 5.0's 48KB
+per-block cap (`im2col_smem_fits` -- a fixed, conservative check safe on
+any CUDA-capable device, since no newer architecture has a *lower*
+per-block shared-memory ceiling), falling back to the unmodified M34
+`im2col` otherwise so no shape can ever fail to launch. `grad_output_
+permute`/`k_matmul`/`cf_matmul_splitk_*` are completely unmodified.
+
+**Production dispatch.** `CUDABackend.conv2d_backward`'s `blocks_y >= 2`
+branch (inside the unchanged `weight_elements >=
+_CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD` arm) now calls
+`dweight_im2col_smem_gemm_splitk` in place of M37's `dweight_im2col_gemm_
+splitk`; the `blocks_y == 1` branch (M38's half-fused Candidate B) is
+untouched. Measured (interleaved CUDA-event A/B, full dWeight pipeline):
+1.11-1.33x faster than the M37 baseline at every `blocks_y >= 2` shape
+tested (`Cout` 17 through 128), monotonically shrinking as `blocks_y`
+grows (GEMM/permute cost dilutes `im2col`'s fixed absolute savings) but
+never regressing; a controlled, same-session A/B through the real
+`Tensor.conv2d` API measured a real, low-variance 1.056x at the full
+`conv2d_backward` level. MNIST's own two conv layers are both
+`blocks_y == 1` and never reach this dispatch branch -- zero effect
+expected or observed. See `docs/performance/conv2d-backward-profiling.md`'s
+**Milestone 39** section for the complete evidence, including the
+rejected Candidate A (kept, correctness-tested, as profiling-only
+reference code) and a real memory-leak bug (a bare, un-owned device
+pointer from Candidate A's host-table upload helper) caught by this
+milestone's own repeated-use memory-safety test and fixed before
+acceptance.
+
+**Why no ADR.** Same reasoning as M21/M32/M34/M36/M37/M38: a kernel-
+selection call site changed behind an unchanged `CUDABackend.
+conv2d_backward` public signature and contract. No public API, Tensor
+semantics, or cross-cutting architectural decision was touched.
+
 ## CUDA Memory Statistics (Milestone 22)
 Milestone 22 is observability, not optimization: it instruments the
 `cudaMalloc`/`cudaFree` boundary that already existed (`CUDABackend._alloc`,

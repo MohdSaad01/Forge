@@ -1321,6 +1321,25 @@ class CUDABackend(Backend):
         # is used only when it is used at all, i.e. exactly the shapes where
         # it wins. See `docs/performance/conv2d-backward-profiling.md`'s
         # **Milestone 38** section for the complete evidence.
+        #
+        # Milestone 39: the `blocks_y >= 2` branch (Candidate B cannot help
+        # here) now uses `dweight_im2col_smem_gemm_splitk`
+        # (`experimental_conv_im2col_reuse.py`) instead of M37's plain
+        # `dweight_im2col_gemm_splitk`. It replaces only the `im2col` stage:
+        # one block per `(n, ci)` input plane stages that plane into shared
+        # memory once and serves every one of its `Hout*Wout*KH*KW` `Xcol`
+        # writes from shared memory instead of a fresh global load each
+        # time -- `grad_output_permute` and the split-K GEMM are unchanged.
+        # Measured a real, reproducible full-pipeline win at every tested
+        # `blocks_y >= 2` shape (1.11-1.33x, `Cout` 17-128, plus the 7
+        # representative shapes), including the `K=1`/`stride=2` low-reuse
+        # edge cases -- never a regression. Falls back to the unmodified M34
+        # `im2col` when the per-block shared-memory request would exceed
+        # this device's conservative 48KB cap (`im2col_smem_fits`) -- never
+        # reached by any of Forge's own shapes, but keeps this dispatch
+        # correct for a hypothetical larger spatial layer on any hardware.
+        # See `docs/performance/conv2d-backward-profiling.md`'s **Milestone
+        # 39** section for the complete evidence.
         weight_elements = Cout * Cin * KH * KW
         if weight_elements >= _CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD:
             gemm_blocks_y = (Cout + _MATMUL_TILE - 1) // _MATMUL_TILE
@@ -1329,9 +1348,9 @@ class CUDABackend(Backend):
 
                 grad_w = dweight_halffused_gemm_splitk(self, grad_output, x, weight.shape, stride, padding)
             else:
-                from .experimental_conv_im2col import dweight_im2col_gemm_splitk
+                from .experimental_conv_im2col_reuse import dweight_im2col_smem_gemm_splitk
 
-                grad_w = dweight_im2col_gemm_splitk(self, grad_output, x, weight.shape, stride, padding)
+                grad_w = dweight_im2col_smem_gemm_splitk(self, grad_output, x, weight.shape, stride, padding)
         else:
             grad_w_ptr = self._alloc(Cout * Cin * KH * KW * dtype.itemsize)
             fn_gw = getattr(self._lib, f"cf_conv2d_backward_weight_{_SUFFIX[dtype]}")

@@ -2218,3 +2218,90 @@ reuse, and production-dispatch coverage for both branches of the new
 call site changed behind an unchanged `CUDABackend.conv2d_backward`
 signature and contract. No public API, Tensor semantics, or cross-cutting
 architectural decision was touched.
+
+### M39 — CUDA Conv2d dWeight: im2col materialization optimization (shared-memory input-plane staging, accepted)
+M38 left `k_im2col_conv2d` itself as the dominant remaining `dWeight` cost
+at every `blocks_y >= 2` shape (`Cout > 16` -- the regime M38's half-fused
+GEMM cannot help, since its redundant-regather tax grows with `blocks_y`).
+Fresh `nvcc -Xptxas -v`: 32 registers/thread, 0 bytes stack frame, 0 bytes
+spill (unchanged since M34) -- not a local-memory problem, and (one thread
+per `Xcol` output element, `M*K` threads at every shape) not
+occupancy-limited either.
+
+Two structurally different candidates were designed, implemented as
+profiling-only kernels, and measured (`benchmarks/m39_im2col_reuse_profile.py`,
+7 representative shapes + a kernel-size sweep `K` in {1,3,5} + a stride
+sweep {1,2} isolating the reuse-factor hypothesis directly):
+
+- **Candidate A** (`k_im2col_conv2d_indexed`): `k_im2col_conv2d` decomposes
+  both `m -> (n,ho,wo)` (3 divisions, `K`-fold redundant per output
+  position) and `k -> (ci,kh,kw)` (3 divisions, `M`-fold redundant per `k`
+  value) independently in every one of its `M*K` threads. This candidate
+  hoists `m`'s decomposition to one thread per block (shared-memory
+  broadcast) and looks `k`'s decomposition up from a tiny host-built table
+  instead of computing it via division -- targets the instruction/division
+  redundancy directly, independent of any data-reuse claim (mirrors M32's
+  `dInput` fix, a different, cross-thread form of the same redundancy).
+  **Rejected**: shape-dependent, regressing badly at small `K`
+  (0.29-0.48x at `mnist_conv1`/`K=1` -- a fixed 256-thread launch wastes
+  most threads when `K` is small even after tuning `threads_per_block` to
+  `K`'s own size) despite winning at larger `K` (1.7-2.0x) -- too
+  inconsistent to dispatch safely, and the milestone's own regime
+  (`blocks_y >= 2`) includes exactly the small shapes it fails on
+  (`mnist_conv2`, `Cout=17`, `K=72`: 0.65-1.09x, unreliable).
+- **Candidate B** (`k_im2col_conv2d_smem`): the milestone brief's literal
+  shared-memory-reuse hypothesis. One block owns one `x[n,ci,:,:]` plane,
+  stages it into shared memory once (<=12.5KB at every representative
+  shape, far under CC 5.0's 48KB per-block cap), then serves every one of
+  that plane's `Hout*Wout*KH*KW` `Xcol` writes from shared memory instead
+  of a fresh global load -- cutting global reads of `x` from `M*K` nominal
+  down to `N*Cin*H*W`. **Accepted**: won at *every* representative shape
+  and every sweep point tested (1.05-1.96x), including the `K=1`
+  (`reuse_factor=1.0`, zero nominal overlap) and `stride=2`
+  (`reuse_factor=2.25`) edge cases -- never a measured regression anywhere.
+
+**Full-pipeline validation** (not just isolated `im2col` timing, per M37's
+own "isolated-stage mistakes must be cross-checked" lesson):
+`dweight_im2col_smem_gemm_splitk` (`experimental_conv_im2col_reuse.py`) --
+identical to M37's `dweight_im2col_gemm_splitk` except its `im2col` stage
+uses Candidate B (falling back to the unmodified M34 `im2col` if the
+per-block shared-memory request would exceed the 48KB cap, which no Forge
+shape reaches) -- measured **1.11-1.33x** faster than the M37 baseline at
+every `blocks_y >= 2` shape tested (`Cout` 17 through 128, plus all 4
+representative shapes in this regime), monotonically shrinking as `blocks_y`
+grows (GEMM/permute time dilutes `im2col`'s fixed savings) but never
+regressing. A controlled, interleaved, same-session A/B through the real
+`Tensor.conv2d`/`nn.Conv2d` API at `large_channel`'s shape measured a
+real, low-variance **1.056x** at the full `conv2d_backward` level.
+
+**One real bug caught and fixed during development**: an early draft of
+Candidate A's small host-table upload helper returned a bare
+`backend._alloc()` pointer with no owning `CUDAStorage`, leaking it
+permanently (never released back to the M25 caching allocator) --  caught
+by this milestone's own repeated-use memory-safety test, the same
+bookkeeping mistake M33's own history documents. Fixed by wrapping the
+upload in a `CUDAStorage` like every other Forge CUDA buffer.
+
+**Decision.** `CUDABackend.conv2d_backward`'s `blocks_y >= 2` branch
+(`backend.py`) now calls `dweight_im2col_smem_gemm_splitk` in place of
+M37's `dweight_im2col_gemm_splitk`; `grad_output_permute`/`k_matmul`/
+`cf_matmul_splitk_*` remain completely unmodified, and the `blocks_y == 1`
+branch (M38's half-fused Candidate B) is untouched. MNIST's own two conv
+layers (`Cout` 8 and 16) are both `blocks_y == 1` and never reach this
+dispatch branch -- correctly zero effect expected and observed (pipeline/
+MNIST bench numbers within normal run-to-run variance of history).
+
+**Tests.** 1,366 tests total (1,328 pre-existing + 38 new in `tests/
+test_cuda_conv2d_backward_weight_im2col_smem.py` -- CPU parity across 8
+shape/stride/padding/kernel-size combinations including `Cin=1` and a 1x1
+kernel, float64, direct agreement with the M37 baseline, isolated
+`im2col_smem`-vs-baseline and `im2col_indexed`-vs-baseline correctness,
+finite difference, explicit/cross-stream, 100-iteration memory safety,
+allocator cache-hit reuse, and production-dispatch coverage spanning
+`blocks_y` 1 through 3 plus the below-threshold case), all passing on the
+940MX after a clean rebuild. Full suite (`pytest tests/ -q`): 1,366 passed.
+
+**Why no ADR.** Same reasoning as M21/M32/M34/M36/M37/M38: a kernel-
+selection call site changed behind an unchanged `CUDABackend.
+conv2d_backward` signature and contract. No public API, Tensor semantics,
+or cross-cutting architectural decision was touched.

@@ -2378,6 +2378,185 @@ __global__ void k_dweight_halffused_gemm_splitk(
 DWEIGHT_HALFFUSED_GEMM_SPLITK_LAUNCHER(float, f32)
 DWEIGHT_HALFFUSED_GEMM_SPLITK_LAUNCHER(double, f64)
 
+// -- Milestone 39: im2col materialization candidates (profiling-only) -------
+//
+// M38 left `k_im2col_conv2d` itself (above) as the dominant remaining
+// `dWeight` cost at every `blocks_y >= 2` shape (`Cout > 16` -- the regime
+// Candidate B's half-fused GEMM cannot help, since its redundant-regather
+// tax grows with `blocks_y`). This milestone profiles `k_im2col_conv2d`
+// fresh: `nvcc -Xptxas -v` reports 32 registers/thread, 0 bytes stack
+// frame, 0 bytes spill (both f32/f64) -- so, unlike M32's original `dInput`
+// kernel, this is *not* a local-memory-spill problem, and (one thread per
+// `Xcol` output element, `M*K` threads at every shape) it is not
+// occupancy-limited either. Two structurally different candidates were
+// designed and measured against that baseline (`benchmarks/
+// m39_im2col_reuse_profile.py`):
+//
+// - **Candidate A (`_indexed`)**: `k_im2col_conv2d` decomposes *both* `m`
+//   (down to `n/ho/wo`, 3 divisions by runtime-valued `Wout`/`Hout`) and `k`
+//   (down to `ci/kh/kw`, 3 divisions by runtime-valued `KW`/`KH`)
+//   independently in every one of its `M*K` threads -- but neither mapping
+//   depends on both `m` and `k` together. `k -> (ci,kh,kw)` is identical for
+//   every one of the `M` output positions sharing that `k` (recomputed
+//   `M`-fold redundantly, `M` up to 100,352 at the largest representative
+//   shape); `m -> (n,ho,wo)` is identical for every one of the `K` values
+//   sharing that `m` (recomputed `K`-fold redundantly, `K` up to 288). This
+//   candidate removes both redundancies structurally: `blockIdx.x` is `m`
+//   directly (gridDim.x has no practical 65535 limit, so no division is
+//   needed to recover it), so `m`'s decomposition is computed once per
+//   block (by thread 0, broadcast via shared memory) instead of once per
+//   thread; `k`'s decomposition is looked up from a tiny (`K`-element,
+//   1-288 across every Forge shape) table built once on the host per call
+//   instead of recomputed via division. This directly targets the
+//   instruction/division-redundancy diagnosis, independent of any data-reuse
+//   claim -- mirroring Milestone 32's `dInput` fix (hoist `co`-independent
+//   division out of a loop) applied to a different, cross-thread form of
+//   the same redundancy.
+// - **Candidate B (`_smem`)**: a genuinely different mechanism, targeting
+//   the milestone brief's literal hypothesis -- overlapping receptive
+//   fields re-read the same input element up to `KH*KW` times from global
+//   memory (once per distinct `(kh,kw)` combination, each read by a
+//   different thread with no built-in reuse). One block owns one `(n, ci)`
+//   plane, cooperatively stages the entire `x[n,ci,:,:]` window into shared
+//   memory once (small: <= 12.5KB for the largest representative shape,
+//   comfortably inside the 940MX's per-block shared-memory budget), then
+//   every one of that plane's `Hout*Wout*KH*KW` `Xcol` writes reads its
+//   input value from shared memory instead of reissuing a global load --
+//   cutting global reads of `x` from the baseline's `M*K` nominal loads down
+//   to `N*Cin*H*W` (a real `KH*KW`-fold reduction for interior pixels at
+//   stride 1). This changes the `Xcol` write-address pattern from the
+//   baseline's fully sequential `idx = m*K+k` (perfectly coalesced by
+//   construction) to bursts of `KH*KW` contiguous addresses separated by a
+//   `K - KH*KW` gap whenever `Cin > 1` -- a real, measured (not assumed)
+//   write-coalescing cost this candidate may or may not recover from its
+//   read-side savings.
+//
+// Both are profiling-only exports (`cf_im2col_conv2d_{indexed,smem}_*`),
+// the same category as every prior milestone's candidate kernels --
+// `CUDABackend`/`experimental_conv_im2col.im2col` never call them directly
+// except through the measurement/dispatch path this milestone's own
+// `docs/performance/conv2d-backward-profiling.md` **Milestone 39** section
+// documents.
+
+// -- Candidate A: index-hoisted, block-per-output-position im2col -----------
+
+template <typename T>
+__global__ void k_im2col_conv2d_indexed(
+    const T* x, T* col,
+    const int* k_ci, const int* k_kh, const int* k_kw,
+    int N, int Cin, int H, int W,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout, int K)
+{
+    long long m = blockIdx.x;
+    int k = blockIdx.y * blockDim.x + threadIdx.x;
+
+    __shared__ int s_n;
+    __shared__ int s_hi_base;
+    __shared__ int s_wi_base;
+    if (threadIdx.x == 0) {
+        int wo = static_cast<int>(m % Wout);
+        long long m1 = m / Wout;
+        int ho = static_cast<int>(m1 % Hout);
+        int n = static_cast<int>(m1 / Hout);
+        s_n = n;
+        s_hi_base = ho * SH - PH;
+        s_wi_base = wo * SW - PW;
+    }
+    __syncthreads();
+
+    if (k >= K) return;
+
+    int ci = k_ci[k];
+    int hi = s_hi_base + k_kh[k];
+    int wi = s_wi_base + k_kw[k];
+
+    T v = static_cast<T>(0);
+    if (hi >= 0 && hi < H && wi >= 0 && wi < W) {
+        long long x_idx = ((static_cast<long long>(s_n) * Cin + ci) * H + hi) * W + wi;
+        v = x[x_idx];
+    }
+    col[m * static_cast<long long>(K) + k] = v;
+}
+
+#define IM2COL_CONV2D_INDEXED_LAUNCHER(TYPE, SUFFIX)                                    \
+    extern "C" __declspec(dllexport) int cf_im2col_conv2d_indexed_##SUFFIX(             \
+        const TYPE* x, TYPE* col, const int* k_ci, const int* k_kh, const int* k_kw,    \
+        int N, int Cin, int H, int W, int SH, int SW, int PH, int PW,                   \
+        int Hout, int Wout, int K, int threads_per_block, void* stream) {               \
+        long long Mdim = static_cast<long long>(N) * Hout * Wout;                       \
+        int threads = threads_per_block;                                                \
+        int blocks_y = (K + threads - 1) / threads;                                     \
+        dim3 blocks(static_cast<unsigned int>(Mdim), static_cast<unsigned int>(blocks_y)); \
+        k_im2col_conv2d_indexed<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(    \
+            x, col, k_ci, k_kh, k_kw, N, Cin, H, W, SH, SW, PH, PW, Hout, Wout, K);      \
+        return static_cast<int>(cudaGetLastError());                                    \
+    }
+
+IM2COL_CONV2D_INDEXED_LAUNCHER(float, f32)
+IM2COL_CONV2D_INDEXED_LAUNCHER(double, f64)
+
+// -- Candidate B: shared-memory input-plane staging, one block per (n,ci) ---
+
+template <typename T>
+__global__ void k_im2col_conv2d_smem(
+    const T* x, T* col,
+    int N, int Cin, int H, int W,
+    int KH, int KW, int SH, int SW, int PH, int PW,
+    int Hout, int Wout, int K)
+{
+    extern __shared__ unsigned char smem_raw[];
+    T* s_x = reinterpret_cast<T*>(smem_raw);  // [H][W], one (n,ci) plane
+
+    int ci = static_cast<int>(blockIdx.x % Cin);
+    int n = static_cast<int>(blockIdx.x / Cin);
+
+    long long plane = static_cast<long long>(H) * W;
+    long long plane_base = (static_cast<long long>(n) * Cin + ci) * plane;
+    for (long long i = threadIdx.x; i < plane; i += blockDim.x) {
+        s_x[i] = x[plane_base + i];
+    }
+    __syncthreads();
+
+    long long out_positions = static_cast<long long>(Hout) * Wout;
+    long long work_per_block = out_positions * KH * KW;
+    for (long long w = threadIdx.x; w < work_per_block; w += blockDim.x) {
+        int kw_ = static_cast<int>(w % KW);
+        long long w1 = w / KW;
+        int kh = static_cast<int>(w1 % KH);
+        long long m_local = w1 / KH;
+        int wo = static_cast<int>(m_local % Wout);
+        int ho = static_cast<int>(m_local / Wout);
+
+        int hi = ho * SH - PH + kh;
+        int wi = wo * SW - PW + kw_;
+
+        T v = static_cast<T>(0);
+        if (hi >= 0 && hi < H && wi >= 0 && wi < W) {
+            v = s_x[static_cast<long long>(hi) * W + wi];
+        }
+        long long m = (static_cast<long long>(n) * Hout + ho) * Wout + wo;
+        int k = (ci * KH + kh) * KW + kw_;
+        col[m * static_cast<long long>(K) + k] = v;
+    }
+}
+
+#define IM2COL_CONV2D_SMEM_LAUNCHER(TYPE, SUFFIX)                                       \
+    extern "C" __declspec(dllexport) int cf_im2col_conv2d_smem_##SUFFIX(                \
+        const TYPE* x, TYPE* col,                                                       \
+        int N, int Cin, int H, int W, int KH, int KW,                                   \
+        int SH, int SW, int PH, int PW, int Hout, int Wout, int K,                      \
+        int threads_per_block, void* stream) {                                          \
+        int blocks = N * Cin;                                                           \
+        size_t shared_bytes = static_cast<size_t>(H) * W * sizeof(TYPE);                \
+        k_im2col_conv2d_smem<TYPE><<<blocks, threads_per_block, shared_bytes, (cudaStream_t)stream>>>( \
+            x, col, N, Cin, H, W, KH, KW, SH, SW, PH, PW, Hout, Wout, K);                \
+        return static_cast<int>(cudaGetLastError());                                    \
+    }
+
+IM2COL_CONV2D_SMEM_LAUNCHER(float, f32)
+IM2COL_CONV2D_SMEM_LAUNCHER(double, f64)
+
 // -- MaxPool2d forward ----------------------------------------------------------
 //
 // Ties within a window break to the first maximum encountered in row-major
