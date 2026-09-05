@@ -2305,3 +2305,71 @@ allocator cache-hit reuse, and production-dispatch coverage spanning
 selection call site changed behind an unchanged `CUDABackend.
 conv2d_backward` signature and contract. No public API, Tensor semantics,
 or cross-cutting architectural decision was touched.
+
+### M40 — Post-M39 CUDA bottleneck re-characterization (measurement-only, M41 target selected)
+
+A fresh, same-session, CUDA-event-based re-measurement of the whole CUDA
+training pipeline after M31-M39's cumulative optimization work
+(`benchmarks/m40_bottleneck_recharacterization.py`, new). No production
+kernel, dispatch, or public API was changed -- pure measurement and target
+selection, per the milestone's own scope.
+
+**Dispatch verification**: confirmed, shape by shape, that
+`CUDABackend.conv2d_backward`'s dWeight branch selects exactly the function
+its own `weight_elements`/`blocks_y` logic implies (`cf_conv2d_backward_weight`
+below 256 elements; `dweight_halffused_gemm_splitk` at `blocks_y==1`;
+`dweight_im2col_smem_gemm_splitk` at `blocks_y>=2`) -- closing the "measuring
+the wrong implementation" risk M37's own history documents.
+
+**New finding**: `conv2d` backward's two sub-kernels no longer have one
+uniform leader. At `blocks_y==1` shapes (`Cout<=16`: `mnist_conv1`,
+`mnist_conv2`, `large_spatial`) `dWeight` is now the larger cost; at
+`blocks_y>=2` shapes (`Cout>16`) `dInput` is larger -- an alternation neither
+M35 nor M39's own per-shape numbers stated explicitly. At MNIST's own real
+layer shapes, `dWeight` (29.9% of the full training step) now exceeds
+`dInput` (15.6%), reversing M35/M36's finding -- driven mostly by
+`mnist_conv1`'s below-threshold block-reduce kernel (already tuned in
+M21/M33; little further headroom found there).
+
+**Roofline re-classification** (fresh ceilings this session: 104.67 GFLOP/s
+compute, 15.09 GB/s bandwidth): `dWeight`'s GEMM-dominated shapes
+(`blocks_y>=2`) are compute-bound at 43-44% of ceiling (up slightly from
+M37's 32.6-32.9%); `dInput` is compute-bound at 33-35% of ceiling at large
+shapes. `k_conv2d_forward` (unchanged since Milestone 15 -- one thread per
+output element, zero explicit memory reuse) achieves only **10.7-18.0%** of
+the practical compute ceiling at every representative shape -- meaningfully
+below either backward Conv2d kernel at the same shape despite an *identical*
+total FLOP count (`roofline.py`'s own documented FLOP symmetry across
+forward/dInput/dWeight). This is the milestone's headline finding: the same
+arithmetic work, achieving markedly lower efficiency, on the one major
+Conv2d kernel no milestone since M15 has restructured.
+
+**Pipeline/non-Conv2d confirmation**: compute-stream utilization is 87.5-93.6%
+across every batch size and prefetch depth tested -- the async pipeline is
+already well-fed; no further DataLoader/prefetch work is justified.
+CrossEntropy (0.89% of step), the optimizer (~5%), and transfers (~2.4%)
+remain negligible, unchanged since M31/M17/M29-M30.
+
+**M41 recommendation**: apply the already-validated im2col + existing
+tiled/split-K GEMM technique (M34/M39's own approach for `dWeight`) to
+`k_conv2d_forward` -- reusing `im2col`/`im2col_smem`/`cf_matmul_*`/
+`cf_matmul_splitk_*` unmodified rather than designing a new kernel. Explicitly
+excluded from M41: `dWeight`'s split-K/half-fused GEMM paths (already
+compute-bound, would need a new GEMM tiling design -- out of scope per
+Forge's one-portable-GEMM architecture stance), `dWeight`'s below-threshold
+block-reduce kernel (M33 already found no better alternative), `dInput`'s
+channel-fused kernel (M36 already explored three structural alternatives),
+and `k_matmul`'s own tiling. See
+`docs/performance/m40-bottleneck-recharacterization.md` for the complete
+ranked-candidate table, Amdahl analysis, and evidence.
+
+**Tests.** No production code changed; full existing suite passes unchanged
+at its pre-M40 count. `benchmarks/m40_bottleneck_recharacterization.py` is
+the only new file, exercising exclusively already-shipped production
+functions (`cf_conv2d_backward_weight_*`, `dweight_halffused_gemm_splitk`,
+`dweight_im2col_smem_gemm_splitk`'s constituent stages, `dInput`'s
+`cf_conv2d_backward_input_*`) plus the pre-existing `m35_hardware`/
+`m35_mnist`/`pipeline_profile` tools, directly.
+
+**Why no ADR.** Measurement-only milestone; no architectural, dispatch, or
+public-API change was made.

@@ -1193,3 +1193,46 @@ unreachable from any Milestone 30 code path (it never goes through
 overall test suite still passes (1,147 tests, `python -m pytest tests/`);
 no separate timing regression check was needed since no default-path code
 was modified.
+
+## Milestone 40: post-M39 bottleneck re-characterization (measurement-only)
+
+### New: `benchmarks/m40_bottleneck_recharacterization.py`
+
+    python -m benchmarks.m40_bottleneck_recharacterization
+
+A diagnostic script (like `mnist_profile.py`/`m37_dweight_profile.py`), not
+part of `python -m benchmarks`'s stable-schema category list. Answers a
+question no prior script answers directly: "what does the CURRENT (post-M39)
+production `conv2d_backward` dispatch actually do, decomposed into its real
+sub-stages, at every representative shape" -- M37/M38/M39's own decomposition
+scripts each compare one specific old-vs-new candidate pair, not the pipeline
+as currently shipped. Reuses `conv2d_backward_profile.SHAPES`/
+`BATCH_SWEEP_BASE`, `m35_hardware`'s ceiling methodology, `m35_mnist`'s
+kernel-contribution ranking, and `pipeline_profile._profile_async_epoch`
+directly rather than re-deriving any of them. A `_dispatch_decision` helper
+mirrors `CUDABackend.conv2d_backward`'s exact dWeight dispatch formula
+(`weight_elements`, `blocks_y = ceil(Cout/16)`) so every per-shape
+decomposition is verified to be measuring the function production actually
+selects -- the same "wrong implementation" risk M37's own history flags.
+See `docs/performance/m40-bottleneck-recharacterization.md` for the full
+report; no production CUDA code was modified.
+
+### Measured example (940MX, real hardware, this session)
+
+Isolated `conv2d_backward` decomposition (fresh ceilings: 104.67 GFLOP/s
+compute, 15.09 GB/s bandwidth):
+
+| Shape | fwd (ms) | dInput (ms) | dWeight (ms) | dominant |
+|---|---:|---:|---:|---|
+| mnist_conv1 | 0.645 | 0.783 | 2.093 | dWeight |
+| mnist_conv2 | 1.324 | 0.855 | 1.051 | dWeight |
+| large_channel | 25.950 | 13.006 | 10.040 | dInput |
+| batch_128 | 51.971 | 25.558 | 20.454 | dInput |
+
+Dominance now alternates by `blocks_y` (dWeight dominant at `blocks_y==1`/
+`Cout<=16`, dInput dominant at `blocks_y>=2`/`Cout>16`) rather than one
+kernel uniformly leading everywhere, as M35/M36 found. `k_conv2d_forward`
+(unchanged since Milestone 15) is the least efficient Conv2d-adjacent kernel
+measured: 10.7-18.0% of the practical compute ceiling at every shape, versus
+22.6-44.0% for `dInput`/`dWeight` at the same shapes despite identical FLOP
+counts -- the headline finding driving this milestone's M41 recommendation.
