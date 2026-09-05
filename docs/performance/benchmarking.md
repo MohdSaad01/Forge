@@ -1236,3 +1236,47 @@ kernel uniformly leading everywhere, as M35/M36 found. `k_conv2d_forward`
 measured: 10.7-18.0% of the practical compute ceiling at every shape, versus
 22.6-44.0% for `dInput`/`dWeight` at the same shapes despite identical FLOP
 counts -- the headline finding driving this milestone's M41 recommendation.
+
+## Milestone 41: Conv2d forward im2col + GEMM (accepted)
+
+### New: `benchmarks/m41_conv2d_forward_profile.py`
+
+    python -m benchmarks.m41_conv2d_forward_profile
+
+Profiles the unmodified baseline `cf_conv2d_forward_*` (isolated + roofline,
+15 shapes: `conv2d_backward_profile`'s existing 7 plus a new K/stride/
+channel sweep), then benchmarks two GEMM-based candidates against the
+**complete** baseline pipeline via interleaved CUDA-event A/B (Section 5's
+"never compare an internal GEMM stage against the full baseline" rule,
+matching M37's own corrected mistake): Candidate A
+(`experimental_conv_forward_im2col.conv2d_forward_im2col_gemm`, both plain-
+and `im2col_smem`-backed) and Candidate B
+(`experimental_conv_forward_halffused.conv2d_forward_halffused_gemm`). Also
+decomposes Candidate A into its four stages (im2col/transpose/matmul/
+permute) and runs a real `nvcc -Xptxas -v` pass (with the same MSVC-on-PATH
+retry `build.ensure_kernel_library` already uses) for register/occupancy
+data. No production CUDA code is modified by running this script --
+`CUDABackend.conv2d`'s dispatch (below) is what actually ships either
+candidate.
+
+### Measured example (940MX, real hardware, this session)
+
+Complete-pipeline forward timings (baseline vs. both candidates):
+
+| Shape | baseline (ms) | Candidate A-smem (ms) | Candidate B (ms) | winner |
+|---|---:|---:|---:|---|
+| mnist_conv1 | 0.645 | 1.014 | 1.180 | baseline (below FLOPs threshold) |
+| mnist_conv2 | 1.390 | 1.117 | 0.904 | Candidate B, 1.54x |
+| large_channel | 24.917 | 10.411 | 10.235 | Candidate B, 2.43x |
+| cout_high (Cout=128) | 13.142 | 4.605 | 6.297 | Candidate A-smem, 2.85x |
+| batch_128 | 50.569 | 20.880 | 20.487 | Candidate B, 2.47x |
+
+Every shape at/above ~20M total forward FLOPs won (1.06-2.85x, both
+candidates); every shape at/below ~7.2M FLOPs regressed (0.26-0.76x) --
+`CUDABackend.conv2d` now dispatches by a measured 10,000,000-FLOP threshold
+(`_CONV2D_FORWARD_GEMM_FLOPS_THRESHOLD`), Candidate B when `Cout<=32`
+(`blocks_x<=2`), Candidate A (`im2col_smem`) otherwise, unchanged baseline
+below the threshold. See `docs/performance/conv2d-forward-profiling.md` for
+the complete 15-shape report, stage decomposition, roofline reclassification
+(`large_channel`'s forward is now compute-bound at 43.2% of ceiling, up from
+17.0%), and MNIST-step-level impact.

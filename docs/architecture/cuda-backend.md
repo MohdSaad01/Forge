@@ -1233,6 +1233,75 @@ selection call site changed behind an unchanged `CUDABackend.
 conv2d_backward` public signature and contract. No public API, Tensor
 semantics, or cross-cutting architectural decision was touched.
 
+## CUDA Conv2d forward: im2col + GEMM (Milestone 41, accepted)
+M40 measured `k_conv2d_forward` (unchanged since M15) at only 10.7-19.1% of
+the 940MX's practical compute ceiling across a 15-shape sweep -- the least
+efficient Conv2d-adjacent kernel measured despite an *identical* total FLOP
+count to `dInput`/`dWeight` (which reach 22-44%). A fresh `nvcc -Xptxas -v`
+pass confirmed zero register spill and zero stack frame -- unlike M32's
+original `dInput` kernel, this is not a register-pressure problem; the
+inefficiency is structural (no shared-memory/GEMM reuse across threads).
+
+Two structurally different GEMM-based candidates were designed,
+implemented, and measured (`benchmarks/m41_conv2d_forward_profile.py`, 15
+representative/sweep shapes, interleaved CUDA-event A/B against the
+complete baseline pipeline):
+
+- **Candidate A** (`experimental_conv_forward_im2col.py`): `im2col`/
+  `im2col_smem` (M34/M39, unmodified) -> a real weight transpose
+  (`k_transpose`, M11, unmodified -- `weight` is `(Cout, Cin*KH*KW)`
+  contiguous but `k_matmul` needs a literal `(Cin*KH*KW, Cout)` operand, no
+  transpose flag) -> the existing tiled GEMM (`cf_matmul_*`, M11,
+  unmodified) -> one new kernel, `k_conv2d_output_permute` (the inverse of
+  M34's `k_conv2d_grad_output_permute`), gathering the GEMM's `(M, Cout)`
+  row-major result back into `out`'s real `(N, Cout, Hout, Wout)` layout
+  with the bias add fused in.
+- **Candidate B** (`experimental_conv_forward_halffused.py`): `weightT`
+  stays materialized (cheap, same as A), but a new kernel,
+  `k_conv2d_forward_halffused_gemm`, fuses `Xcol`'s gather directly into
+  its own tiled-GEMM load -- no `Xcol` buffer, no `out_mat` buffer, writing
+  straight into the final output layout with bias fused in. This mirrors
+  M38's half-fused `dWeight` kernel with the fused/materialized roles
+  reversed: forward's large, expensive-to-build operand is `Xcol` (unlike
+  `dWeight`'s GEMM, where the large operand, `dYcolT`, was cheap), so it is
+  the one fused away here. No split-K in either candidate: forward's GEMM
+  has `M=N*Hout*Wout` as a large *block-count* dimension
+  (`blocks_y=ceil(M/16)`), unlike `dWeight`'s GEMM where `M` was the
+  *reduction* dimension and the block-count dimensions were small -- the
+  occupancy shortfall that motivated M37's split-K never applies here.
+
+**Both accepted, each covering the shape regime where it measured faster.**
+Both win 1.06-2.85x at every shape at/above ~20M total forward FLOPs and
+regress 0.26-0.76x at every shape at/below ~7.2M FLOPs (fixed kernel-launch/
+allocation overhead outweighs an already-fast baseline call). Above the
+threshold, Candidate B wins at every `Cout<=32` shape (every current Forge
+shape); Candidate A (with the `im2col_smem` variant, which strictly
+dominates plain `im2col` here too) wins at the one tested `Cout=128` shape,
+since Candidate B's redundant `Xcol`-tile-regather tax grows with
+`blocks_x=ceil(Cout/16)`.
+
+**Production dispatch.** `CUDABackend.conv2d` (`backend.py`) now computes
+`total_flops = 2*N*Cout*Hout*Wout*Cin*KH*KW` and dispatches to Candidate B
+(`blocks_x<=2`) or Candidate A (`blocks_x>2`) at/above
+`_CONV2D_FORWARD_GEMM_FLOPS_THRESHOLD` (10,000,000), keeping the original
+per-thread kernel unchanged below it. MNIST's own `mnist_conv1` layer stays
+on the unchanged baseline (below threshold); `mnist_conv2` now dispatches to
+Candidate B and measured 1.54x faster end to end. See `docs/performance/
+conv2d-forward-profiling.md`'s **Milestone 41** section for the complete
+per-shape evidence, the rejected "fuse both operands" analytical argument,
+and the documented threshold-boundary caveats (no shape tested between
+~7.2M-20M FLOPs, or between `Cout=32` and `Cout=128`).
+
+**What stayed untouched.** `k_conv2d_backward_input`/`_weight`/`_bias` (all
+variants, M15-M39), `k_matmul`/`cf_matmul_splitk_*` themselves (only called,
+never modified), `CrossEntropy` fusion, the M25 allocator, and the M27-M30
+stream/transfer/prefetch pipeline.
+
+**Why no ADR.** Same reasoning as M21/M32/M34/M36/M37/M38/M39: a kernel-
+selection call site changed behind an unchanged `CUDABackend.conv2d` public
+signature and contract. No public API, Tensor semantics, or cross-cutting
+architectural decision was touched.
+
 ## CUDA Memory Statistics (Milestone 22)
 Milestone 22 is observability, not optimization: it instruments the
 `cudaMalloc`/`cudaFree` boundary that already existed (`CUDABackend._alloc`,

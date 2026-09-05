@@ -1,0 +1,1548 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "89bf416cab0df8ec9dedc6dc43e4367877c9d5fd",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "ceilings": {
+    "practical_compute_gflops": 104.65657181938381,
+    "practical_bandwidth_gbps": 15.092523223892975
+  },
+  "ptxas": {
+    "per_kernel_lines": {
+      "k_conv2d_forward": [
+        "ptxas info    : Used 55 registers, used 0 barriers, 408 bytes cmem[0], 4 bytes cmem[2]",
+        "ptxas info    : Used 48 registers, used 0 barriers, 408 bytes cmem[0], 4 bytes cmem[2]",
+        "ptxas info    : Used 19 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 19 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 48 registers, used 0 barriers, 376 bytes cmem[0], 140 bytes cmem[2]",
+        "ptxas info    : Used 30 registers, used 0 barriers, 376 bytes cmem[0], 24 bytes cmem[2]",
+        "ptxas info    : Used 32 registers, used 0 barriers, 368 bytes cmem[0], 208 bytes cmem[2]",
+        "ptxas info    : Used 29 registers, used 0 barriers, 368 bytes cmem[0], 56 bytes cmem[2]",
+        "ptxas info    : Used 20 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 19 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 32 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 30 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 12 registers, used 1 barriers, 344 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 1 barriers, 344 bytes cmem[0]"
+      ],
+      "k_conv2d_output_permute": [
+        "ptxas info    : Used 31 registers, used 0 barriers, 364 bytes cmem[0]",
+        "ptxas info    : Used 31 registers, used 0 barriers, 364 bytes cmem[0]",
+        "ptxas info    : Used 15 registers, used 0 barriers, 352 bytes cmem[0], 20 bytes cmem[2]",
+        "ptxas info    : Used 15 registers, used 0 barriers, 352 bytes cmem[0], 20 bytes cmem[2]",
+        "ptxas info    : Used 32 registers, used 0 barriers, 392 bytes cmem[0]",
+        "ptxas info    : Used 30 registers, used 0 barriers, 392 bytes cmem[0]",
+        "ptxas info    : Used 32 registers, used 0 barriers, 384 bytes cmem[0]",
+        "ptxas info    : Used 30 registers, used 0 barriers, 384 bytes cmem[0]"
+      ],
+      "k_conv2d_forward_halffused_gemm": [
+        "ptxas info    : Used 40 registers, used 1 barriers, 4096 bytes smem, 408 bytes cmem[0]",
+        "ptxas info    : Used 38 registers, used 1 barriers, 2048 bytes smem, 408 bytes cmem[0]"
+      ],
+      "k_matmul": [
+        "ptxas info    : Used 32 registers, used 1 barriers, 4096 bytes smem, 360 bytes cmem[0]",
+        "ptxas info    : Used 27 registers, used 1 barriers, 2048 bytes smem, 360 bytes cmem[0]",
+        "ptxas info    : Used 53 registers, used 1 barriers, 4096 bytes smem, 400 bytes cmem[0]",
+        "ptxas info    : Used 50 registers, used 1 barriers, 2048 bytes smem, 400 bytes cmem[0]",
+        "ptxas info    : Used 49 registers, used 1 barriers, 4096 bytes smem, 396 bytes cmem[0]",
+        "ptxas info    : Used 47 registers, used 1 barriers, 2048 bytes smem, 396 bytes cmem[0]",
+        "ptxas info    : Used 29 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 29 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 32 registers, used 1 barriers, 4096 bytes smem, 356 bytes cmem[0]",
+        "ptxas info    : Used 30 registers, used 1 barriers, 2048 bytes smem, 356 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 0 barriers, 344 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 0 barriers, 344 bytes cmem[0]",
+        "ptxas info    : Used 26 registers, used 0 barriers, 416 bytes cmem[0], 48 bytes cmem[2]",
+        "ptxas info    : Used 24 registers, used 0 barriers, 416 bytes cmem[0], 16 bytes cmem[2]",
+        "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 32 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 26 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 16 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 18 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 22 registers, used 0 barriers, 352 bytes cmem[0], 36 bytes cmem[2]",
+        "ptxas info    : Used 14 registers, used 0 barriers, 352 bytes cmem[0], 12 bytes cmem[2]",
+        "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 9 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 0 barriers, 344 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 0 barriers, 344 bytes cmem[0]",
+        "ptxas info    : Used 20 registers, used 0 barriers, 344 bytes cmem[0], 104 bytes cmem[2]",
+        "ptxas info    : Used 9 registers, used 0 barriers, 344 bytes cmem[0], 44 bytes cmem[2]",
+        "ptxas info    : Used 16 registers, used 0 barriers, 344 bytes cmem[0], 112 bytes cmem[2]",
+        "ptxas info    : Used 9 registers, used 0 barriers, 344 bytes cmem[0], 12 bytes cmem[2]",
+        "ptxas info    : Used 10 registers, used 0 barriers, 344 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 0 barriers, 344 bytes cmem[0]",
+        "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+        "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+        "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+        "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+        "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+        "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+        "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+        "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]",
+        "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]"
+      ],
+      "k_im2col_conv2d": [
+        "ptxas info    : Used 34 registers, used 1 barriers, 388 bytes cmem[0]",
+        "ptxas info    : Used 34 registers, used 1 barriers, 388 bytes cmem[0]",
+        "ptxas info    : Used 28 registers, used 1 barriers, 16 bytes smem, 404 bytes cmem[0]",
+        "ptxas info    : Used 28 registers, used 1 barriers, 16 bytes smem, 404 bytes cmem[0]",
+        "ptxas info    : Used 54 registers, used 1 barriers, 4096 bytes smem, 400 bytes cmem[0]",
+        "ptxas info    : Used 49 registers, used 1 barriers, 2048 bytes smem, 400 bytes cmem[0]",
+        "ptxas info    : Used 32 registers, used 0 barriers, 384 bytes cmem[0]",
+        "ptxas info    : Used 32 registers, used 0 barriers, 384 bytes cmem[0]",
+        "ptxas info    : Used 37 registers, used 1 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 32 registers, used 1 barriers, 352 bytes cmem[0]",
+        "ptxas info    : Used 47 registers, used 0 barriers, 408 bytes cmem[0]",
+        "ptxas info    : Used 46 registers, used 0 barriers, 408 bytes cmem[0]",
+        "ptxas info    : Used 53 registers, used 0 barriers, 396 bytes cmem[0]",
+        "ptxas info    : Used 45 registers, used 1 barriers, 396 bytes cmem[0]",
+        "ptxas info    : Used 47 registers, used 0 barriers, 396 bytes cmem[0]",
+        "ptxas info    : Used 42 registers, used 1 barriers, 396 bytes cmem[0]",
+        "ptxas info    : Used 53 registers, used 0 barriers, 408 bytes cmem[0]",
+        "ptxas info    : Used 48 registers, used 0 barriers, 408 bytes cmem[0]",
+        "ptxas info    : Used 128 registers, used 1 barriers, 256 bytes cumulative stack size, 272 bytes smem, 396 bytes cmem[0]",
+        "ptxas info    : Used 126 registers, used 1 barriers, 256 bytes cumulative stack size, 272 bytes smem, 396 bytes cmem[0]",
+        "ptxas info    : Used 48 registers, used 0 barriers, 512 bytes cumulative stack size, 396 bytes cmem[0]",
+        "ptxas info    : Used 70 registers, used 0 barriers, 396 bytes cmem[0]",
+        "ptxas info    : Used 48 registers, used 0 barriers, 512 bytes cumulative stack size, 396 bytes cmem[0]",
+        "ptxas info    : Used 54 registers, used 0 barriers, 396 bytes cmem[0]"
+      ]
+    },
+    "returncode": 0
+  },
+  "shapes": {
+    "mnist_conv1": {
+      "name": "mnist_conv1",
+      "config": {
+        "N": 64,
+        "Cin": 1,
+        "Cout": 8,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 0.6458613355954488,
+        "median_ms": 0.6448320150375366,
+        "min_ms": 0.6438400149345398,
+        "max_ms": 0.673088014125824,
+        "stdev_ms": 0.005190720942427539
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 11.187144363330914,
+        "achieved_gbps": 2.797232006982415,
+        "arithmetic_intensity": 3.999362346564642,
+        "fraction_of_compute_ceiling": 0.10689385452676277,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 18.5% of the 60.36 GFLOP/s roofline ceiling achieved, with elapsed time (645.86us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 0.6452330688635508,
+          "median_ms": 0.6450720131397247,
+          "min_ms": 0.6434879899024963,
+          "max_ms": 0.6510400176048279,
+          "stdev_ms": 0.0012744664892762375
+        },
+        "candidate_a_plain": {
+          "mean_ms": 1.2372063954671224,
+          "median_ms": 1.21670401096344,
+          "min_ms": 1.1716159582138062,
+          "max_ms": 1.4935359954833984,
+          "stdev_ms": 0.06753810514618189
+        },
+        "candidate_a_smem": {
+          "mean_ms": 1.0137717386086782,
+          "median_ms": 0.9941279888153076,
+          "min_ms": 0.9651200175285339,
+          "max_ms": 1.2244479656219482,
+          "stdev_ms": 0.06170550827055712
+        },
+        "candidate_b": {
+          "mean_ms": 1.1796298702557881,
+          "median_ms": 1.157088041305542,
+          "min_ms": 1.0802559852600098,
+          "max_ms": 1.4118080139160156,
+          "stdev_ms": 0.08434126572108781
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 0.27325226565202076,
+          "median_ms": 0.272831991314888,
+          "min_ms": 0.271232008934021,
+          "max_ms": 0.27900800108909607,
+          "stdev_ms": 0.0015412952788377262
+        },
+        "transpose": {
+          "mean_ms": 0.008947199986626705,
+          "median_ms": 0.007151999976485968,
+          "min_ms": 0.006816000211983919,
+          "max_ms": 0.024992000311613083,
+          "stdev_ms": 0.005162360022090673
+        },
+        "matmul": {
+          "mean_ms": 0.3150837332010269,
+          "median_ms": 0.3144319951534271,
+          "min_ms": 0.312063992023468,
+          "max_ms": 0.3399040102958679,
+          "stdev_ms": 0.004850898994176978
+        },
+        "permute": {
+          "mean_ms": 0.26775573591391244,
+          "median_ms": 0.2667680084705353,
+          "min_ms": 0.2659839987754822,
+          "max_ms": 0.2924480140209198,
+          "stdev_ms": 0.004697068138394967
+        }
+      },
+      "candidate_a_stage_total_ms": 0.8650389347535868,
+      "speedup_candidate_a_plain": 0.5215241945301577,
+      "speedup_candidate_a_smem": 0.6364678006797491,
+      "speedup_candidate_b": 0.5469792560641416
+    },
+    "mnist_conv2": {
+      "name": "mnist_conv2",
+      "config": {
+        "N": 64,
+        "Cin": 8,
+        "Cout": 16,
+        "H": 13,
+        "W": 13,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 13,
+      "Wout": 13,
+      "isolated_baseline_ms": {
+        "mean_ms": 1.3345312039057413,
+        "median_ms": 1.3337119817733765,
+        "min_ms": 1.3311680555343628,
+        "max_ms": 1.3588800430297852,
+        "stdev_ms": 0.00468739465764973
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 18.673271877845213,
+        "achieved_gbps": 0.7815058928166235,
+        "arithmetic_intensity": 23.8939617083947,
+        "fraction_of_compute_ceiling": 0.17842426474728718,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 17.8% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (1334.53us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 1.390238924821218,
+          "median_ms": 1.4050080180168152,
+          "min_ms": 1.334272027015686,
+          "max_ms": 1.4183039665222168,
+          "stdev_ms": 0.027039372922472042
+        },
+        "candidate_a_plain": {
+          "mean_ms": 1.4971829295158385,
+          "median_ms": 1.4655200242996216,
+          "min_ms": 1.3708159923553467,
+          "max_ms": 1.7929279804229736,
+          "stdev_ms": 0.12202930800824827
+        },
+        "candidate_a_smem": {
+          "mean_ms": 1.1170730630556742,
+          "median_ms": 1.0741439461708069,
+          "min_ms": 1.0427520275115967,
+          "max_ms": 1.4061119556427002,
+          "stdev_ms": 0.09917109454955841
+        },
+        "candidate_b": {
+          "mean_ms": 0.9043253342310588,
+          "median_ms": 0.8531199991703033,
+          "min_ms": 0.7494720220565796,
+          "max_ms": 1.3452479839324951,
+          "stdev_ms": 0.13537031840527947
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 0.4983904004096985,
+          "median_ms": 0.49831999838352203,
+          "min_ms": 0.4973120093345642,
+          "max_ms": 0.5020480155944824,
+          "stdev_ms": 0.000846856991256237
+        },
+        "transpose": {
+          "mean_ms": 0.009373866704603035,
+          "median_ms": 0.007968000136315823,
+          "min_ms": 0.007007999811321497,
+          "max_ms": 0.024607999250292778,
+          "stdev_ms": 0.004783367523117935
+        },
+        "matmul": {
+          "mean_ms": 0.3024949332078298,
+          "median_ms": 0.30160000920295715,
+          "min_ms": 0.29926401376724243,
+          "max_ms": 0.32528001070022583,
+          "stdev_ms": 0.00457219603259832
+        },
+        "permute": {
+          "mean_ms": 0.12473813394705455,
+          "median_ms": 0.12376000359654427,
+          "min_ms": 0.12310399860143661,
+          "max_ms": 0.14988799393177032,
+          "stdev_ms": 0.004780161434946996
+        }
+      },
+      "candidate_a_stage_total_ms": 0.9349973342691859,
+      "speedup_candidate_a_plain": 0.9285698476877475,
+      "speedup_candidate_a_smem": 1.2445371487325259,
+      "speedup_candidate_b": 1.5373216609079385
+    },
+    "large_channel": {
+      "name": "large_channel",
+      "config": {
+        "N": 64,
+        "Cin": 16,
+        "Cout": 32,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 26.04389019012451,
+        "median_ms": 25.825807571411133,
+        "min_ms": 25.81279945373535,
+        "max_ms": 27.867328643798828,
+        "stdev_ms": 0.6208970404757804
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 17.755489392108714,
+        "achieved_gbps": 0.3706137573740805,
+        "arithmetic_intensity": 47.90833863781031,
+        "fraction_of_compute_ceiling": 0.16965479647805698,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 17.0% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (26043.89us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 24.9168820699056,
+          "median_ms": 24.966431617736816,
+          "min_ms": 24.551071166992188,
+          "max_ms": 25.429536819458008,
+          "stdev_ms": 0.16491168988727783
+        },
+        "candidate_a_plain": {
+          "mean_ms": 13.879322624206543,
+          "median_ms": 13.879327774047852,
+          "min_ms": 13.647839546203613,
+          "max_ms": 14.156224250793457,
+          "stdev_ms": 0.1195693864118224
+        },
+        "candidate_a_smem": {
+          "mean_ms": 10.410635725657146,
+          "median_ms": 10.412287712097168,
+          "min_ms": 10.243935585021973,
+          "max_ms": 10.65123176574707,
+          "stdev_ms": 0.09769914508183958
+        },
+        "candidate_b": {
+          "mean_ms": 10.234862931569417,
+          "median_ms": 10.21836805343628,
+          "min_ms": 9.981792449951172,
+          "max_ms": 10.514047622680664,
+          "stdev_ms": 0.11106384367283527
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 4.3295690536499025,
+          "median_ms": 4.328927993774414,
+          "min_ms": 4.326687812805176,
+          "max_ms": 4.333151817321777,
+          "stdev_ms": 0.0019445437520209223
+        },
+        "transpose": {
+          "mean_ms": 0.011833599985887606,
+          "median_ms": 0.010351999662816525,
+          "min_ms": 0.009920000098645687,
+          "max_ms": 0.025536000728607178,
+          "stdev_ms": 0.00414524212944448
+        },
+        "matmul": {
+          "mean_ms": 4.583268276850382,
+          "median_ms": 4.5960001945495605,
+          "min_ms": 4.521344184875488,
+          "max_ms": 4.641056060791016,
+          "stdev_ms": 0.035299698040130806
+        },
+        "permute": {
+          "mean_ms": 1.1398079991340637,
+          "median_ms": 1.1383519768714905,
+          "min_ms": 1.1342400312423706,
+          "max_ms": 1.1728960275650024,
+          "stdev_ms": 0.006794717927670989
+        }
+      },
+      "candidate_a_stage_total_ms": 10.064478929620236,
+      "speedup_candidate_a_plain": 1.7952520266694252,
+      "speedup_candidate_a_smem": 2.3934063900149365,
+      "speedup_candidate_b": 2.4345105778651437
+    },
+    "large_spatial": {
+      "name": "large_spatial",
+      "config": {
+        "N": 32,
+        "Cin": 8,
+        "Cout": 16,
+        "H": 56,
+        "W": 56,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 56,
+      "Wout": 56,
+      "isolated_baseline_ms": {
+        "mean_ms": 13.335497506459554,
+        "median_ms": 13.550015926361084,
+        "min_ms": 12.796704292297363,
+        "max_ms": 13.58240032196045,
+        "stdev_ms": 0.2625493617583784
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 17.338011415622418,
+        "achieved_gbps": 0.7227626862313369,
+        "arithmetic_intensity": 23.98852589641434,
+        "fraction_of_compute_ceiling": 0.16566576865850657,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 16.6% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (13335.50us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 13.006728553771973,
+          "median_ms": 13.020959854125977,
+          "min_ms": 12.887840270996094,
+          "max_ms": 13.34438419342041,
+          "stdev_ms": 0.12956538177846139
+        },
+        "candidate_a_plain": {
+          "mean_ms": 12.323605378468832,
+          "median_ms": 12.156911849975586,
+          "min_ms": 12.019200325012207,
+          "max_ms": 15.960384368896484,
+          "stdev_ms": 0.7015726538367367
+        },
+        "candidate_a_smem": {
+          "mean_ms": 8.673329130808513,
+          "median_ms": 8.6768479347229,
+          "min_ms": 8.455904006958008,
+          "max_ms": 8.933792114257812,
+          "stdev_ms": 0.12192176601041281
+        },
+        "candidate_b": {
+          "mean_ms": 6.281428257624309,
+          "median_ms": 6.255104064941406,
+          "min_ms": 6.0556159019470215,
+          "max_ms": 7.598239898681641,
+          "stdev_ms": 0.27200714750019794
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 4.209928528467814,
+          "median_ms": 4.170207977294922,
+          "min_ms": 4.153247833251953,
+          "max_ms": 4.289599895477295,
+          "stdev_ms": 0.05707250646006845
+        },
+        "transpose": {
+          "mean_ms": 0.009580800123512746,
+          "median_ms": 0.00800000037997961,
+          "min_ms": 0.007040000054985285,
+          "max_ms": 0.024927999824285507,
+          "stdev_ms": 0.004749576854795087
+        },
+        "matmul": {
+          "mean_ms": 2.7175370772679646,
+          "median_ms": 2.717584013938904,
+          "min_ms": 2.708735942840576,
+          "max_ms": 2.7406721115112305,
+          "stdev_ms": 0.00541570732095258
+        },
+        "permute": {
+          "mean_ms": 1.3408896009127298,
+          "median_ms": 1.3401440382003784,
+          "min_ms": 1.336192011833191,
+          "max_ms": 1.3644479513168335,
+          "stdev_ms": 0.0049126900128388315
+        }
+      },
+      "candidate_a_stage_total_ms": 8.277936006772022,
+      "speedup_candidate_a_plain": 1.0554320877960486,
+      "speedup_candidate_a_smem": 1.499623542195672,
+      "speedup_candidate_b": 2.070664189785912
+    },
+    "k1_s1": {
+      "name": "k1_s1",
+      "config": {
+        "N": 16,
+        "Cin": 8,
+        "Cout": 16,
+        "H": 28,
+        "W": 28,
+        "K": 1,
+        "S": 1,
+        "P": 0
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 0.7724671959877014,
+        "median_ms": 0.7715680003166199,
+        "min_ms": 0.7704960107803345,
+        "max_ms": 0.7975360155105591,
+        "stdev_ms": 0.004771239914875284
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 4.157152584187053,
+        "achieved_gbps": 1.5595950303877768,
+        "arithmetic_intensity": 2.6655333616659584,
+        "fraction_of_compute_ceiling": 0.03972184939672458,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 10.3% of the 40.23 GFLOP/s roofline ceiling achieved, with elapsed time (772.47us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 0.7709920048713684,
+          "median_ms": 0.7715840041637421,
+          "min_ms": 0.7496960163116455,
+          "max_ms": 0.7731199860572815,
+          "stdev_ms": 0.00407004325621109
+        },
+        "candidate_a_plain": {
+          "mean_ms": 0.5404149363438289,
+          "median_ms": 0.551391988992691,
+          "min_ms": 0.4659839868545532,
+          "max_ms": 0.6682559847831726,
+          "stdev_ms": 0.05376192363853054
+        },
+        "candidate_a_smem": {
+          "mean_ms": 0.49444266855716706,
+          "median_ms": 0.5096960067749023,
+          "min_ms": 0.4328640103340149,
+          "max_ms": 0.6613439917564392,
+          "stdev_ms": 0.05613150205462489
+        },
+        "candidate_b": {
+          "mean_ms": 0.4553557336330414,
+          "median_ms": 0.4757920056581497,
+          "min_ms": 0.3314239978790283,
+          "max_ms": 0.5765759944915771,
+          "stdev_ms": 0.04993748948898144
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 0.08250773325562477,
+          "median_ms": 0.08240000158548355,
+          "min_ms": 0.08163200318813324,
+          "max_ms": 0.08393599838018417,
+          "stdev_ms": 0.0005059282165857466
+        },
+        "transpose": {
+          "mean_ms": 0.011310933375110228,
+          "median_ms": 0.0060800001956522465,
+          "min_ms": 0.005760000087320805,
+          "max_ms": 0.1263040006160736,
+          "stdev_ms": 0.02213701910990746
+        },
+        "matmul": {
+          "mean_ms": 0.09286506697535515,
+          "median_ms": 0.09171199798583984,
+          "min_ms": 0.09008000046014786,
+          "max_ms": 0.12240000069141388,
+          "stdev_ms": 0.005678133906870717
+        },
+        "permute": {
+          "mean_ms": 0.14317440142234167,
+          "median_ms": 0.14203199744224548,
+          "min_ms": 0.14105600118637085,
+          "max_ms": 0.1732800006866455,
+          "stdev_ms": 0.005724589403755381
+        }
+      },
+      "candidate_a_stage_total_ms": 0.3298581350284318,
+      "speedup_candidate_a_plain": 1.4266667203676977,
+      "speedup_candidate_a_smem": 1.5593152733383626,
+      "speedup_candidate_b": 1.693164152606651
+    },
+    "k3_s1": {
+      "name": "k3_s1",
+      "config": {
+        "N": 16,
+        "Cin": 8,
+        "Cout": 16,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 1.6034623940785726,
+        "median_ms": 1.6026719808578491,
+        "min_ms": 1.6001919507980347,
+        "max_ms": 1.630687952041626,
+        "stdev_ms": 0.005299866349289798
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 18.024355361703467,
+        "achieved_gbps": 0.7538885878858752,
+        "arithmetic_intensity": 23.90851334180432,
+        "fraction_of_compute_ceiling": 0.1722238274038813,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 17.2% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (1603.46us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 1.6044938564300537,
+          "median_ms": 1.6044319868087769,
+          "min_ms": 1.6014399528503418,
+          "max_ms": 1.6077120304107666,
+          "stdev_ms": 0.0011074204946102985
+        },
+        "candidate_a_plain": {
+          "mean_ms": 1.6823018630345663,
+          "median_ms": 1.6668320298194885,
+          "min_ms": 1.5828479528427124,
+          "max_ms": 1.8570239543914795,
+          "stdev_ms": 0.07198876368566685
+        },
+        "candidate_a_smem": {
+          "mean_ms": 1.2334442734718323,
+          "median_ms": 1.2280160188674927,
+          "min_ms": 1.177888035774231,
+          "max_ms": 1.3869760036468506,
+          "stdev_ms": 0.05765708148538818
+        },
+        "candidate_b": {
+          "mean_ms": 0.9825407981872558,
+          "median_ms": 0.962224006652832,
+          "min_ms": 0.8727999925613403,
+          "max_ms": 1.3477439880371094,
+          "stdev_ms": 0.08256554351676584
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 0.541266135374705,
+          "median_ms": 0.5410079956054688,
+          "min_ms": 0.5392959713935852,
+          "max_ms": 0.5444480180740356,
+          "stdev_ms": 0.0013525589535557966
+        },
+        "transpose": {
+          "mean_ms": 0.009782400059824189,
+          "median_ms": 0.0080960001796484,
+          "min_ms": 0.007071999832987785,
+          "max_ms": 0.02937600016593933,
+          "stdev_ms": 0.005335043738261429
+        },
+        "matmul": {
+          "mean_ms": 0.34918826818466187,
+          "median_ms": 0.3481920063495636,
+          "min_ms": 0.34537601470947266,
+          "max_ms": 0.37968000769615173,
+          "stdev_ms": 0.005986462692067535
+        },
+        "permute": {
+          "mean_ms": 0.14326079934835434,
+          "median_ms": 0.14233599603176117,
+          "min_ms": 0.14105600118637085,
+          "max_ms": 0.16732800006866455,
+          "stdev_ms": 0.0046192765282080895
+        }
+      },
+      "candidate_a_stage_total_ms": 1.0434976029675453,
+      "speedup_candidate_a_plain": 0.953749081354424,
+      "speedup_candidate_a_smem": 1.3008239536544373,
+      "speedup_candidate_b": 1.6330048170928615
+    },
+    "k5_s1": {
+      "name": "k5_s1",
+      "config": {
+        "N": 16,
+        "Cin": 8,
+        "Cout": 16,
+        "H": 28,
+        "W": 28,
+        "K": 5,
+        "S": 1,
+        "P": 2
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 4.020235745112101,
+        "median_ms": 3.9678560495376587,
+        "min_ms": 3.9582080841064453,
+        "max_ms": 4.27180814743042,
+        "stdev_ms": 0.11214903563656015
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 19.969376198300882,
+        "achieved_gbps": 0.30272453586327297,
+        "arithmetic_intensity": 65.96550273453934,
+        "fraction_of_compute_ceiling": 0.19080862148593983,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 19.1% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (4020.24us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 4.117142407099406,
+          "median_ms": 4.039648056030273,
+          "min_ms": 4.030240058898926,
+          "max_ms": 4.274816036224365,
+          "stdev_ms": 0.11020627774514344
+        },
+        "candidate_a_plain": {
+          "mean_ms": 4.000340255101522,
+          "median_ms": 4.000272035598755,
+          "min_ms": 3.7958080768585205,
+          "max_ms": 4.195551872253418,
+          "stdev_ms": 0.11189521177077795
+        },
+        "candidate_a_smem": {
+          "mean_ms": 2.723856004079183,
+          "median_ms": 2.6965759992599487,
+          "min_ms": 2.618112087249756,
+          "max_ms": 2.9377920627593994,
+          "stdev_ms": 0.08692188431124959
+        },
+        "candidate_b": {
+          "mean_ms": 2.0181898713111877,
+          "median_ms": 1.9940159320831299,
+          "min_ms": 1.877951979637146,
+          "max_ms": 2.566272020339966,
+          "stdev_ms": 0.1223552942031014
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 1.485688535372416,
+          "median_ms": 1.4808480143547058,
+          "min_ms": 1.4759999513626099,
+          "max_ms": 1.5168960094451904,
+          "stdev_ms": 0.012524933671060877
+        },
+        "transpose": {
+          "mean_ms": 0.010771199905623993,
+          "median_ms": 0.009151999838650227,
+          "min_ms": 0.008736000396311283,
+          "max_ms": 0.025312000885605812,
+          "stdev_ms": 0.004510631164508743
+        },
+        "matmul": {
+          "mean_ms": 0.8468405346075694,
+          "median_ms": 0.8482879996299744,
+          "min_ms": 0.8333759903907776,
+          "max_ms": 0.8731520175933838,
+          "stdev_ms": 0.007474266763813243
+        },
+        "permute": {
+          "mean_ms": 0.1433973322312037,
+          "median_ms": 0.1422879993915558,
+          "min_ms": 0.14131200313568115,
+          "max_ms": 0.17324799299240112,
+          "stdev_ms": 0.005689089354321891
+        }
+      },
+      "candidate_a_stage_total_ms": 2.4866976021168132,
+      "speedup_candidate_a_plain": 1.0291980543027384,
+      "speedup_candidate_a_smem": 1.5115125032063628,
+      "speedup_candidate_b": 2.0400173767716714
+    },
+    "k3_s2": {
+      "name": "k3_s2",
+      "config": {
+        "N": 16,
+        "Cin": 8,
+        "Cout": 16,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 2,
+        "P": 1
+      },
+      "Hout": 14,
+      "Wout": 14,
+      "isolated_baseline_ms": {
+        "mean_ms": 0.4105461339155833,
+        "median_ms": 0.40963199734687805,
+        "min_ms": 0.4079360067844391,
+        "max_ms": 0.44118401408195496,
+        "stdev_ms": 0.00582355167225016
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 17.59934731594788,
+        "achieved_gbps": 1.4778363498723242,
+        "arithmetic_intensity": 11.90886075949367,
+        "fraction_of_compute_ceiling": 0.16816284930793274,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 16.8% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (410.55us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 0.4090965340534846,
+          "median_ms": 0.4090240001678467,
+          "min_ms": 0.40780800580978394,
+          "max_ms": 0.4107840061187744,
+          "stdev_ms": 0.0006608980056142142
+        },
+        "candidate_a_plain": {
+          "mean_ms": 0.5728938698768615,
+          "median_ms": 0.5756320059299469,
+          "min_ms": 0.497408002614975,
+          "max_ms": 0.6405119895935059,
+          "stdev_ms": 0.02986506199802369
+        },
+        "candidate_a_smem": {
+          "mean_ms": 0.4697930653889974,
+          "median_ms": 0.4668640047311783,
+          "min_ms": 0.3912320137023926,
+          "max_ms": 0.6066240072250366,
+          "stdev_ms": 0.03543381849462327
+        },
+        "candidate_b": {
+          "mean_ms": 0.418232532342275,
+          "median_ms": 0.4201119989156723,
+          "min_ms": 0.33852800726890564,
+          "max_ms": 0.5724480152130127,
+          "stdev_ms": 0.04679601706921708
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 0.15711786498626074,
+          "median_ms": 0.15700799971818924,
+          "min_ms": 0.15596799552440643,
+          "max_ms": 0.15990400314331055,
+          "stdev_ms": 0.0008116743528162531
+        },
+        "transpose": {
+          "mean_ms": 0.009467733294392626,
+          "median_ms": 0.007968000136315823,
+          "min_ms": 0.0071680000983178616,
+          "max_ms": 0.024351999163627625,
+          "stdev_ms": 0.0046515392599897785
+        },
+        "matmul": {
+          "mean_ms": 0.09138666813572248,
+          "median_ms": 0.09043200314044952,
+          "min_ms": 0.08822400122880936,
+          "max_ms": 0.11823999881744385,
+          "stdev_ms": 0.005131793324468872
+        },
+        "permute": {
+          "mean_ms": 0.041174400101105374,
+          "median_ms": 0.040511999279260635,
+          "min_ms": 0.04025600105524063,
+          "max_ms": 0.05632000043988228,
+          "stdev_ms": 0.0028863336487467517
+        }
+      },
+      "candidate_a_stage_total_ms": 0.29914666651748123,
+      "speedup_candidate_a_plain": 0.7140878189906558,
+      "speedup_candidate_a_smem": 0.8708015596499814,
+      "speedup_candidate_b": 0.9781556966943126
+    },
+    "cin_low": {
+      "name": "cin_low",
+      "config": {
+        "N": 16,
+        "Cin": 1,
+        "Cout": 16,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 0.3375178654988607,
+        "median_ms": 0.33635199069976807,
+        "min_ms": 0.3356800079345703,
+        "max_ms": 0.3678080141544342,
+        "stdev_ms": 0.005741008454623496
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 10.703646737811557,
+        "achieved_gbps": 2.5289565005348766,
+        "arithmetic_intensity": 4.232436080077979,
+        "fraction_of_compute_ceiling": 0.10227400488794815,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 16.8% of the 63.88 GFLOP/s roofline ceiling achieved, with elapsed time (337.52us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 0.33121813436349234,
+          "median_ms": 0.3359359949827194,
+          "min_ms": 0.324288010597229,
+          "max_ms": 0.33827200531959534,
+          "stdev_ms": 0.005875829576006858
+        },
+        "candidate_a_plain": {
+          "mean_ms": 0.5149600028991699,
+          "median_ms": 0.48763200640678406,
+          "min_ms": 0.47062399983406067,
+          "max_ms": 0.6436160206794739,
+          "stdev_ms": 0.04646290992307946
+        },
+        "candidate_a_smem": {
+          "mean_ms": 0.45801386833190916,
+          "median_ms": 0.4349119961261749,
+          "min_ms": 0.4137279987335205,
+          "max_ms": 0.6101760268211365,
+          "stdev_ms": 0.048020281352798136
+        },
+        "candidate_b": {
+          "mean_ms": 0.43314026792844135,
+          "median_ms": 0.40460801124572754,
+          "min_ms": 0.38835200667381287,
+          "max_ms": 0.6084799766540527,
+          "stdev_ms": 0.05603132872984078
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 0.08053333361943563,
+          "median_ms": 0.08065600320696831,
+          "min_ms": 0.07843200117349625,
+          "max_ms": 0.08211199939250946,
+          "stdev_ms": 0.0009676687521249375
+        },
+        "transpose": {
+          "mean_ms": 0.007865599977473417,
+          "median_ms": 0.0060159999411553144,
+          "min_ms": 0.005824000108987093,
+          "max_ms": 0.02412799932062626,
+          "stdev_ms": 0.005102974324793422
+        },
+        "matmul": {
+          "mean_ms": 0.09422186737259229,
+          "median_ms": 0.09321600198745728,
+          "min_ms": 0.09132800251245499,
+          "max_ms": 0.12396799772977829,
+          "stdev_ms": 0.005702843450662367
+        },
+        "permute": {
+          "mean_ms": 0.13900159796079,
+          "median_ms": 0.13819199800491333,
+          "min_ms": 0.13715200126171112,
+          "max_ms": 0.16332800686359406,
+          "stdev_ms": 0.004646525743084164
+        }
+      },
+      "candidate_a_stage_total_ms": 0.3216223989302913,
+      "speedup_candidate_a_plain": 0.6431919615091843,
+      "speedup_candidate_a_smem": 0.7231618019991227,
+      "speedup_candidate_b": 0.7646902375241929
+    },
+    "cin_high": {
+      "name": "cin_high",
+      "config": {
+        "N": 16,
+        "Cin": 64,
+        "Cout": 16,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 12.453269290924073,
+        "median_ms": 12.64139175415039,
+        "min_ms": 11.37667179107666,
+        "max_ms": 12.68064022064209,
+        "stdev_ms": 0.4493860032342139
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 18.566289911397508,
+        "achieved_gbps": 0.3252916086021141,
+        "arithmetic_intensity": 57.07583417593529,
+        "fraction_of_compute_ceiling": 0.17740204545815993,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 17.7% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (12453.27us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 12.144795767466228,
+          "median_ms": 12.111456394195557,
+          "min_ms": 11.990400314331055,
+          "max_ms": 12.421248435974121,
+          "stdev_ms": 0.12785030628437008
+        },
+        "candidate_a_plain": {
+          "mean_ms": 10.565595626831055,
+          "median_ms": 10.542160034179688,
+          "min_ms": 10.364607810974121,
+          "max_ms": 10.810527801513672,
+          "stdev_ms": 0.1120842633230841
+        },
+        "candidate_a_smem": {
+          "mean_ms": 7.108881076176961,
+          "median_ms": 7.1102399826049805,
+          "min_ms": 6.979263782501221,
+          "max_ms": 7.298719882965088,
+          "stdev_ms": 0.089052264550417
+        },
+        "candidate_b": {
+          "mean_ms": 4.907931741078695,
+          "median_ms": 4.906527996063232,
+          "min_ms": 4.722911834716797,
+          "max_ms": 5.162240028381348,
+          "stdev_ms": 0.08232973191606541
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 4.295349327723185,
+          "median_ms": 4.3283679485321045,
+          "min_ms": 4.205728054046631,
+          "max_ms": 4.332159996032715,
+          "stdev_ms": 0.05458866841012568
+        },
+        "transpose": {
+          "mean_ms": 0.014164266642183065,
+          "median_ms": 0.013104000128805637,
+          "min_ms": 0.011711999773979187,
+          "max_ms": 0.026367999613285065,
+          "stdev_ms": 0.003731813738283431
+        },
+        "matmul": {
+          "mean_ms": 2.3008074601491293,
+          "median_ms": 2.3004480600357056,
+          "min_ms": 2.292543888092041,
+          "max_ms": 2.328768014907837,
+          "stdev_ms": 0.006320453181603841
+        },
+        "permute": {
+          "mean_ms": 0.14297066628932953,
+          "median_ms": 0.14219199866056442,
+          "min_ms": 0.1412159949541092,
+          "max_ms": 0.16707199811935425,
+          "stdev_ms": 0.004591741893877098
+        }
+      },
+      "candidate_a_stage_total_ms": 6.753291720803827,
+      "speedup_candidate_a_plain": 1.149466267346522,
+      "speedup_candidate_a_smem": 1.7083976560200804,
+      "speedup_candidate_b": 2.4745241800769158
+    },
+    "cout_low": {
+      "name": "cout_low",
+      "config": {
+        "N": 16,
+        "Cin": 8,
+        "Cout": 4,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 0.4139061321814855,
+        "median_ms": 0.41440001130104065,
+        "min_ms": 0.4073599874973297,
+        "max_ms": 0.4411199986934662,
+        "stdev_ms": 0.006122003659989995
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 17.45647971417805,
+        "achieved_gbps": 1.457489882598518,
+        "arithmetic_intensity": 11.977084659452577,
+        "fraction_of_compute_ceiling": 0.16679774055951713,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 16.7% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (413.91us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 0.41455573538939156,
+          "median_ms": 0.41439999639987946,
+          "min_ms": 0.4134399890899658,
+          "max_ms": 0.41648000478744507,
+          "stdev_ms": 0.0006932223464248804
+        },
+        "candidate_a_plain": {
+          "mean_ms": 1.6131146788597106,
+          "median_ms": 1.5685440301895142,
+          "min_ms": 1.5340160131454468,
+          "max_ms": 2.168992042541504,
+          "stdev_ms": 0.12181441215306207
+        },
+        "candidate_a_smem": {
+          "mean_ms": 1.1401855985323588,
+          "median_ms": 1.1262719631195068,
+          "min_ms": 1.0771199464797974,
+          "max_ms": 1.3363840579986572,
+          "stdev_ms": 0.04995607596438168
+        },
+        "candidate_b": {
+          "mean_ms": 0.9717098693052928,
+          "median_ms": 0.9631039798259735,
+          "min_ms": 0.9248960018157959,
+          "max_ms": 1.0441279411315918,
+          "stdev_ms": 0.028789377700006044
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 0.5506176054477692,
+          "median_ms": 0.550464004278183,
+          "min_ms": 0.5479040145874023,
+          "max_ms": 0.5536320209503174,
+          "stdev_ms": 0.0013052801740026667
+        },
+        "transpose": {
+          "mean_ms": 0.009031466643015544,
+          "median_ms": 0.007200000109151006,
+          "min_ms": 0.006943999789655209,
+          "max_ms": 0.025087999179959297,
+          "stdev_ms": 0.005025722880977678
+        },
+        "matmul": {
+          "mean_ms": 0.34276373287041983,
+          "median_ms": 0.34171199798583984,
+          "min_ms": 0.3384000062942505,
+          "max_ms": 0.3745279908180237,
+          "stdev_ms": 0.006179798730011941
+        },
+        "permute": {
+          "mean_ms": 0.04168213382363319,
+          "median_ms": 0.041071999818086624,
+          "min_ms": 0.04054399952292442,
+          "max_ms": 0.05632000043988228,
+          "stdev_ms": 0.0028080852356430707
+        }
+      },
+      "candidate_a_stage_total_ms": 0.9440949387848377,
+      "speedup_candidate_a_plain": 0.25699086420962675,
+      "speedup_candidate_a_smem": 0.3635861880057121,
+      "speedup_candidate_b": 0.42662501275794495
+    },
+    "cout_high": {
+      "name": "cout_high",
+      "config": {
+        "N": 16,
+        "Cin": 8,
+        "Cout": 128,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 13.407531770070394,
+        "median_ms": 13.492127895355225,
+        "min_ms": 12.589792251586914,
+        "max_ms": 13.515040397644043,
+        "stdev_ms": 0.2619954935611739
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 17.24485997610178,
+        "achieved_gbps": 0.5117123805975496,
+        "arithmetic_intensity": 33.70029850746268,
+        "fraction_of_compute_ceiling": 0.1647757009073729,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 16.5% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (13407.53us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 13.141753641764323,
+          "median_ms": 13.052031993865967,
+          "min_ms": 12.824064254760742,
+          "max_ms": 13.509856224060059,
+          "stdev_ms": 0.23376729516627595
+        },
+        "candidate_a_plain": {
+          "mean_ms": 5.129162693023682,
+          "median_ms": 5.097888231277466,
+          "min_ms": 4.924960136413574,
+          "max_ms": 5.907711982727051,
+          "stdev_ms": 0.17420630136325851
+        },
+        "candidate_a_smem": {
+          "mean_ms": 4.615647983551026,
+          "median_ms": 4.609488010406494,
+          "min_ms": 4.372352123260498,
+          "max_ms": 5.035007953643799,
+          "stdev_ms": 0.14795233392664764
+        },
+        "candidate_b": {
+          "mean_ms": 6.277820761998495,
+          "median_ms": 6.286400079727173,
+          "min_ms": 6.020864009857178,
+          "max_ms": 6.61846399307251,
+          "stdev_ms": 0.15336819618306982
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 0.5579050699869792,
+          "median_ms": 0.556848019361496,
+          "min_ms": 0.5544639825820923,
+          "max_ms": 0.5687040090560913,
+          "stdev_ms": 0.0034100248602017278
+        },
+        "transpose": {
+          "mean_ms": 0.015081599975625673,
+          "median_ms": 0.01414399966597557,
+          "min_ms": 0.013151999562978745,
+          "max_ms": 0.025536000728607178,
+          "stdev_ms": 0.0031334110830082773
+        },
+        "matmul": {
+          "mean_ms": 2.608028801282247,
+          "median_ms": 2.6070719957351685,
+          "min_ms": 2.6039679050445557,
+          "max_ms": 2.6320319175720215,
+          "stdev_ms": 0.00492790476322219
+        },
+        "permute": {
+          "mean_ms": 1.1188789367675782,
+          "median_ms": 1.1179839968681335,
+          "min_ms": 1.1160000562667847,
+          "max_ms": 1.1493439674377441,
+          "stdev_ms": 0.0058140567581543645
+        }
+      },
+      "candidate_a_stage_total_ms": 4.29989440801243,
+      "speedup_candidate_a_plain": 2.5621635397993496,
+      "speedup_candidate_a_smem": 2.847217484651804,
+      "speedup_candidate_b": 2.0933623529545864
+    },
+    "batch_32": {
+      "name": "batch_32",
+      "config": {
+        "Cin": 16,
+        "Cout": 32,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1,
+        "N": 32
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 12.822761599222819,
+        "median_ms": 12.927103996276855,
+        "min_ms": 12.411711692810059,
+        "max_ms": 12.951583862304688,
+        "stdev_ms": 0.2079050027336244
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 18.03129584925088,
+        "achieved_gbps": 0.3770894407249267,
+        "arithmetic_intensity": 47.81702668360864,
+        "fraction_of_compute_ceiling": 0.17229014419055566,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 17.2% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (12822.76us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 12.527298132578531,
+          "median_ms": 12.504576206207275,
+          "min_ms": 12.416447639465332,
+          "max_ms": 12.938559532165527,
+          "stdev_ms": 0.12351546114028256
+        },
+        "candidate_a_plain": {
+          "mean_ms": 7.129291725158692,
+          "median_ms": 7.115567922592163,
+          "min_ms": 7.049600124359131,
+          "max_ms": 7.346047878265381,
+          "stdev_ms": 0.07639276214859117
+        },
+        "candidate_a_smem": {
+          "mean_ms": 5.317640495300293,
+          "median_ms": 5.314079999923706,
+          "min_ms": 5.218624114990234,
+          "max_ms": 5.543935775756836,
+          "stdev_ms": 0.0828132259352784
+        },
+        "candidate_b": {
+          "mean_ms": 5.2735893090566,
+          "median_ms": 5.251567840576172,
+          "min_ms": 5.108511924743652,
+          "max_ms": 5.684544086456299,
+          "stdev_ms": 0.10633739123919385
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 2.187498656908671,
+          "median_ms": 2.1869919300079346,
+          "min_ms": 2.1848320960998535,
+          "max_ms": 2.1993279457092285,
+          "stdev_ms": 0.002648075286500102
+        },
+        "transpose": {
+          "mean_ms": 0.012337066636731227,
+          "median_ms": 0.011152000166475773,
+          "min_ms": 0.009920000098645687,
+          "max_ms": 0.02582399919629097,
+          "stdev_ms": 0.0041810204387645435
+        },
+        "matmul": {
+          "mean_ms": 2.3373045365015668,
+          "median_ms": 2.3375200033187866,
+          "min_ms": 2.3056321144104004,
+          "max_ms": 2.371999979019165,
+          "stdev_ms": 0.009130838714136435
+        },
+        "permute": {
+          "mean_ms": 0.5682879984378815,
+          "median_ms": 0.5665600001811981,
+          "min_ms": 0.5634880065917969,
+          "max_ms": 0.5908160209655762,
+          "stdev_ms": 0.005284910528444782
+        }
+      },
+      "candidate_a_stage_total_ms": 5.10542825848485,
+      "speedup_candidate_a_plain": 1.757158861710023,
+      "speedup_candidate_a_smem": 2.355800122939883,
+      "speedup_candidate_b": 2.3754785210643483
+    },
+    "batch_64": {
+      "name": "batch_64",
+      "config": {
+        "Cin": 16,
+        "Cout": 32,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1,
+        "N": 64
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 25.94440313975016,
+        "median_ms": 25.835776329040527,
+        "min_ms": 25.822399139404297,
+        "max_ms": 26.906944274902344,
+        "stdev_ms": 0.32546369294332433
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 17.823575031159997,
+        "achieved_gbps": 0.37203492206037886,
+        "arithmetic_intensity": 47.90833863781031,
+        "fraction_of_compute_ceiling": 0.17030535895939627,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 17.0% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (25944.40us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 25.049559529622396,
+          "median_ms": 24.980000495910645,
+          "min_ms": 24.573631286621094,
+          "max_ms": 25.4401912689209,
+          "stdev_ms": 0.19294088604770782
+        },
+        "candidate_a_plain": {
+          "mean_ms": 13.957992458343506,
+          "median_ms": 13.910143852233887,
+          "min_ms": 13.850591659545898,
+          "max_ms": 14.140800476074219,
+          "stdev_ms": 0.10309251869656551
+        },
+        "candidate_a_smem": {
+          "mean_ms": 10.467628733317058,
+          "median_ms": 10.469583988189697,
+          "min_ms": 10.301568031311035,
+          "max_ms": 10.65452766418457,
+          "stdev_ms": 0.09530537351357944
+        },
+        "candidate_b": {
+          "mean_ms": 10.266444810231526,
+          "median_ms": 10.244000434875488,
+          "min_ms": 10.067584037780762,
+          "max_ms": 10.484895706176758,
+          "stdev_ms": 0.09545662814251099
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 4.326952521006266,
+          "median_ms": 4.358464002609253,
+          "min_ms": 4.20527982711792,
+          "max_ms": 4.366975784301758,
+          "stdev_ms": 0.06282534801883997
+        },
+        "transpose": {
+          "mean_ms": 0.012122666649520396,
+          "median_ms": 0.010671999771147966,
+          "min_ms": 0.009983999654650688,
+          "max_ms": 0.025887999683618546,
+          "stdev_ms": 0.004234762194148959
+        },
+        "matmul": {
+          "mean_ms": 4.612812805175781,
+          "median_ms": 4.641040086746216,
+          "min_ms": 4.515359878540039,
+          "max_ms": 4.666656017303467,
+          "stdev_ms": 0.054413361450970914
+        },
+        "permute": {
+          "mean_ms": 1.145529599984487,
+          "median_ms": 1.1442399621009827,
+          "min_ms": 1.1395200490951538,
+          "max_ms": 1.1760640144348145,
+          "stdev_ms": 0.006386690928779676
+        }
+      },
+      "candidate_a_stage_total_ms": 10.097417592816054,
+      "speedup_candidate_a_plain": 1.7946391362784275,
+      "speedup_candidate_a_smem": 2.393050056302915,
+      "speedup_candidate_b": 2.439944887704265
+    },
+    "batch_128": {
+      "name": "batch_128",
+      "config": {
+        "Cin": 16,
+        "Cout": 32,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1,
+        "N": 128
+      },
+      "Hout": 28,
+      "Wout": 28,
+      "isolated_baseline_ms": {
+        "mean_ms": 52.18211708068848,
+        "median_ms": 51.654767990112305,
+        "min_ms": 51.63663864135742,
+        "max_ms": 55.20787048339844,
+        "stdev_ms": 1.2395198695252756
+      },
+      "roofline_baseline": {
+        "achieved_gflops": 17.72339038237806,
+        "achieved_gbps": 0.3695905240904332,
+        "arithmetic_intensity": 47.95412551768079,
+        "fraction_of_compute_ceiling": 0.1693480884598921,
+        "classification": "mixed_or_ambiguous",
+        "note": "Only 16.9% of the 104.66 GFLOP/s roofline ceiling achieved, with elapsed time (52182.12us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      "complete_pipeline_ms": {
+        "baseline": {
+          "mean_ms": 50.56873893737793,
+          "median_ms": 50.395503997802734,
+          "min_ms": 49.60985565185547,
+          "max_ms": 51.663902282714844,
+          "stdev_ms": 0.743261940279922
+        },
+        "candidate_a_plain": {
+          "mean_ms": 27.767114448547364,
+          "median_ms": 27.56284809112549,
+          "min_ms": 27.26076889038086,
+          "max_ms": 28.292959213256836,
+          "stdev_ms": 0.3957989426388656
+        },
+        "candidate_a_smem": {
+          "mean_ms": 20.879533958435058,
+          "median_ms": 20.88991928100586,
+          "min_ms": 20.50092887878418,
+          "max_ms": 21.25484848022461,
+          "stdev_ms": 0.2783988776295111
+        },
+        "candidate_b": {
+          "mean_ms": 20.486894925435383,
+          "median_ms": 20.515840530395508,
+          "min_ms": 20.055360794067383,
+          "max_ms": 21.01545524597168,
+          "stdev_ms": 0.3128646696319774
+        }
+      },
+      "candidate_a_stages_ms": {
+        "im2col": {
+          "mean_ms": 8.58768533070882,
+          "median_ms": 8.691936016082764,
+          "min_ms": 8.39020824432373,
+          "max_ms": 8.716416358947754,
+          "stdev_ms": 0.1440375125801638
+        },
+        "transpose": {
+          "mean_ms": 0.012115199988087019,
+          "median_ms": 0.010975999757647514,
+          "min_ms": 0.010015999898314476,
+          "max_ms": 0.025696000084280968,
+          "stdev_ms": 0.0041899029296475305
+        },
+        "matmul": {
+          "mean_ms": 9.285301303863525,
+          "median_ms": 9.325039863586426,
+          "min_ms": 9.02780818939209,
+          "max_ms": 9.35324764251709,
+          "stdev_ms": 0.10210978306420501
+        },
+        "permute": {
+          "mean_ms": 2.279199981689453,
+          "median_ms": 2.2778879404067993,
+          "min_ms": 2.271775960922241,
+          "max_ms": 2.297823905944824,
+          "stdev_ms": 0.005901438016943065
+        }
+      },
+      "candidate_a_stage_total_ms": 20.164301816249885,
+      "speedup_candidate_a_plain": 1.8211737136418016,
+      "speedup_candidate_a_smem": 2.4219285276216054,
+      "speedup_candidate_b": 2.468345697160511
+    }
+  }
+}

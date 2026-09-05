@@ -72,6 +72,27 @@ _CONV2D_WEIGHT_IM2COL_GEMM_THRESHOLD = 256
 # own compile-time constant so the two never drift independently.
 _MATMUL_TILE = 16
 
+# Milestone 41: `conv2d` forward im2col+GEMM dispatch threshold, in total
+# forward FLOPs (`2*N*Cout*Hout*Wout*Cin*KH*KW`, `roofline.flops_conv2d_
+# forward`'s own formula). `benchmarks/m41_conv2d_forward_profile.py`
+# measured both GEMM candidates (Candidate A: im2col + existing tiled GEMM +
+# output permute; Candidate B: half-fused GEMM, no `Xcol` buffer) against
+# the existing per-thread `k_conv2d_forward` at 15 representative/sweep
+# shapes: every shape at/above ~20M FLOPs won by 1.06-2.71x (both
+# candidates), every shape at/below ~7.2M FLOPs *regressed* (0.26-0.75x --
+# the GEMM reformulation's extra kernel launches/buffer allocations cost
+# more than a fast, already-cheap baseline call), with one measured
+# exception (`k1_s1`, 3.2M FLOPs, an anomalously slow 0.745ms baseline that
+# still won 1.72x -- plausibly measurement noise on an otherwise-tiny
+# workload). 10,000,000 sits in the untested gap between the two clusters
+# and classifies every one of M41's own tested shapes correctly except that
+# one below-threshold win, which is *forfeited* rather than mis-dispatched
+# into a regression -- the conservative direction of error the milestone
+# brief's Section 7 asks for. See `docs/performance/
+# conv2d-forward-profiling.md`'s **Milestone 41** section for the complete
+# per-shape evidence.
+_CONV2D_FORWARD_GEMM_FLOPS_THRESHOLD = 10_000_000
+
 _TRANSFERABLE_DTYPES = (
     np.dtype(np.float32),
     np.dtype(np.float64),
@@ -349,6 +370,23 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
         ]
         matmul_splitk_fn.restype = ctypes.c_int
+
+        # -- Conv2d forward im2col + GEMM candidates (Milestone 41) --
+        # see kernels.cu's identically-named section. Reached only through
+        # `forge.backend.cuda.experimental_conv_forward_im2col`/
+        # `experimental_conv_forward_halffused` and this milestone's benchmark
+        # modules until/unless `CUDABackend.conv2d` dispatches to one.
+        output_permute_fn = getattr(lib, f"cf_conv2d_output_permute_{suffix}")
+        output_permute_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+        output_permute_fn.restype = ctypes.c_int
+
+        forward_halffused_fn = getattr(lib, f"cf_conv2d_forward_halffused_gemm_{suffix}")
+        forward_halffused_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ] + [ctypes.c_int] * 14 + [ctypes.c_void_p]
+        forward_halffused_fn.restype = ctypes.c_int
 
         pool_fwd_fn = getattr(lib, f"cf_maxpool2d_forward_{suffix}")
         pool_fwd_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 12 + [ctypes.c_void_p]
@@ -1247,6 +1285,30 @@ class CUDABackend(Backend):
         PH, PW = padding
         Hout = (H + 2 * PH - KH) // SH + 1
         Wout = (W + 2 * PW - KW) // SW + 1
+
+        # Milestone 41: shape-based forward dispatch -- im2col + a tiled GEMM
+        # at/above a total-FLOPs threshold (`_CONV2D_FORWARD_GEMM_FLOPS_
+        # THRESHOLD`'s comment has the measured evidence), the original
+        # per-thread kernel below it. Above the threshold, a second axis
+        # picks which GEMM candidate: `blocks_x = ceil(Cout/16)` (the GEMM's
+        # own `Cout`-indexed block-count dimension) small (`<=2`, i.e.
+        # `Cout<=32` -- every current Forge shape) selects the half-fused
+        # kernel (Candidate B, no `Xcol` buffer at all); larger `Cout`
+        # selects the im2col+GEMM+permute pipeline (Candidate A) with the
+        # Milestone 39 shared-memory im2col variant, since Candidate B's
+        # redundant `Xcol`-tile regather tax grows with `blocks_x` and
+        # measured a real regression relative to Candidate A at `Cout=128`
+        # (`blocks_x=8`) while still winning at every smaller `Cout` tested.
+        total_flops = 2 * N * Cout * Hout * Wout * Cin * KH * KW
+        if total_flops >= _CONV2D_FORWARD_GEMM_FLOPS_THRESHOLD:
+            blocks_x = (Cout + _MATMUL_TILE - 1) // _MATMUL_TILE
+            if blocks_x <= 2:
+                from .experimental_conv_forward_halffused import conv2d_forward_halffused_gemm
+
+                return conv2d_forward_halffused_gemm(self, x, weight, bias, stride, padding)
+            from .experimental_conv_forward_im2col import conv2d_forward_im2col_gemm
+
+            return conv2d_forward_im2col_gemm(self, x, weight, bias, stride, padding)
 
         out_ptr = self._alloc(N * Cout * Hout * Wout * dtype.itemsize)
         fn = getattr(self._lib, f"cf_conv2d_forward_{_SUFFIX[dtype]}")

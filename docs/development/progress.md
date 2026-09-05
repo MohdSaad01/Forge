@@ -2373,3 +2373,80 @@ functions (`cf_conv2d_backward_weight_*`, `dweight_halffused_gemm_splitk`,
 
 **Why no ADR.** Measurement-only milestone; no architectural, dispatch, or
 public-API change was made.
+
+### M41 — CUDA Conv2d forward: im2col + GEMM optimization (accepted)
+
+Applied M40's recommended im2col + existing tiled GEMM technique to
+`k_conv2d_forward` (unchanged since M15, one thread per output element,
+zero memory reuse; confirmed via a fresh `nvcc -Xptxas -v` pass to have zero
+register spill/stack frame, so the inefficiency is structural, not a
+register-pressure problem). Two structurally different candidates were
+designed, implemented, and measured against the complete baseline pipeline
+at 15 representative/sweep shapes (`benchmarks/m41_conv2d_forward_profile.py`,
+new):
+
+- **Candidate A** (`experimental_conv_forward_im2col.py`): `im2col`/
+  `im2col_smem` (M34/M39, unmodified) -> weight transpose (`k_transpose`,
+  M11, unmodified) -> the existing tiled GEMM (`cf_matmul_*`, M11,
+  unmodified) -> one new kernel, `k_conv2d_output_permute` (inverse of
+  M34's `k_conv2d_grad_output_permute`, bias fused in).
+- **Candidate B** (`experimental_conv_forward_halffused.py`): weight
+  transpose (same, cheap) + one new kernel,
+  `k_conv2d_forward_halffused_gemm`, that fuses `Xcol`'s gather directly
+  into its own tiled-GEMM tile load (no `Xcol`/`out_mat` buffers at all),
+  writing straight into the final output layout with bias fused in --
+  M38's half-fused `dWeight` idea, roles reversed to match forward's own
+  GEMM orientation (no split-K needed here: forward's `M=N*Hout*Wout` is a
+  large *block-count* dimension, not the small reduction dimension
+  `dWeight`'s GEMM had).
+
+**Both accepted.** Both win 1.06-2.85x at every shape at/above ~20M total
+forward FLOPs and regress 0.26-0.76x at every shape at/below ~7.2M FLOPs
+(fixed kernel-launch/allocation overhead outweighs an already-fast baseline
+call). Above the threshold, Candidate B wins at every `Cout<=32` shape
+(every current Forge shape, including both real MNIST-scale layers);
+Candidate A (`im2col_smem` variant) wins at the one tested `Cout=128` shape,
+since Candidate B's redundant `Xcol`-tile-regather tax grows with
+`blocks_x=ceil(Cout/16)`. `CUDABackend.conv2d` now computes
+`total_flops = 2*N*Cout*Hout*Wout*Cin*KH*KW` and dispatches to Candidate B
+(`blocks_x<=2`) or Candidate A (`blocks_x>2`) at/above
+`_CONV2D_FORWARD_GEMM_FLOPS_THRESHOLD = 10,000,000`, keeping the unmodified
+per-thread kernel below it. `mnist_conv1` (MNIST layer 1) stays on the
+unchanged baseline (below threshold); `mnist_conv2` now dispatches to
+Candidate B and measured 1.54x faster end to end -- a real, measured shift
+in the MNIST training step's own `forward:Conv2d` share (17.0% -> 12.94% of
+the measured forward+backward step, same `m35_mnist` tooling both before
+and after).
+
+**Roofline impact.** `large_channel`'s forward (now Candidate B) reaches
+43.2% of the practical compute ceiling (up from 17.0%) and is now
+**compute-bound** -- on par with `dWeight`'s own 43-44% ceiling-fraction at
+the same shape, confirming the reformulation genuinely moved this kernel
+toward the roofline, not just reduced wall-clock time at unchanged
+efficiency.
+
+**dInput/dWeight/dBias, `k_matmul` itself, the async prefetch pipeline, and
+every non-Conv2d op are completely untouched** -- confirmed by re-running
+`benchmarks/m40_bottleneck_recharacterization.py` fresh post-dispatch
+(backward's own isolated-kernel timings within 1-3% of M40's archived
+numbers, consistent with this GPU's documented run-to-run variance; async
+compute-stream utilization 85.5-90.9%, unchanged within noise from M40's
+87.5-93.6%).
+
+**Tests.** `tests/test_cuda_conv2d_forward_im2col_gemm.py` (new, 54 tests):
+f32/f64 parity vs. `CPUBackend.conv2d` across `K` in `{1,2,3,5}`, stride
+`{1,2}`, padding `{0,1,2}`, small/large `Cin`/`Cout`, with/without bias,
+explicit-stream, cross-stream, repeated-use memory-lifecycle safety, for
+both candidates directly and through the real `Tensor.conv2d`/`nn.Conv2d`
+API at shapes crossing both dispatch boundaries (the FLOPs threshold and
+the `blocks_x` Candidate-A-vs-B boundary), plus a full forward+backward
+autograd check confirming unchanged gradients. Full suite: **1,420 passed**
+(up from 1,366 pre-M41), verified via `python -m pytest tests/ --collect-only -q`
+and a full run on a clean CUDA rebuild.
+
+**Why no ADR.** Same reasoning as M21/M32/M34/M36/M37/M38/M39: a kernel-
+selection call site changed behind an unchanged `CUDABackend.conv2d` public
+signature and contract. No public API, Tensor semantics, or cross-cutting
+architectural decision was touched. See `docs/performance/
+conv2d-forward-profiling.md` for the complete report, including the
+documented threshold-boundary caveats and the `k1_s1` measurement anomaly.

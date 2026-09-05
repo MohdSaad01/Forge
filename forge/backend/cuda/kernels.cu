@@ -2736,3 +2736,185 @@ __global__ void k_dropout_mask(T* mask, long long n, double p, unsigned long lon
 
 DROPOUT_MASK_LAUNCHER(float, f32)
 DROPOUT_MASK_LAUNCHER(double, f64)
+
+// -- Milestone 41: Conv2d forward via im2col + existing tiled GEMM ----------
+//
+// M40 measured `k_conv2d_forward` (above, unchanged since M15) at only
+// 10.7-18.0% of the practical compute ceiling -- identical total FLOP count
+// to `dInput`/`dWeight` (which reach 22-44%) but the only Conv2d-adjacent
+// kernel with zero explicit memory reuse (no shared memory, no GEMM tiling,
+// no register blocking). This section applies the same im2col + GEMM
+// reformulation M34 already validated for `dWeight`, oriented for forward:
+//
+//   Xcol   = im2col(x)                          (M, K) = (N*Hout*Wout, Cin*KH*KW)
+//   weightT = transpose(weight)                 (K, Cout) -- weight is (Cout, K) contiguous
+//   out_mat = Xcol @ weightT                     (M, Cout), via the EXISTING unmodified k_matmul
+//   out     = permute(out_mat) + bias            (N, Cout, Hout, Wout)
+//
+// Two of these four stages are completely unmodified, already-tested
+// production kernels: `k_im2col_conv2d`/`k_im2col_conv2d_smem` (Milestone
+// 34/39, this file's earlier "dWeight im2col + existing tiled GEMM" section)
+// and `k_matmul` (Milestone 11). `k_transpose` (this file's earlier generic
+// 2D-transpose section) is reused unmodified for the small `weightT` build
+// (`Cout*Cin*KH*KW` elements -- always far smaller than `Xcol`, since `Cin*
+// KH*KW` is Forge's small GEMM-reduction dimension). Only one kernel below
+// is genuinely new: `k_conv2d_output_permute`, the inverse of the existing
+// `k_conv2d_grad_output_permute` (M34) -- gathering `out_mat`'s `(m, co)`
+// row-major layout back into `out`'s real `(N, Cout, Hout, Wout)` memory
+// layout, fusing the bias add into the same pass so no fifth kernel launch
+// is needed.
+//
+// Unlike `dWeight`'s GEMM (huge `M=N*Hout*Wout` reduction dimension, small
+// `Cout`/`Cin*KH*KW` block-count dimensions -- the exact occupancy shortfall
+// that motivated M37's split-K), forward's GEMM has `M=N*Hout*Wout` as a
+// *block-count* dimension (`blocks_y = ceil(M/16)`, very large at every
+// Forge shape) and `Cin*KH*KW` as the small reduction dimension -- so the
+// existing plain `cf_matmul_*` already launches enough blocks to occupy the
+// device without split-K (confirmed by this milestone's profiling; see
+// `docs/performance/conv2d-forward-profiling.md`).
+
+template <typename T>
+__global__ void k_conv2d_output_permute(
+    const T* out_mat, const T* bias, T* out,
+    int N, int Cout, int Hout, int Wout, int has_bias)
+{
+    long long total = static_cast<long long>(N) * Cout * Hout * Wout;
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (idx >= total) return;
+
+    int wo = static_cast<int>(idx % Wout);
+    long long t1 = idx / Wout;
+    int ho = static_cast<int>(t1 % Hout);
+    long long t2 = t1 / Hout;
+    int co = static_cast<int>(t2 % Cout);
+    int n = static_cast<int>(t2 / Cout);
+
+    long long m = (static_cast<long long>(n) * Hout + ho) * Wout + wo;
+    T v = out_mat[m * Cout + co];
+    if (has_bias) v += bias[co];
+    out[idx] = v;
+}
+
+#define CONV2D_OUTPUT_PERMUTE_LAUNCHER(TYPE, SUFFIX)                                    \
+    extern "C" __declspec(dllexport) int cf_conv2d_output_permute_##SUFFIX(            \
+        const TYPE* out_mat, const TYPE* bias, TYPE* out,                              \
+        int N, int Cout, int Hout, int Wout, int has_bias, void* stream) {             \
+        long long total = static_cast<long long>(N) * Cout * Hout * Wout;              \
+        int blocks, threads;                                                           \
+        launch_config(total, blocks, threads);                                         \
+        k_conv2d_output_permute<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(   \
+            out_mat, bias, out, N, Cout, Hout, Wout, has_bias);                         \
+        return static_cast<int>(cudaGetLastError());                                   \
+    }
+
+CONV2D_OUTPUT_PERMUTE_LAUNCHER(float, f32)
+CONV2D_OUTPUT_PERMUTE_LAUNCHER(double, f64)
+
+// -- Milestone 41 Candidate B: half-fused forward GEMM (profiling-only, see
+//    `experimental_conv_forward_halffused.py` for its production status) --
+//
+// The above (im2col + `k_matmul` + output permute) is Candidate A. This is
+// a structurally different candidate: fold the `Xcol` gather directly into
+// the GEMM's own tile load (eliminating the `Xcol` buffer entirely, the same
+// "half-fused" idea M38 used for `dWeight`, roles reversed) while keeping
+// `weightT`'s cheap materialization (`k_transpose`, unchanged) as the other
+// operand, and writing the GEMM's result directly into `out`'s real
+// `(N, Cout, Hout, Wout)` layout with bias fused in -- no `out_mat`
+// intermediate buffer either, since this kernel controls its own store.
+//
+// Orientation: `row` indexes `M=N*Hout*Wout` (`tile_a`, the fused im2col
+// gather), `col` indexes `Cout` (`tile_b`, the materialized `weightT`). A
+// block-tiled GEMM's `tile_a` load depends only on `(row, a_col)`, not on
+// `blockIdx.x` -- so every block sharing a `blockIdx.y` redundantly
+// regathers the same `tile_a` data `blocks_x = ceil(Cout/16)` times. At
+// every Forge representative shape `Cout <= 128` (`blocks_x <= 8`), far
+// smaller than M38's own worst-case 9x tax on the *cheap* operand -- here
+// the redundant tax lands on the same small `blocks_x` multiplier but the
+// *fused* operand is deliberately the large one, so the eliminated buffer
+// (`Xcol`, `M*K` elements) is the same large buffer Candidate A must still
+// build. No split-K: `blocks_y = ceil(M/16)` is already large at every
+// Forge shape (unlike `dWeight`'s GEMM), so occupancy is not the bottleneck
+// here the way it was for M37's `dWeight` split-K fix.
+
+template <typename T>
+__global__ void k_conv2d_forward_halffused_gemm(
+    const T* weightT, const T* x, const T* bias, T* out,
+    int N, int Cin, int H, int W, int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW, int Hout, int Wout, int has_bias)
+{
+    __shared__ T tile_a[MATMUL_TILE][MATMUL_TILE];
+    __shared__ T tile_b[MATMUL_TILE][MATMUL_TILE];
+
+    long long Mdim = static_cast<long long>(N) * Hout * Wout;
+    int Kdim = Cin * KH * KW;
+
+    long long row = static_cast<long long>(blockIdx.y) * MATMUL_TILE + threadIdx.y;  // N*Hout*Wout
+    int col = blockIdx.x * MATMUL_TILE + threadIdx.x;                                 // Cout
+
+    int num_tiles = (Kdim + MATMUL_TILE - 1) / MATMUL_TILE;
+
+    int wo = 0, ho = 0, n = 0;
+    if (row < Mdim) {
+        wo = static_cast<int>(row % Wout);
+        long long m1 = row / Wout;
+        ho = static_cast<int>(m1 % Hout);
+        n = static_cast<int>(m1 / Hout);
+    }
+
+    T acc = static_cast<T>(0);
+    for (int t = 0; t < num_tiles; ++t) {
+        int a_col = t * MATMUL_TILE + threadIdx.x;
+
+        T a_val = static_cast<T>(0);
+        if (row < Mdim && a_col < Kdim) {
+            int kw_ = a_col % KW;
+            int k1 = a_col / KW;
+            int kh = k1 % KH;
+            int ci = k1 / KH;
+            int hi = ho * SH - PH + kh;
+            int wi = wo * SW - PW + kw_;
+            if (hi >= 0 && hi < H && wi >= 0 && wi < W) {
+                long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+                a_val = x[x_idx];
+            }
+        }
+        tile_a[threadIdx.y][threadIdx.x] = a_val;
+
+        int b_row = t * MATMUL_TILE + threadIdx.y;
+        tile_b[threadIdx.y][threadIdx.x] =
+            (b_row < Kdim && col < Cout) ? weightT[static_cast<long long>(b_row) * Cout + col] : static_cast<T>(0);
+
+        __syncthreads();
+
+#pragma unroll
+        for (int k = 0; k < MATMUL_TILE; ++k) {
+            acc += tile_a[threadIdx.y][k] * tile_b[k][threadIdx.x];
+        }
+        __syncthreads();
+    }
+
+    if (row < Mdim && col < Cout) {
+        if (has_bias) acc += bias[col];
+        long long out_idx = ((static_cast<long long>(n) * Cout + col) * Hout + ho) * Wout + wo;
+        out[out_idx] = acc;
+    }
+}
+
+#define CONV2D_FORWARD_HALFFUSED_GEMM_LAUNCHER(TYPE, SUFFIX)                            \
+    extern "C" __declspec(dllexport) int cf_conv2d_forward_halffused_gemm_##SUFFIX(    \
+        const TYPE* weightT, const TYPE* x, const TYPE* bias, TYPE* out,               \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                        \
+        int SH, int SW, int PH, int PW, int Hout, int Wout, int has_bias, void* stream) { \
+        long long Mdim = static_cast<long long>(N) * Hout * Wout;                      \
+        dim3 threads(MATMUL_TILE, MATMUL_TILE);                                        \
+        dim3 blocks(                                                                   \
+            (Cout + MATMUL_TILE - 1) / MATMUL_TILE,                                    \
+            static_cast<unsigned int>((Mdim + MATMUL_TILE - 1) / MATMUL_TILE));        \
+        k_conv2d_forward_halffused_gemm<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>( \
+            weightT, x, bias, out, N, Cin, H, W, Cout, KH, KW,                         \
+            SH, SW, PH, PW, Hout, Wout, has_bias);                                     \
+        return static_cast<int>(cudaGetLastError());                                   \
+    }
+
+CONV2D_FORWARD_HALFFUSED_GEMM_LAUNCHER(float, f32)
+CONV2D_FORWARD_HALFFUSED_GEMM_LAUNCHER(double, f64)
