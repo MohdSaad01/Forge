@@ -1343,3 +1343,46 @@ split count, no atomics) measured 1.11-1.24x faster at `mnist_conv2` and
 1.02-1.04x faster at `large_spatial`, at every tested split count -- never
 a regression. Accepted into production. Full report: `docs/performance/
 conv2d-backward-profiling.md`'s **Milestone 43** section.
+
+## Milestone 44: fresh post-M43 bottleneck re-characterization (measurement-only)
+
+### New: `benchmarks/m44_bottleneck_recharacterization.py`
+
+Combines M41's forward decomposition with a corrected backward
+decomposition (M43's `blocks_y==1` dWeight path is now three independently-
+timed stages -- permute, partial-GEMM, reduce -- built on
+`m43_dweight_splitk_profile._RawDweightTworeduce` directly, since M40/M42's
+own dWeight sub-stage helper still names M38's now-dead atomic kernel), a
+fresh same-session M38-vs-M43 interleaved A/B at the two real `blocks_y==1`
+shapes (reusing `m43_dweight_splitk_profile._candidate_b_comparison`
+directly), and three new targeted sweeps: a dWeight `Cout` sweep spanning
+both `blocks_y` regimes, a below-256-weight-element sweep, and a dInput
+`Cin` sweep straddling the M36 channel-fused/fallback boundary. Reuses
+`m35_hardware`/`m35_mnist`/`m35_kernels`/`pipeline_profile` directly for
+ceilings, kernel ranking, CrossEntropy roofline, and async/allocator/pinned
+health. No production code changed.
+
+    python -m benchmarks.m44_bottleneck_recharacterization
+    python -m benchmarks.pipeline_profile --output benchmarks/results/m44_pipeline_profile.json
+
+### Measured example (940MX, real hardware, this session)
+
+M43's win holds: a fresh interleaved A/B measured 1.15-1.29x (GEMM-only) /
+1.12-1.23x (full pipeline) faster at `mnist_conv2`, 1.02-1.03x at
+`large_spatial`, no regression at any tested split count -- consistent with
+M43's own report. Stage-separated timing shows the new reduce kernel is
+bandwidth-trivial (0.9-1.1% of the path's total), so `blocks_y==1`'s
+remaining inefficiency (25.4-29.4% of ceiling) lives entirely in the
+partial-GEMM kernel, which `nvcc -Xptxas -v` confirms has an identical
+register/shared-memory footprint to M38's original -- the win came purely
+from removing the atomic combine. Because M43 shrank `blocks_y==1`'s
+Amdahl fraction (10.2% to 8.47% of the full step), the below-256
+block-reduce kernel (`mnist_conv1`'s own shape, unchanged since M21, twice
+rejected in M33/M34) is now unambiguously the largest single contributor:
+20.19% of the full step at only 3.1-3.2% of the practical compute ceiling
+-- flat across a dedicated `weight_elements` sweep (72-243), consistent
+with an occupancy-bound diagnosis (too few threads, each doing a long
+serial reduction). M45 is recommended to target it with a genuinely new
+angle -- warp-shuffle cooperative reduction -- distinct from both prior
+rejected techniques. Full 20-section report: `docs/performance/
+m44-bottleneck-recharacterization.md`.

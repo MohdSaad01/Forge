@@ -2582,3 +2582,64 @@ dedicated 500-iteration stress test through the real API (no leak).
 selection call site changed behind an unchanged `CUDABackend.
 conv2d_backward` public signature and contract. Full report: `docs/
 performance/conv2d-backward-profiling.md`'s **Milestone 43** section.
+
+### M44 — Fresh post-M43 CUDA bottleneck re-characterization (measurement-only, M45 target selected)
+
+Re-measured the whole CUDA training pipeline fresh (`benchmarks/m44_
+bottleneck_recharacterization.py`, new) against the current post-M43
+production dispatch, since M40/M42's own dWeight sub-stage helper still
+decomposed `blocks_y==1` as "permute + fused-GEMM" (M38) -- stale after
+M43 replaced that path with a two-stage reduction. A fresh same-session
+interleaved A/B (reusing `m43_dweight_splitk_profile._candidate_b_
+comparison` directly) confirmed M43's win still holds: 1.15-1.29x
+(GEMM-only) / 1.12-1.23x (full pipeline) faster at `mnist_conv2`,
+1.02-1.03x at `large_spatial`, no regression at any tested split count.
+New per-stage timing (permute / partial-GEMM / reduce, built on
+`m43_dweight_splitk_profile._RawDweightTworeduce`) showed the reduce
+kernel is bandwidth-trivial as designed (0.9-1.1% of the path's total),
+and `nvcc -Xptxas -v` confirmed the partial-GEMM kernel has an identical
+register/shared-memory footprint to M38's original -- the win came purely
+from removing the atomic combine, with no incidental occupancy change.
+
+**Because M43 shrank `blocks_y==1`'s Amdahl fraction (10.2% to 8.47% of
+the full MNIST step), the below-256-weight-element block-reduce kernel
+(`mnist_conv1`'s own real shape, unchanged since M21) is now unambiguously
+the single largest contributor** -- 20.19% of the full step, more than
+double `blocks_y==1`'s own post-M43 share, while reaching only 3.1-3.2% of
+the practical compute ceiling across a dedicated sweep (`weight_elements`
+72-243) -- the worst roofline efficiency of any candidate measured in this
+or any prior characterization. The sweep showed cost tracks reduction
+length (`N*Hout*Wout`, held fixed) far more than `weight_elements` itself
+(two 144-element shapes with different `Cin`/`Cout` splits cost the same),
+consistent with an occupancy-bound diagnosis: only `weight_elements`-many
+threads launch, each performing a fully independent, fully serial
+reduction -- nowhere near enough parallelism to saturate the 940MX at
+MNIST's own scale.
+
+Per the milestone's own instruction, M33's cooperative-reduction rejection
+and M34's im2col+GEMM rejection were not reopened -- neither was re-run,
+and nothing measured here contradicts either finding. What changed is the
+kernel's *relative* priority now that `blocks_y==1` has been closed by
+M43, plus a genuinely untried angle: warp-shuffle-based cooperative
+reduction, which uses neither M33's shared-memory tree reduction nor M34's
+GEMM restructuring. **M45 recommendation**: attack this kernel with a
+warp-shuffle cooperative reduction. Acceptance: faster than the current
+kernel at every below-256 representative/sweep shape with no regression,
+targeting >=15% of the practical compute ceiling (up from 3.1-3.2%) --
+mirroring M43's own acceptance bar. A 2x speedup there projects to an
+11.2% whole-step speedup (Amdahl), the largest single-component ceiling
+measured this session, exceeding dInput's 8.3% despite dInput's own larger
+per-shape headroom. Full report (20 sections: dispatch verification,
+architecture, methodology, decomposition, M43 stage analysis, targeted
+Cout/below-256/Cin sweeps, roofline, resources, pipeline health, Amdahl,
+ranking, revisited-work accounting, M45 recommendation, exclusions,
+limitations, reproducibility): `docs/performance/
+m44-bottleneck-recharacterization.md`.
+
+**Tests.** No test changes (measurement-only milestone). Full suite:
+**1,452 passed** (unchanged from M43's own count), verified on a clean
+CUDA rebuild (`_forge_cuda_kernels_sm_50.dll` deleted and recompiled in
+9.62s).
+
+**Why no ADR.** Measurement and documentation only -- no production code,
+public API, or cross-cutting architectural decision was touched.
