@@ -1280,3 +1280,35 @@ below the threshold. See `docs/performance/conv2d-forward-profiling.md` for
 the complete 15-shape report, stage decomposition, roofline reclassification
 (`large_channel`'s forward is now compute-bound at 43.2% of ceiling, up from
 17.0%), and MNIST-step-level impact.
+
+## Milestone 42: fresh post-M41 bottleneck re-characterization (measurement-only)
+
+### New: `benchmarks/m42_bottleneck_recharacterization.py`
+
+Combines M40's backward decomposition with M41's forward decomposition
+against a dispatch decision the script recomputes itself from the actual
+`backend.py` source (not historical docs), across the same 7 representative
+shapes + batch sweep + M41's K/stride/channel sweep. Reuses
+`m35_hardware`/`m35_mnist`/`m35_kernels`/`pipeline_profile` directly for
+ceilings, kernel ranking, CrossEntropy roofline, and async/allocator/pinned
+health rather than re-deriving any of them. No production code changed.
+
+    python -m benchmarks.m42_bottleneck_recharacterization
+
+### Measured example (940MX, real hardware, this session)
+
+Forward is no longer the outlier M40 found: it now reaches 43.5-48.7% of
+the practical compute ceiling at every shape that reaches the GEMM
+dispatch (up from M40's 10.7-18.0%), confirming M41's fix held. A
+*different* inefficiency is now the sharpest in the pipeline: dWeight's
+`blocks_y==1` path (`k_dweight_halffused_gemm_splitk`, M38 -- dispatched
+whenever `Cout<=16`, exactly MNIST's own second conv layer) reaches only
+21.7-24.8% of the ceiling -- roughly half of every other GEMM-dispatched
+kernel measured, including forward's own structurally similar (non-split-K)
+half-fused GEMM (43.5-48.7%). dWeight remains the single largest
+addressable sub-component of the training step (29.88%, vs. dInput's
+15.62% and forward's 12.38%). `nvcc -Xptxas -v` ruled out register
+spill/occupancy disparity as the cause; the one documented architectural
+difference between the two half-fused-GEMM kernels is split-K's atomic
+accumulation, now the leading root-cause hypothesis for M43. Full
+19-section report: `docs/performance/m42-bottleneck-recharacterization.md`.

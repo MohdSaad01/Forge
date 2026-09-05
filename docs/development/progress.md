@@ -2450,3 +2450,76 @@ signature and contract. No public API, Tensor semantics, or cross-cutting
 architectural decision was touched. See `docs/performance/
 conv2d-forward-profiling.md` for the complete report, including the
 documented threshold-boundary caveats and the `k1_s1` measurement anomaly.
+
+### M42 — Fresh post-M41 CUDA bottleneck re-characterization (measurement-only, M43 target selected)
+
+A fresh, same-session re-measurement of the whole CUDA training pipeline
+now that M41 has changed forward dispatch (`benchmarks/
+m42_bottleneck_recharacterization.py`, new -- combines M40's backward
+decomposition with M41's forward decomposition, both against a dispatch
+decision recomputed from the actual `backend.py` source rather than
+historical docs). No production kernel, dispatch, or public API was
+changed -- pure measurement and target selection.
+
+**M41's fix held**: forward now reaches 43.5-48.7% of the practical
+compute ceiling at every shape that reaches the GEMM dispatch (up from
+M40's 10.7-18.0%), on par with dWeight's best path -- confirming M41
+genuinely closed the gap M40 identified, not just reduced wall-clock time
+at unchanged efficiency.
+
+**New finding**: a different, previously invisible inefficiency is now the
+sharpest in the pipeline. dWeight's `blocks_y==1` path
+(`k_dweight_halffused_gemm_splitk`, M38 -- dispatched whenever `Cout<=16`,
+exactly MNIST's own real second conv layer) reaches only 21.7% (`mnist_
+conv2`) to 24.8% (`large_spatial`) of the ceiling -- roughly *half* the
+efficiency of every other GEMM-dispatched Conv2d kernel measured, including
+forward's own structurally similar (non-split-K) half-fused GEMM
+(43.5-48.7%) and dWeight's own `blocks_y>=2` regime (42.9-44.2%). A fresh
+`nvcc -Xptxas -v` pass ruled out register spill and gross occupancy
+disparity as the cause (54 registers/4096B shared memory, comparable to
+the 40-register/4096B forward kernel that reaches double the efficiency).
+The one documented architectural difference between the two half-fused
+kernels is split-K: dWeight's GEMM has `M` as the *reduction* dimension
+(needing split-K's atomic-accumulation combine step), forward's has `M` as
+a large block-count dimension (no split-K needed at all) -- now the
+leading root-cause hypothesis.
+
+**dWeight remains the single largest addressable sub-component of the
+training step** (29.88% of the full step, exceeding dInput's 15.62% and
+forward's 12.38% combined-ish), confirming M40's finding still holds
+post-M41 (M41 touched only forward). Roughly a third of dWeight's own cost
+(≈10.2% of the full step) now traces to this specific, previously-
+unexamined `blocks_y==1` efficiency gap rather than only to the
+already-twice-investigated (M33 cooperative reduction, M34 im2col+GEMM,
+both rejected) below-threshold block-reduce kernel.
+
+**Negative results, stated explicitly rather than manufactured around**:
+`k_matmul` itself is already at its own practical ceiling by construction
+(0% headroom); CrossEntropy is already fused (M31) and reaches 46-58% of
+the bandwidth ceiling at realistic batch sizes (no fresh opportunity);
+dBias is negligible everywhere (<3% of the full step); the async pipeline
+(83-92% compute-stream utilization), allocator, and pinned memory are all
+confirmed healthy with no M41-introduced regression; the forward im2col+
+GEMM path's temporary-buffer footprint (10MB at the one shape that reaches
+it) is not a meaningful VRAM constraint against the 2048MB budget.
+
+**M43 recommendation**: investigate whether a different split-K reduction
+strategy (two-pass non-atomic combine, cooperative-groups reduction, or
+re-tuned `num_k_splits`) can close some of `k_dweight_halffused_gemm_
+splitk`'s measured ~2x efficiency gap at its `blocks_y==1` dispatch shapes,
+reusing `recommended_num_k_splits`/`cf_matmul_splitk_f32`/M37-M41's own
+interleaved-A/B benchmark methodology. Acceptance: faster than the current
+kernel at every `blocks_y==1` representative/sweep shape with no
+regression, targeting ≥33% of the compute ceiling (up from 21.7-24.8%) at
+the two real representative shapes. Full report (19 sections: dispatch
+verification, forward/backward decomposition, roofline, resource, sync,
+memory, Amdahl, ranking, candidates, M43 recommendation, exclusions,
+limitations, reproducibility): `docs/performance/
+m42-bottleneck-recharacterization.md`.
+
+**Tests.** No test changes (measurement-only milestone). Full suite:
+**1,420 passed** (unchanged from M41's own count), verified on a clean
+CUDA rebuild (`_forge_cuda_kernels_sm_50.dll` deleted and recompiled).
+
+**Why no ADR.** Measurement and documentation only -- no production code,
+public API, or cross-cutting architectural decision was touched.
