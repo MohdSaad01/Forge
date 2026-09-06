@@ -2896,3 +2896,141 @@ and an occupancy-regression guard). Full suite: **1,579 passed** (1,550 +
 **Why no ADR.** A new dispatch band within an existing, already-documented
 hybrid-dispatch pattern (Section 38's convention, extended identically by
 M36 itself) -- not a new architectural decision.
+
+### M49 — Framework capability & value assessment (measurement/assessment-only; no implementation)
+
+Per its brief, did not continue CUDA optimization by default. Instead
+surveyed five candidate areas -- optimizer coverage, NN layer/operator
+coverage, data-loading ergonomics, serialization/checkpointing, and real
+example/model coverage -- against Forge's own documented requirements
+(`docs/product/requirements.md`) and use cases (`docs/product/
+use-cases.md`), using direct code execution as evidence where reading
+source/docstrings alone was insufficient (e.g. confirmed by running it that
+`-x`, `x / y`, `x ** 2`, `.sqrt()`, `.mean()`, `.sigmoid()`, `.tanh()`,
+`.transpose()`, `.softmax()` all currently fail at the Tensor level).
+
+**Conclusion: no implementation is justified this milestone.** Every real
+gap found (no SGD momentum/LR scheduler; a minimal, exactly-consumer-driven
+Tensor operator set missing division/negation/power/sqrt/sigmoid/tanh/
+transpose/softmax/mean) is a previously-considered, deliberately deferred
+capability with no current real-workload impact -- not an oversight. Two
+of these were found already explicitly documented as intentional scope
+decisions elsewhere in the codebase: `forge/optim/sgd.py`'s own docstring
+("no momentum, weight decay, or learning-rate schedule"), and `kernels.cu`'s
+M14 comment rejecting "a generic elementwise-divide primitive that nothing
+else in Forge needs" plus `forge/data/transforms.py`'s `Normalize`
+docstring documenting its own division-workaround. Data-loading and
+serialization/checkpointing were each found to already fully satisfy their
+respective requirements/use-cases with no gap. All seven of `use-cases.md`'s
+UC1-UC7 already have a working, runnable demonstration in the repository
+(MNIST plus the smaller `examples/trainer_demo.py`/`data_pipeline_demo.py`/
+`persistence_demo.py` regression/tabular demos) -- a second MNIST-tier
+example today would only repackage already-proven primitives. Conv2d
+optimization thread remains closed (M47/M48); nothing in this survey
+reopens it.
+
+**M50 recommendation:** don't pick from this survey speculatively -- make a
+product decision first (a concrete second model family Forge should
+support, e.g. binary classification or a normalization-using architecture),
+and let that choice narrowly determine exactly which Tensor op(s)/optimizer
+feature(s) it actually needs, the same way every existing op was added for
+a specific consumer. Full 14-section report (method, all five areas'
+current-state/deficiency/relevance/verdict, Conv2d closure, candidate
+ranking table, rejected directions, validation, limitations, M50
+recommendation): `docs/development/m49-capability-assessment.md`.
+
+**Tests.** No test changes (assessment-only milestone, no production code
+touched). Full suite re-run to confirm no accidental repository changes:
+**1,579 passed** (unchanged from M48's own count), on this machine's real
+CUDA backend (940MX) -- CUDA tests not skipped.
+
+**Why no ADR.** No production code, public API, or architectural decision
+was made -- an evidence-based decision *not* to change anything, the same
+category as M45/M46's own rejected candidates but at the product/roadmap
+level rather than a single kernel.
+
+### M50 — Char-RNN: Forge's second model family
+
+Per M49's recommendation, made the product decision M49 deferred: selected
+one concrete second model family (a small character-level vanilla RNN
+language model, `examples/char_rnn/`) and let attempting it against
+post-M49 Forge determine exactly what, if anything, to add -- rather than
+picking speculatively from M49's rejected-operator survey.
+
+**Attempt against existing Forge** found the model almost entirely already
+supported: `Linear`, `CrossEntropyLoss`, `Adam`, `TensorDataset`/
+`DataLoader`, and `save_model`/`load_model` (after `register_module()`,
+per the existing ADR-003 pattern) all worked unmodified. One-hot input
+encoding and a hand-written multi-timestep training loop (`Trainer.fit()`
+assumes one `forward(batch)` call per step, which a recurrence does not
+fit) were both legitimate workarounds using existing capability, not
+blockers. Weight sharing across a Python-level unroll loop -- the same
+`Linear` `Parameter`s reused at every timestep of one backward graph, a
+pattern no existing Forge model exercises -- was verified directly against
+`forge/autograd/engine.py::run_backward` *before* writing any new code: its
+existing reverse-topological-order gradient accumulation already handles a
+leaf reused by many graph nodes correctly, with no special case needed.
+
+**One genuine blocker: `Tensor.tanh()`.** Added with full CPU
+(`np.tanh`/`1 - result**2`) and real-hardware-verified CUDA support
+(`k_tanh`/`k_tanh_backward`, `kernels.cu` -- new kernels, no new CUDA
+infrastructure), following the exact `relu`/`exp`/`log` Tensor-primitive
+pattern established in M3/M9/M14. `nn.Tanh` (the `Module` wrapper, mirroring
+`nn.ReLU`) and `nn.RNNCell` (one vanilla-RNN recurrence step, composed from
+two `Linear` layers and `.tanh()`, no dedicated backward rule) were added
+to `forge.nn`. `RNNCell` carries no non-parameter state (unlike e.g. batch
+normalization), so it needed only a registry entry
+(`forge/serialization/registry.py`), not any buffer/persistence machinery.
+Embeddings/gather, LSTM/GRU gating, `Trainer` sequence support, and
+multi-layer/stacked RNNs were all deliberately rejected as unjustified
+without a driving consumer -- see the full report for the complete
+blocker-vs-workaround-vs-enhancement reasoning.
+
+**Training/validation.** Trained on an original, deterministically
+generated (not downloaded, not copied) synthetic corpus, ~9,050 characters,
+24-symbol vocabulary. Mean per-character cross-entropy dropped from 2.7433
+to 0.3554 over 30 epochs on the reference CPU (i5-7200U) -- ~89% below the
+untrained uniform-guess baseline `ln(24) ≈ 3.18`, comfortably clearing the
+success criterion defined before training. CPU/CUDA parity confirmed on the
+reference 940MX: every epoch's loss matched to 4 decimal places across a
+full 30-epoch run (not just isolated-kernel level). Generated text after
+training reproduces correct spacing/periods and much of the corpus's own
+vocabulary, including verbatim template sentences.
+
+**A significant pre-existing bug was found, not fixed (out of this
+milestone's scope, per explicit direction).** Running the complete test
+suite as a single `pytest` process deadlocked inside a pre-existing,
+unrelated test (`test_trainer_cuda.py::test_cuda_trainer_classification_
+end_to_end_learns`) -- diagnosed with `py-spy` (two independent stack
+samples at the identical frame) as a genuine self-deadlock:
+`CUDACachingAllocator.release()` (`forge/backend/cuda/allocator.py`) holds
+a non-reentrant `threading.Lock` while evaluating a generator expression;
+CPython's GC finalized an unrelated `CUDAStorage` mid-evaluation, whose
+`__del__` called `release()` again on the same lock from the same thread.
+Confirmed unrelated to this milestone's changes (nothing in `allocator.py`
+or `backend.py`'s `__del__` was touched) and rare enough to have never
+surfaced across 48 prior milestones -- depends on GC timing/accumulated
+object churn across a long single-process run. Verification for this
+milestone was done via two separate CPU-only/CUDA-only `pytest`
+invocations (which do not hit this path); a future milestone should fix
+the allocator's reentrancy hazard directly (see the full report's M51
+recommendation).
+
+**Tests.** 40 new tests (`tests/test_tanh.py`, `+3` in
+`tests/test_activation.py`, `+2`/`+1`/`+1` tanh cases in
+`tests/test_cuda_backend.py`/`test_cuda_consistency.py`/
+`test_cuda_autograd.py`, `tests/test_rnn.py`, `tests/test_rnn_cuda.py`,
+`tests/test_char_rnn_example_integration.py`,
+`tests/test_char_rnn_example_cuda_integration.py`). Full suite: **1,619
+passed** (1,579 + 40) -- 721 CPU-only + 898 CUDA-hardware-verified (940MX),
+run as two separate invocations per the deadlock finding above. Clean CUDA
+rebuild performed (`kernels.cu` changed).
+
+**Why no ADR.** `Tensor.tanh()`/`nn.RNNCell` extend an already-documented,
+four-times-precedented pattern (M3/M9/M14's Tensor-primitive-plus-
+Backend-plus-Module shape) rather than establishing a new one -- not a
+fresh architectural decision. Full report (model-selection rationale,
+architecture/workload definition, the existing-capability attempt,
+rejected enhancements, training/validation results, the allocator-deadlock
+finding, limitations, M51 recommendation): `docs/development/
+m50-char-rnn.md`.

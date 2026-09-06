@@ -152,6 +152,7 @@ transfers a tensor to make itself work.
 | `conv2d` (Milestone 15) | `cf_conv2d_forward_{f32,f64}` | float32, float64 | One thread per output element (`N*C_out*H_out*W_out`), looping over `C_in*KH*KW` in registers; see **CUDA Conv2d / MaxPool2d** below |
 | `max_pool2d` (Milestone 15) | `cf_maxpool2d_forward_{f32,f64}` | float32, float64 | One thread per output element, looping over `KH*KW`; see **CUDA Conv2d / MaxPool2d** below |
 | `dropout_mask` (Milestone 16) | `cf_dropout_mask_{f32,f64}` | float32, float64 | One thread per element; a stateless SplitMix64 hash of `(seed, element_index)` decides keep/drop -- no curand, no RNG state on-device; see **CUDA Dropout** below |
+| `tanh` (Milestone 50) | `cf_tanh_{f32,f64}` | float32, float64 | One thread per element, via `tanhf`/`tanh` -- added for `nn.RNNCell`'s recurrence, same launch pattern as `exp`/`log`; see **CUDA tanh** at the end of this file |
 
 `relu` moved out of this list in Milestone 9; `exp`/`log` moved out of the
 "required by the ABC but unsupported on CUDA" state they were in through
@@ -2677,3 +2678,27 @@ driver 582.53, CUDA Toolkit 12.6):
   cuda-streams.md` and `docs/architecture/cuda-transfers.md` for the full
   contracts. CUDA events remain internal-only (no public `forge.cuda.Event`);
   no CUDA Graphs, multi-GPU, or unified memory exist.
+
+## CUDA tanh (Milestone 50)
+
+Added as the one genuine blocker discovered while building `examples/
+char_rnn/` (a character-level RNN language model, `docs/development/
+m50-char-rnn.md`): `nn.RNNCell`'s recurrence needs `tanh` as its
+nonlinearity, and neither `Tensor` nor either backend had one.
+
+`k_tanh`/`k_tanh_backward` (`kernels.cu`) follow the exact `exp`/`log`
+launch pattern from **CUDA CrossEntropyLoss** above -- one thread per
+element, `UNARY_LAUNCHER`/`ELEMENTWISE_LAUNCHER` macro instantiations at
+`f32`/`f64`, `tanhf`/`tanh` via the same `cf_tanhv`-style device-wrapper
+`cf_expv`/`cf_logv` already established. Backward is `grad_output * (1 -
+result^2)` (`result` is tanh's own saved forward output), computed from the
+saved *output* rather than the input -- the same shape `exp_backward`
+already uses, not `relu_backward`'s saved-input shape. No new CUDA
+infrastructure (allocator, streams, occupancy tuning) was needed: this is a
+small, self-contained elementwise op exactly like `relu`/`exp`/`log` before
+it. Verified on the reference 940MX: CPU/CUDA numerical consistency
+(`tests/test_cuda_consistency.py::test_tanh_consistency`), forward/backward
+correctness against CPU (`tests/test_cuda_backend.py`,
+`tests/test_cuda_autograd.py::test_tanh_backward_matches_cpu`), and
+end-to-end through the real `nn.RNNCell` API including a multi-timestep
+unroll (`tests/test_rnn_cuda.py`).

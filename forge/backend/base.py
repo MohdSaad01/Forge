@@ -54,6 +54,9 @@ class Backend(ABC):
     @abstractmethod
     def log(self, a: np.ndarray) -> np.ndarray: ...
 
+    @abstractmethod
+    def tanh(self, a: np.ndarray) -> np.ndarray: ...
+
     # -- backward (Milestone 10) ------------------------------------------
     #
     # Operation-specific gradient math, one implementation per backend, so
@@ -93,6 +96,10 @@ class Backend(ABC):
     @abstractmethod
     def log_backward(self, grad_output: Any, a: Any) -> Any:
         """`d(log(x))/dx = 1/x`, i.e. `grad_output / a` (`a` is log's saved input)."""
+
+    @abstractmethod
+    def tanh_backward(self, grad_output: Any, result: Any) -> Any:
+        """`d(tanh(x))/dx = 1 - tanh(x)^2`, i.e. `grad_output * (1 - result**2)` (`result` is tanh's own saved output)."""
 
     # -- optimizer (Milestone 10) ------------------------------------------
 

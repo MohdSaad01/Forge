@@ -222,6 +222,18 @@ A new `Backend` method, `dropout_mask(a, p, rng) -> mask`, added alongside `conv
 - No layer whose forward behavior differs by `.training` existed before Milestone 16; `Dropout` is now the first. BatchNorm/LayerNorm remain out of scope (see the milestone's explicit non-goals).
 - `forge.random` remains a single global generator, not a per-module or thread-local RNG; `Dropout(generator=...)` is the escape hatch for an independent stream.
 
+## Tanh, RNNCell (Milestone 50)
+
+### `Tanh`
+`forge/nn/activation.py`. `Tanh()` delegates to `Tensor.tanh()` exactly as `ReLU` delegates to `Tensor.relu()` -- no parameters, no Tanh-specific backward rule. Added alongside `nn.RNNCell` below as the Tensor-primitive-plus-Module pair every existing elementwise op (`relu`/`exp`/`log`) already follows.
+
+### `RNNCell`
+`forge/nn/rnn.py`. One vanilla (Elman) RNN recurrence step: `h' = tanh(x @ W_ih + b_ih + h @ W_hh)`, composed from two existing `Linear` layers (`i2h`, with bias; `h2h`, without -- a second bias would be redundant, since both feed the same sum before `tanh`) and the new `Tensor.tanh()`. `RNNCell` has no forward/backward math of its own; both correctness and CUDA support follow entirely from `Linear` and `.tanh()`.
+
+Unrolling over a sequence (calling the *same* `RNNCell` instance once per timestep, carrying its returned hidden state forward) is the caller's responsibility -- Forge has no sequence/time-axis Tensor abstraction, and none was added, since a Python-level loop already composes correctly with the existing graph: `forge/autograd/engine.py`'s `run_backward` accumulates gradients into a leaf `Parameter` from every graph node that used it via ordinary reverse-topological-order traversal, with no change needed for a `Parameter` used by many nodes (many timesteps) instead of one. This was verified directly (not assumed) before `RNNCell` was written -- see `docs/development/m50-char-rnn.md`.
+
+**No buffer/running-state concept was needed.** Unlike e.g. batch normalization, `RNNCell` carries no persistent non-parameter state between calls (the hidden state is an ordinary `Tensor` the *caller* threads through the unroll loop, not module state) -- so it needed no change to `Module`'s Parameter-only `.to()`/persistence machinery, only a registry entry (`forge/serialization/registry.py`) mirroring `Linear`'s.
+
 ## Known limitations
 - No module serialization gap remains for the module types this milestone covers (see **Sequential/Flatten/Dropout** limitations above for the one Sequential-specific accommodation).
 - No buffer concept (see **No buffers to move** above) -- `Module.to()` moves `Parameter`s only.

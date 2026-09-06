@@ -18,4 +18,15 @@ class ReLU(Module):
         return x.relu()
 
 
-__all__ = ["ReLU"]
+class Tanh(Module):
+    """`tanh(x)`, elementwise (Milestone 50: added for `nn.RNNCell`'s recurrence).
+
+    Delegates to `Tensor.tanh()` (backed by `Backend.tanh`), so it has no
+    parameters of its own -- the same shape as `ReLU` above.
+    """
+
+    def forward(self, x: Tensor) -> Tensor:
+        return x.tanh()
+
+
+__all__ = ["ReLU", "Tanh"]

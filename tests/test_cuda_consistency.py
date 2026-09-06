@@ -122,6 +122,18 @@ def test_log_consistency(dtype):
 
 
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_tanh_consistency(dtype):
+    """Milestone 50: tanh is a real CUDA kernel, needed by `nn.RNNCell`."""
+    data = [[-3.0, 2.5, 0.0], [1.5, -0.1, 4.0]]
+    cpu, cuda = _both(data, dtype)
+    cpu_result = cpu.tanh()
+    cuda_result = cuda.tanh()
+    assert cuda_result.dtype == cpu_result.dtype
+    assert cuda_result.shape == cpu_result.shape
+    np.testing.assert_allclose(cuda_result.to("cpu").numpy(), cpu_result.numpy(), **TOL)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
 def test_relu_consistency(dtype):
     data = [[-3.0, 2.5, 0.0], [1.5, -0.1, 4.0]]
     cpu, cuda = _both(data, dtype)

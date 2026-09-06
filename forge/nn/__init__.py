@@ -7,7 +7,7 @@ Tensor operations. See `docs/architecture/modules.md` and
 `docs/architecture/optimization.md`.
 """
 
-from .activation import ReLU
+from .activation import ReLU, Tanh
 from .container import Sequential
 from .conv import Conv2d
 from .dropout import Dropout
@@ -17,9 +17,10 @@ from .loss import CrossEntropyLoss, Loss, MSELoss
 from .module import Module
 from .parameter import Parameter
 from .pooling import MaxPool2d
+from .rnn import RNNCell
 
 __all__ = [
-    "Module", "Parameter", "Linear", "ReLU", "Conv2d", "MaxPool2d",
-    "Sequential", "Flatten", "Dropout",
+    "Module", "Parameter", "Linear", "ReLU", "Tanh", "Conv2d", "MaxPool2d",
+    "Sequential", "Flatten", "Dropout", "RNNCell",
     "Loss", "MSELoss", "CrossEntropyLoss",
 ]

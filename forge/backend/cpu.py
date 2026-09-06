@@ -94,6 +94,9 @@ class CPUBackend(Backend):
     def log(self, a: np.ndarray) -> np.ndarray:
         return np.log(a)
 
+    def tanh(self, a: np.ndarray) -> np.ndarray:
+        return np.tanh(a)
+
     # -- backward (Milestone 10) -------------------------------------------
 
     def add_backward(self, grad_output: np.ndarray, a: np.ndarray, b: np.ndarray):
@@ -145,6 +148,9 @@ class CPUBackend(Backend):
 
     def log_backward(self, grad_output: np.ndarray, a: np.ndarray) -> np.ndarray:
         return grad_output / a
+
+    def tanh_backward(self, grad_output: np.ndarray, result: np.ndarray) -> np.ndarray:
+        return grad_output * (1 - result * result)
 
     # -- optimizer (Milestone 10) ------------------------------------------
 

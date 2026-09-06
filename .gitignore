@@ -16,3 +16,8 @@ __pycache__/
 # `python -m examples.mnist.train --download`; never committed.
 examples/mnist/data/
 examples/mnist/artifacts*/
+
+# Milestone 50 char-RNN example: generated run artifacts (models) --
+# machine-local and reproducible via `python -m examples.char_rnn.train`;
+# never committed. No downloaded data (the corpus is generated in-process).
+examples/char_rnn/artifacts*/

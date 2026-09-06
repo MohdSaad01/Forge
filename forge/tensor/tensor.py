@@ -384,6 +384,23 @@ class Tensor:
 
         return self._differentiable_wrap(result, (self,), backward_fn, "log")
 
+    def tanh(self) -> "Tensor":
+        """`tanh(x)`, elementwise. Milestone 50: added for `nn.RNNCell`'s recurrence.
+
+        `d(tanh(x))/dx = 1 - tanh(x)^2`, so the backward rule is
+        `grad_output * (1 - result^2)` (`result` is tanh's own saved forward
+        output) -- the same "derivative expressible from the saved output"
+        shape `exp`'s backward rule already uses, rather than a fresh
+        `1/cosh(x)^2` computed from the input.
+        """
+        backend = get_backend(self._device)
+        result = backend.tanh(self._data)
+
+        def backward_fn(grad_output):
+            return (backend.tanh_backward(grad_output, result),)
+
+        return self._differentiable_wrap(result, (self,), backward_fn, "tanh")
+
     # -- Conv2d / MaxPool2d (Milestone 15) --------------------------------------
 
     def conv2d(

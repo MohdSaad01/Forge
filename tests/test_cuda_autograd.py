@@ -443,6 +443,17 @@ def test_exp_backward_matches_cpu():
     np.testing.assert_allclose(x_cuda.grad.to("cpu").numpy(), np.exp(data), **TOL)
 
 
+def test_tanh_backward_matches_cpu():
+    """Milestone 50: tanh is a real, differentiable CUDA op, needed by `nn.RNNCell`."""
+    data = np.array([0.0, 1.0, -1.0, 2.5])
+    (x_cpu,), (x_cuda,) = _cpu_and_cuda_leaves(data)
+    x_cpu.tanh().sum().backward()
+    x_cuda.tanh().sum().backward()
+    _assert_matching_grads([x_cpu], [x_cuda])
+    # d(tanh(x))/dx = 1 - tanh(x)^2
+    np.testing.assert_allclose(x_cuda.grad.to("cpu").numpy(), 1 - np.tanh(data) ** 2, **TOL)
+
+
 def test_log_backward_matches_cpu():
     data = np.array([0.5, 1.0, 2.0, 10.0])
     (x_cpu,), (x_cuda,) = _cpu_and_cuda_leaves(data)

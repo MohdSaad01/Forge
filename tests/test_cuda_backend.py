@@ -337,6 +337,21 @@ def test_exp_unsupported_dtype_raises_clearly_on_cuda():
         t.exp()
 
 
+def test_tanh_executes_on_gpu_and_produces_correct_values():
+    """Milestone 50: tanh is a real CUDA kernel, needed by `nn.RNNCell`."""
+    t = Tensor([0.0, 1.0, -1.0, 2.0]).to("cuda")
+    result = t.tanh()
+    assert result.device.type == "cuda"
+    assert isinstance(result._data, CUDAStorage)
+    np.testing.assert_allclose(result.to("cpu").numpy(), np.tanh([0.0, 1.0, -1.0, 2.0]), **TOL)
+
+
+def test_tanh_unsupported_dtype_raises_clearly_on_cuda():
+    t = Tensor([1, -2, 3], dtype="int32").to("cuda")
+    with pytest.raises(CUDAError, match="dtype"):
+        t.tanh()
+
+
 def test_log_unsupported_dtype_raises_clearly_on_cuda():
     t = Tensor([1, 2, 3], dtype="int32").to("cuda")
     with pytest.raises(CUDAError, match="dtype"):

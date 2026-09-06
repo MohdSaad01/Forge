@@ -131,6 +131,7 @@ def _register_builtins() -> None:
     from ..nn.linear import Linear
     from ..nn.module import Module
     from ..nn.pooling import MaxPool2d
+    from ..nn.rnn import RNNCell
 
     register_module(
         "Linear",
@@ -191,6 +192,11 @@ def _register_builtins() -> None:
         "Flatten",
         Flatten,
         get_config=lambda m: {"start_dim": m.start_dim, "end_dim": m.end_dim},
+    )
+    register_module(
+        "RNNCell",
+        RNNCell,
+        get_config=lambda m: {"input_size": m.input_size, "hidden_size": m.hidden_size},
     )
     register_module(
         "Dropout",

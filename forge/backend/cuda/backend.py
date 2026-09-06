@@ -246,6 +246,17 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
             fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
             fn.restype = ctypes.c_int
 
+        # -- Milestone 50: tanh (nn.RNNCell's recurrence) --
+        tanh_fn = getattr(lib, f"cf_tanh_{suffix}")
+        tanh_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
+        tanh_fn.restype = ctypes.c_int
+
+        tanh_backward_fn = getattr(lib, f"cf_tanh_backward_{suffix}")
+        tanh_backward_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p,
+        ]
+        tanh_backward_fn.restype = ctypes.c_int
+
         for name in (f"cf_max_axis1_{suffix}", f"cf_sum_axis1_{suffix}"):
             fn = getattr(lib, name)
             fn.argtypes = [
@@ -1082,6 +1093,18 @@ class CUDABackend(Backend):
         self._maybe_synchronize("log")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
+    # -- tanh (Milestone 50) ------------------------------------------------------
+
+    def tanh(self, a: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(a, op="tanh")
+        n = a.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_tanh_{_SUFFIX[dtype]}")
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
+        self._check(code, "tanh")
+        self._maybe_synchronize("tanh")
+        return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
     # -- backward helpers (Milestone 10) ---------------------------------------
     #
     # Private, CUDA-only composition helpers used by the `*_backward` methods
@@ -1270,6 +1293,16 @@ class CUDABackend(Backend):
         self._check(code, "log backward")
         self._maybe_synchronize("log backward")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
+    def tanh_backward(self, grad_output: CUDAStorage, result: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(grad_output, result, op="tanh_backward")
+        n = result.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_tanh_backward_{_SUFFIX[dtype]}")
+        code = fn(grad_output.ptr, result.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
+        self._check(code, "tanh backward")
+        self._maybe_synchronize("tanh backward")
+        return CUDAStorage(out_ptr, result.shape, dtype, self._lib)
 
     # -- CrossEntropyLoss support (Milestone 14) ---------------------------------
 

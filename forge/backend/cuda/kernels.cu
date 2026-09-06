@@ -371,6 +371,24 @@ UNARY_LAUNCHER(cf_exp, k_exp, double, f64)
 UNARY_LAUNCHER(cf_log, k_log, float, f32)
 UNARY_LAUNCHER(cf_log, k_log, double, f64)
 
+// -- tanh (Milestone 50) -------------------------------------------------------
+//
+// Required by `nn.RNNCell`'s recurrence (`docs/architecture/modules.md`).
+// CUDA's math library exposes type-specific `tanhf`/`tanh`, mirroring the
+// `cf_expv`/`cf_logv` device-wrapper pattern above.
+
+__device__ inline float cf_tanhv(float x) { return tanhf(x); }
+__device__ inline double cf_tanhv(double x) { return tanh(x); }
+
+template <typename T>
+__global__ void k_tanh(const T* a, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = cf_tanhv(a[i]);
+}
+
+UNARY_LAUNCHER(cf_tanh, k_tanh, float, f32)
+UNARY_LAUNCHER(cf_tanh, k_tanh, double, f64)
+
 // -- backward-only kernels (Milestone 10) -------------------------------------
 //
 // Real CUDA kernels backing CUDA autograd's backward rules
@@ -428,6 +446,20 @@ ELEMENTWISE_LAUNCHER(cf_exp_backward, k_exp_backward, float, f32)
 ELEMENTWISE_LAUNCHER(cf_exp_backward, k_exp_backward, double, f64)
 ELEMENTWISE_LAUNCHER(cf_log_backward, k_log_backward, float, f32)
 ELEMENTWISE_LAUNCHER(cf_log_backward, k_log_backward, double, f64)
+
+// tanh backward (Milestone 50): `d(tanh(x))/dx = 1 - tanh(x)^2`, i.e.
+// `grad_output * (1 - result^2)` (`result` is tanh's own saved forward
+// output) -- the same "derivative from the saved output" shape as
+// `k_exp_backward` above.
+
+template <typename T>
+__global__ void k_tanh_backward(const T* grad_output, const T* result, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = grad_output[i] * (static_cast<T>(1) - result[i] * result[i]);
+}
+
+ELEMENTWISE_LAUNCHER(cf_tanh_backward, k_tanh_backward, float, f32)
+ELEMENTWISE_LAUNCHER(cf_tanh_backward, k_tanh_backward, double, f64)
 
 template <typename T>
 __global__ void k_scale(const T* scalar, const T* vec, T* out, long long n) {

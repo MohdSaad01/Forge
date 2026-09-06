@@ -1,7 +1,7 @@
 import numpy as np
 
 from forge import Tensor
-from forge.nn import ReLU
+from forge.nn import ReLU, Tanh
 
 TOL = dict(rtol=1e-6, atol=1e-6)
 
@@ -58,3 +58,24 @@ def test_relu_result_is_leaf_when_input_does_not_require_grad():
     y = ReLU()(x)
     assert y.requires_grad is False
     assert y.grad_fn is None
+
+
+# -- Tanh (Milestone 50) -----------------------------------------------------
+
+
+def test_tanh_matches_numpy():
+    x = Tensor([-2.0, -0.5, 0.0, 0.5, 2.0])
+    y = Tanh()(x)
+    np.testing.assert_allclose(y.numpy(), np.tanh([-2.0, -0.5, 0.0, 0.5, 2.0]), **TOL)
+
+
+def test_tanh_is_a_module_without_parameters():
+    assert list(Tanh().parameters()) == []
+
+
+def test_tanh_backward_matches_analytic_derivative():
+    x = Tensor([-1.0, 0.0, 1.0], requires_grad=True)
+    y = Tanh()(x).sum()
+    y.backward()
+    expected = 1 - np.tanh([-1.0, 0.0, 1.0]) ** 2
+    np.testing.assert_allclose(x.grad.numpy(), expected, **TOL)
