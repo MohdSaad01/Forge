@@ -1438,3 +1438,49 @@ the reduction itself is nearly free, an edge case no real Forge shape
 reaches. Production dispatch, `k_conv2d_backward_weight_reduce`, and
 `k_conv2d_backward_weight` are byte-for-byte unchanged. Full report:
 `docs/performance/conv2d-backward-profiling.md`'s **Milestone 45** section.
+
+## Milestone 46: dWeight below-256 grid-split reduction (investigated, rejected)
+
+### New: `benchmarks/m46_dweight_below256_gridsplit_profile.py`
+
+Investigates M45's own named next angle -- grid-level (block-count) rather
+than thread-level parallelism -- for the same below-`CONV2D_WEIGHT_REDUCE_
+THRESHOLD` (256) dWeight path. Adds `k_conv2d_backward_weight_reduce_
+gridsplit` (new, profiling-only): `num_splits` blocks per weight element
+instead of one, each reducing a disjoint slice of `N*Hout*Wout`, combined by
+M43's existing `k_dweight_splitk_reduce` kernel reused unmodified. Also adds
+two tiny diagnostic exports (`cf_occupancy_conv2d_backward_weight_
+reduce[_gridsplit]_f32`) that call the real `cudaOccupancyMaxActive
+BlocksPerMultiprocessor` runtime API -- the first milestone in this file to
+query real hardware occupancy directly rather than inferring it from
+register counts alone.
+
+    python -m benchmarks.m46_dweight_below256_gridsplit_profile
+
+### Measured example (940MX, real hardware, this session)
+
+**Rejected.** The real occupancy query found production and the grid-split
+candidate land at *identical* occupancy (5 resident blocks/SM, 62.5%,
+register-bound) regardless of `num_splits` -- grid-splitting cannot raise
+this device's per-SM concurrent-block ceiling, only launch more/smaller
+blocks against the same one. A same-session, round-robin-**interleaved**
+CUDA-event A/B (see this milestone's own methodology-correction note below)
+found `mnist_conv1` at 1.019x (isolated kernel) / 1.012x (complete
+`conv2d_backward`), short of the 1.15x bar; the best result anywhere in a
+fresh weight-element/reduction-size/kernel-size sweep was 1.072x (`k1_wide`),
+and the shortest tested reduction length regressed to 0.46x at
+`num_splits=8` as fixed per-block/launch overhead dominated a shrinking
+amount of real work per block. **Methodology note**: an initial
+block-sequential timing attempt (time production fully, then time each
+candidate fully, matching M45's own per-variant pattern) measured an
+illusory 1.47x "win" at `mnist_conv1` that could not be reproduced once
+properly interleaved -- the 940MX's clock/power state visibly drifts over a
+multi-second block of repeated launches, biasing whichever variant a
+block-sequential harness happens to time later. The benchmark script was
+rewritten around a `_interleaved_multi_time` helper (every iteration times
+every variant once, same fixed order) before any number in the final report
+was trusted -- the same class of mistake M37 made (an illusory win from a
+timing-setup bug), via a different mechanism (clock drift vs. buffer
+reuse). Production dispatch, the M21 dispatch threshold, and
+`k_conv2d_backward_weight_reduce` are byte-for-byte unchanged. Full report:
+`docs/performance/conv2d-backward-profiling.md`'s **Milestone 46** section.

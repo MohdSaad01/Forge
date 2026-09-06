@@ -2701,3 +2701,71 @@ pipeline_profile` re-run fresh: 82.2-87.0% compute-stream utilization
 **Why no ADR.** No production code, public API, or cross-cutting
 architectural decision was touched -- a rejected profiling-only
 experiment, the same category as Milestone 33's own rejected candidates.
+
+### M46 — CUDA dWeight below-256 grid-split reduction (investigated, rejected)
+
+M45 corrected M44's diagnosis and named the one remaining untried axis for
+the below-`CONV2D_WEIGHT_REDUCE_THRESHOLD` (256) dWeight path
+(`k_conv2d_backward_weight_reduce`, still production, unchanged since M21):
+grid-level parallelism, since the production kernel already launches
+`weight_elements x 256` threads (more than either of M45's rejected
+warp-shuffle candidates). This milestone built `k_conv2d_backward_weight_
+reduce_gridsplit` (new, profiling-only): `num_splits` blocks per weight
+element, each reducing a disjoint slice of the `N*Hout*Wout` dimension,
+combined by M43's existing `k_dweight_splitk_reduce` kernel reused
+unmodified (a flat weight vector is `Cout=1, Kdim=weight_elements` of the
+same shape it already sums).
+
+A real `cudaOccupancyMaxActiveBlocksPerMultiprocessor` query (two new tiny
+diagnostic exports, `cf_occupancy_conv2d_backward_weight_reduce[_gridsplit]_
+f32`) found **identical occupancy** between production and the candidate: 5
+resident blocks/SM (register-bound, 62.5%), 15 across the 940MX's 3 SMs,
+regardless of `num_splits` -- grid-splitting cannot raise this device's
+per-SM concurrent-block ceiling, only launch more/smaller blocks against
+the same one. This was the decisive ANALYZE-phase finding, obtained before
+any timing was trusted.
+
+**Methodology note.** An initial block-sequential timing attempt (matching
+M45's own per-variant `_time_phase` pattern) measured an illusory 1.47x
+"win" at `mnist_conv1` that a true round-robin-**interleaved** rerun could
+not reproduce (1.02x, within noise) -- the 940MX's clock/power state
+visibly drifts over a multi-second block of repeated launches, biasing
+whichever variant a block-sequential harness happens to time later. The
+benchmark script was rewritten around a new `_interleaved_multi_time`
+helper before any of the milestone's real numbers were trusted -- the same
+class of mistake M37 made (an illusory win from a timing-setup bug), via a
+different mechanism (clock drift vs. buffer reuse).
+
+**Result: rejected.** With correct interleaved methodology, `mnist_conv1`
+measured 1.019x (isolated kernel) / 1.012x (complete `conv2d_backward`) --
+far short of the 1.15x bar. The best result anywhere in a fresh
+weight-element/reduction-size/kernel-size sweep was 1.072x (`k1_wide`,
+`K=1`); the shortest tested reduction length regressed to 0.795x at its
+best configuration and 0.46x at `num_splits=8`, with cost increasing
+monotonically with split count at every shape -- consistent with the
+occupancy finding: splitting trades a shorter per-block serial reduction
+(shrinking tail latency) against more paid per-block/launch overhead, a
+real but small effect that never reaches the acceptance bar.
+
+**Decision**: `CUDABackend.conv2d_backward`, the M21 dispatch threshold,
+and `k_conv2d_backward_weight_reduce` are byte-for-byte unchanged. The new
+kernel, both occupancy-diagnostic exports, and a Python wrapper
+(`experimental_conv_dweight_gridsplit.py`) remain in the codebase as
+documented, tested, profiling-only code. Full 14-section report (baseline,
+candidate design, resource analysis, real occupancy query, methodology
+correction, benchmark results, Amdahl, root cause, correctness, memory,
+regression check, production decision, updated ranking, limitations):
+`docs/performance/conv2d-backward-profiling.md`'s **Milestone 46** section.
+
+**Tests.** 31 new (`tests/test_cuda_conv2d_backward_weight_below256_
+gridsplit.py`): CPU parity across shapes/`num_splits`/dtypes, a direct
+same-inputs comparison against the production kernel, finite difference,
+explicit-stream and cross-stream execution, the 255/256/257 production-
+dispatch boundary check, a repeated-use memory-safety check, and an
+allocator-reuse-across-split-counts check. Full suite: **1,550 passed**
+(1,519 + 31 new), verified on a clean CUDA rebuild.
+
+**Why no ADR.** No production code, public API, or cross-cutting
+architectural decision was touched -- a rejected profiling-only
+experiment, the same category as Milestone 33's and 45's own rejected
+candidates.

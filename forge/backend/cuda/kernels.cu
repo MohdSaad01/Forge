@@ -1872,6 +1872,128 @@ __global__ void k_conv2d_backward_weight_warp_subgroup(
 CONV2D_BACKWARD_WEIGHT_WARP_SUBGROUP_LAUNCHER(float, f32)
 CONV2D_BACKWARD_WEIGHT_WARP_SUBGROUP_LAUNCHER(double, f64)
 
+// -- dWeight grid-split block-reduce candidate (Milestone 46) ---------------
+//
+// M45 rejected both warp-shuffle candidates above: they *reduce* total
+// launched parallelism relative to the production `k_conv2d_backward_
+// weight_reduce` kernel (which already launches `weight_elements x 256`
+// threads), so M45's warp-lane framing was never the right axis. M46
+// investigates the one axis neither M33 nor M45 tried: grid-level splitting
+// of the *reduction dimension itself*. The production kernel launches
+// exactly one block per weight element; this candidate launches
+// `num_splits` blocks per weight element (`blockIdx.x` = weight index,
+// `blockIdx.y` = split index), each block reducing a disjoint
+// `ceil(reduce_total / num_splits)`-sized contiguous slice with the same
+// 256-thread shared-memory tree reduction as the production kernel, then
+// writes its own partial sum into a private `(num_splits, weight_elements)`
+// slice -- no atomics, mirroring M43's own disjoint-write two-stage design
+// (`k_dweight_halffused_gemm_splitk_partial`/`k_dweight_splitk_reduce`).
+// The existing `k_dweight_splitk_reduce` combine kernel is reused unmodified
+// for stage two: it already sums an arbitrary `(num_k_splits, rows*cols)`
+// partial buffer into `(rows*cols,)`, and a flat weight vector is exactly
+// that shape with `Cout=1, Kdim=weight_elements` (or any other row/col
+// split of the same total -- the kernel only ever indexes the flattened
+// `Cout*Kdim` extent). Profiling-only, like every dWeight candidate since
+// M33 -- never called by `CUDABackend` unless/until this milestone's own
+// benchmark accepts it.
+
+template <typename T>
+__global__ void k_conv2d_backward_weight_reduce_gridsplit(
+    const T* grad_out, const T* x, T* partial,
+    int N, int Cin, int H, int W,
+    int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout, int num_splits)
+{
+    extern __shared__ unsigned char smem_raw[];
+    T* smem = reinterpret_cast<T*>(smem_raw);
+
+    long long widx = blockIdx.x;   // one weight element per blockIdx.x
+    int split = blockIdx.y;        // disjoint reduction-dimension slice
+
+    int kw_ = static_cast<int>(widx % KW);
+    long long t1 = widx / KW;
+    int kh = static_cast<int>(t1 % KH);
+    long long t2 = t1 / KH;
+    int ci = static_cast<int>(t2 % Cin);
+    int co = static_cast<int>(t2 / Cin);
+
+    long long reduce_total = static_cast<long long>(N) * Hout * Wout;
+    long long chunk = (reduce_total + num_splits - 1) / num_splits;
+    long long r_start = static_cast<long long>(split) * chunk;
+    long long r_end = min(r_start + chunk, reduce_total);
+
+    T acc = static_cast<T>(0);
+    for (long long r = r_start + threadIdx.x; r < r_end; r += blockDim.x) {
+        int wo = static_cast<int>(r % Wout);
+        long long r1 = r / Wout;
+        int ho = static_cast<int>(r1 % Hout);
+        int n = static_cast<int>(r1 / Hout);
+
+        int hi = ho * SH - PH + kh;
+        int wi = wo * SW - PW + kw_;
+        if (hi < 0 || hi >= H || wi < 0 || wi >= W) continue;
+
+        long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+        long long x_idx = ((static_cast<long long>(n) * Cin + ci) * H + hi) * W + wi;
+        acc += grad_out[g_idx] * x[x_idx];
+    }
+
+    smem[threadIdx.x] = acc;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        long long total_weights = static_cast<long long>(Cout) * Cin * KH * KW;
+        partial[static_cast<long long>(split) * total_weights + widx] = smem[0];
+    }
+}
+
+#define CONV2D_BACKWARD_WEIGHT_GRIDSPLIT_LAUNCHER(TYPE, SUFFIX)                          \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_weight_gridsplit_partial_##SUFFIX( \
+        const TYPE* grad_out, const TYPE* x, TYPE* partial,                              \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                          \
+        int SH, int SW, int PH, int PW, int Hout, int Wout,                              \
+        int num_splits, void* stream) {                                                  \
+        long long total = static_cast<long long>(Cout) * Cin * KH * KW;                  \
+        int blocks_x = total < 1 ? 1 : static_cast<int>(total);                          \
+        dim3 blocks(blocks_x, num_splits);                                               \
+        k_conv2d_backward_weight_reduce_gridsplit<TYPE>                                  \
+            <<<blocks, CONV2D_REDUCE_THREADS, CONV2D_REDUCE_THREADS * sizeof(TYPE), (cudaStream_t)stream>>>( \
+                grad_out, x, partial, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout, num_splits); \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+CONV2D_BACKWARD_WEIGHT_GRIDSPLIT_LAUNCHER(float, f32)
+CONV2D_BACKWARD_WEIGHT_GRIDSPLIT_LAUNCHER(double, f64)
+
+// -- Occupancy diagnostics for the below-256 dWeight kernels (Milestone 46) --
+//
+// M45's register/shared-memory-only resource analysis (`nvcc -Xptxas -v`)
+// could not directly answer "how many blocks actually run concurrently per
+// SM" -- that also depends on the driver's own block-scheduling limits, not
+// just register/shared-memory arithmetic. These two diagnostic exports call
+// the real `cudaOccupancyMaxActiveBlocksPerMultiprocessor` runtime API
+// against the production block-reduce kernel and this milestone's
+// grid-split candidate, at the exact launch configuration each uses
+// (`CONV2D_REDUCE_THREADS`=256 threads/block, `threads_per_block *
+// sizeof(T)` shared memory). Diagnostic-only -- returns occupancy data via
+// an out-parameter, touches no kernel dispatch or production code path.
+
+extern "C" __declspec(dllexport) int cf_occupancy_conv2d_backward_weight_reduce_f32(
+    int shared_mem_bytes, int* max_active_blocks) {
+    return static_cast<int>(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        max_active_blocks, k_conv2d_backward_weight_reduce<float>, CONV2D_REDUCE_THREADS, shared_mem_bytes));
+}
+
+extern "C" __declspec(dllexport) int cf_occupancy_conv2d_backward_weight_reduce_gridsplit_f32(
+    int shared_mem_bytes, int* max_active_blocks) {
+    return static_cast<int>(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        max_active_blocks, k_conv2d_backward_weight_reduce_gridsplit<float>, CONV2D_REDUCE_THREADS, shared_mem_bytes));
+}
+
 // -- Conv2d backward: bias (sum grad_output over batch and spatial dims) --
 
 template <typename T>

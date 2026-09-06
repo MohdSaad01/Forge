@@ -3130,3 +3130,358 @@ category as Milestone 33's own rejected candidates.
 
 ## Suggested Commit Message
 `perf: characterize CUDA dWeight below-256 warp-shuffle reduction (rejected)`
+
+# Milestone 46: dWeight below-256 grid-split reduction (investigated, rejected)
+
+## Question
+M45 rejected warp-shuffle cooperative reduction for the below-
+`CONV2D_WEIGHT_REDUCE_THRESHOLD` (256) dWeight path and corrected M44's
+"insufficient threads" diagnosis: the production kernel (`k_conv2d_
+backward_weight_reduce`) already launches `weight_elements x 256` threads --
+more than either rejected warp candidate (32, or 8/16 for the sub-group
+variant). M45 named the one remaining untried axis directly: *grid-level*
+parallelism. The production kernel launches exactly one block per weight
+element; this milestone asks whether launching several blocks per weight
+element (each reducing a disjoint slice of the reduction dimension, combined
+by a cheap second-stage reduction) can help, and re-profiles rather than
+assuming M45's own framing of the question is correct.
+
+## How to reproduce
+```bash
+python -m benchmarks.m46_dweight_below256_gridsplit_profile
+python -m pytest tests/test_cuda_conv2d_backward_weight_below256_gridsplit.py -q
+```
+
+## 1. Baseline architecture
+Unchanged from M45's Section 1 -- `k_conv2d_backward_weight_reduce`, one
+256-thread block per `(co,ci,kh,kw)` weight element, shared-memory tree
+reduction, `weight_elements * 256` total launched threads. Still production,
+still byte-for-byte unchanged since M21.
+
+## 2. Candidate design
+`k_conv2d_backward_weight_reduce_gridsplit` (new): `blockIdx.x` selects the
+weight element (as before), `blockIdx.y` (`num_splits` wide) selects a
+disjoint contiguous slice of the `N*Hout*Wout` reduction dimension
+(`chunk = ceil(reduce_total / num_splits)`); each block runs the identical
+256-thread shared-memory tree reduction as the production kernel over just
+its own slice, then writes its partial sum into a private
+`(num_splits, weight_elements)` buffer -- no atomics, mirroring M43's own
+disjoint-write two-stage design. The existing M43 combine kernel
+(`k_dweight_splitk_reduce`) is reused **unmodified** for the second stage:
+it already sums an arbitrary `(num_k_splits, rows*cols)` partial buffer into
+`(rows*cols,)`, and a flat weight vector is exactly that shape with
+`Cout=1, Kdim=weight_elements`. `num_splits` was swept at {1 (sanity check,
+not a competitive candidate), 2, 4, 8} per the brief's own suggested range;
+16 was not tested (Section 12 explains why, based on what 2/4/8 already
+showed). Both kernels are profiling-only
+(`cf_conv2d_backward_weight_gridsplit_partial_*`, reusing `cf_dweight_
+splitk_reduce_*`), wrapped for buffer management by `forge.backend.cuda.
+experimental_conv_dweight_gridsplit.dweight_below256_gridsplit` -- never
+called by `CUDABackend`.
+
+## 3. Resource analysis (`nvcc -Xptxas -v`, fresh compile, this session)
+
+| kernel | registers (f32/f64) | shared mem | spill |
+|---|---|---|---|
+| `k_conv2d_backward_weight_reduce` (M21, production) | 42/45 | 1024 bytes | none |
+| `k_conv2d_backward_weight_reduce_gridsplit` (M46) | 48/46 | 1024 bytes | none |
+
+No spill/local-memory usage on either kernel; the grid-split candidate uses
+3-6 more registers than production (extra `blockIdx.y`/chunk-boundary
+arithmetic), still well inside the same order of magnitude as every other
+kernel in this file.
+
+## 4. Real occupancy query (not a hand-derived estimate)
+`nvcc -Xptxas -v` alone cannot answer "how many blocks actually run
+concurrently per SM" -- that also depends on the driver's own block-
+scheduling limits. This milestone adds two tiny diagnostic exports
+(`cf_occupancy_conv2d_backward_weight_reduce[_gridsplit]_f32`) that call the
+real `cudaOccupancyMaxActiveBlocksPerMultiprocessor` runtime API at each
+kernel's actual launch configuration (256 threads/block, 1024 bytes shared
+memory):
+
+| kernel | max active blocks/SM | occupancy | resident blocks (3 SMs) |
+|---|---:|---:|---:|
+| `k_conv2d_backward_weight_reduce` (production) | 5 | 62.5% | 15 |
+| `k_conv2d_backward_weight_reduce_gridsplit` (candidate) | 5 | 62.5% | 15 |
+
+**Identical occupancy.** Both kernels are register-bound (65,536 32-bit
+registers/SM on this CC 5.0 device; even production's 42 registers/thread
+already caps out at 5 resident 256-thread blocks/SM well before the
+thread-count limit of 8 or the architectural cap of 32 blocks/SM would bind)
+-- this is the central, decisive finding of this milestone's ANALYZE phase,
+obtained *before* any timing was run: **grid-splitting cannot raise the
+940MX's per-SM concurrent-block ceiling.** It can only launch more, smaller
+blocks against the same 15-resident-block cap, trading a longer serial
+reduction inside fewer blocks for a shorter serial reduction inside more
+blocks -- a real mechanism (shrinking the tail-latency of whichever block
+finishes last), but not the "more independent parallel work fits on the
+GPU" mechanism the milestone brief's own motivating hypothesis described.
+
+## 5. Methodology correction (read before trusting any number below)
+This milestone's **first** benchmark attempt (block-sequential timing: fully
+time `current` for 30 iterations, *then* fully time each `num_splits`
+candidate for 30 iterations each, matching M45's own `_time_phase`-per-
+variant pattern) measured a striking 1.47x speedup at `mnist_conv1`
+(`num_splits=2`: 2.07ms vs. 3.04ms) and a promising-looking sweep. Before
+accepting it, the result was cross-checked the way M37's own retracted
+"apples-to-oranges" win was caught: by re-measuring the *same* production
+kernel, on the *same* shape, in a *fresh, separate* Python process
+immediately afterward. It measured 2.14-2.20ms -- not 3.04ms. Re-running
+production and the `num_splits=2` candidate with **true round-robin
+interleaving** (every iteration times `current` and every candidate once,
+in the same fixed order, so slow GPU clock/power-state drift over a
+multi-second block of repeated launches affects every variant equally
+instead of biasing whichever one is measured in a later block) reproduced
+the low number for production (2.14-2.18ms) and found the candidate barely
+distinguishable (2.10-2.14ms, ~1.02x) -- not 1.47x. The 940MX visibly
+drifts its effective clock/power state over the course of a several-second
+block of sustained kernel launches (direction and magnitude not further
+diagnosed -- out of scope for this milestone), and block-sequential A/B
+timing (time A fully, then time B fully) is vulnerable to exactly this: the
+variant measured later in the block benefits from whatever drift happened
+while the earlier variant was running. `benchmarks/m46_dweight_below256_
+gridsplit_profile.py` was rewritten around a new `_interleaved_multi_time`
+helper (round-robin across every named variant, one call per variant per
+round) before any of the numbers in Sections 6-7 below were trusted. This is
+the same class of mistake M37 made (Section on "Measured results (honest,
+full-pipeline, corrected)" above) -- an illusory win from a timing-setup
+bug -- via a genuinely different mechanism (clock drift vs. buffer reuse),
+recorded here per the milestone brief's own explicit instruction to be
+"particularly careful about benchmark-harness errors like the M37
+isolation-vs-pipeline mistake."
+
+## 6. Benchmark results (940MX, real hardware, this session, true round-robin-interleaved same-session A/B, 30 iterations/5 warmup, CUDA-event timed)
+
+### Weight-element-count sweep (fixed reduction = mnist_conv1's own N=64,H=W=28,K=3 -> N*Hout*Wout=50,176)
+| shape | weight# | current (ms) | best candidate (ms) | best `num_splits` | speedup | cur % ceil | cand % ceil |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| we_72 (mnist_conv1) | 72 | 2.1401 | 2.1004 | 2 | 1.019x | 5.6% | 5.7% |
+| we_96 | 90 | 2.6703 | 2.5982 | 1 | 1.028x | 3.5% | 3.6% |
+| we_128 | 126 | 3.7621 | 3.6470 | 1 | 1.032x | 3.2% | 3.3% |
+| we_144 | 144 | 4.2993 | 4.1800 | 1 | 1.029x | 3.2% | 3.3% |
+| we_192 | 189 | 5.6238 | 5.4640 | 1 | 1.029x | 3.2% | 3.3% |
+| we_216 | 216 | 6.4118 | 6.2460 | 1 | 1.027x | 3.2% | 3.3% |
+| we_240 | 252 | 7.4893 | 7.2910 | 1 | 1.027x | 3.2% | 3.3% |
+| we_255 | 252 | 7.4811 | 7.3053 | 1 | 1.024x | 3.2% | 3.3% |
+
+Every shape's "best" configuration is either `num_splits=1` (the two-stage
+kernel with no real split -- see Section 8) or `num_splits=2`; higher splits
+never win. `we_72` (`mnist_conv1`'s own exact shape): **1.019x, far short of
+the 1.15x bar.**
+
+### Reduction-size sweep (fixed weight_elements=72, `mnist_conv1`'s own Cin=1/Cout=8/K=3 split)
+| shape | reduction size | current (ms) | best candidate (ms) | best `num_splits` | speedup |
+|---|---:|---:|---:|---:|---:|
+| reduction_small | 256 | 0.0373 | 0.0470 | 1 | **0.795x (regression)** |
+| reduction_medium | 4,096 | 0.2008 | 0.2065 | 1 | 0.972x |
+| reduction_mnist | 50,176 | 2.1279 | 2.0733 | 1 | 1.026x |
+| reduction_large | 204,800 | 8.8357 | 8.4432 | 2 | 1.046x |
+
+Full per-`num_splits` breakdown at every reduction length (all four tested):
+| reduction size | current | ns=1 | ns=2 | ns=4 | ns=8 |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 0.0373 | 0.0470 | 0.0715 | 0.1225 | 0.2184 |
+| 4,096 | 0.2008 | 0.2065 | 0.2329 | 0.2842 | 0.3887 |
+| 50,176 | 2.1279 | 2.0733 | 2.0831 | 2.1295 | 2.2311 |
+| 204,800 | 8.8357 | 8.5275 | 8.4432 | 8.5055 | 8.5838 |
+
+Splitting cost climbs **monotonically with `num_splits`** at every reduction
+length -- the extra per-block launch/shared-memory-setup/`__syncthreads()`
+cost and the second-stage reduce kernel's own fixed launch overhead are paid
+`num_splits` times per weight element, for a shrinking amount of real
+reduction work per block. At the shortest reduction (256 elements, already
+sized to `CONV2D_REDUCE_THREADS` itself), splitting it further is pure
+overhead: `num_splits=8` is **5.9x slower** than production. Only the
+longest tested reduction (204,800) shows real, if modest, headroom for a
+split (`num_splits=2`: 1.046x) before overhead catches up again at 4/8.
+
+### Channel/kernel-size sweep (`K` in {1,3,5})
+| shape | Cin,Cout,K | weight# | current (ms) | best candidate (ms) | best `num_splits` | speedup |
+|---|---|---:|---:|---:|---:|---:|
+| k1_wide | 4,16,1 | 64 | 2.2869 | 2.1340 | 2 | **1.072x (best result in this milestone)** |
+| k3_mnist | 1,8,3 | 72 | 2.1557 | 2.0968 | 1 | 1.028x |
+| k5_narrow | 1,4,5 | 100 | 2.5951 | 2.5304 | 1 | 1.026x |
+
+`k1_wide` (`K=1`, no spatial reuse, largest reduction length in this sweep
+at 57,600) is the single best result found anywhere in this milestone --
+still 0.08x short of the 1.15x acceptance bar.
+
+### Complete `conv2d_backward` (dInput+dWeight+dBias) A/B, best candidate substituted for dWeight only
+| shape | current (ms) | candidate (ms) | speedup |
+|---|---:|---:|---:|
+| mnist_conv1 | 3.1508 | 3.1125 | 1.012x |
+| we_192 | 6.9175 | 6.7549 | 1.024x |
+| reduction_large | 12.9082 | 12.5749 | 1.027x |
+
+Consistent with Section 7's Amdahl fraction: even where the isolated
+dWeight-only speedup nears (`we_192`: 1.029x) or slightly exceeds
+(`reduction_large`: 1.046x) the full-pipeline number, dInput/dBias staying
+fixed dilutes it further at the whole-`conv2d_backward` level.
+
+### Boundary test (255 / 256 / 257 weight elements)
+| weight_elements | dispatched path |
+|---:|---|
+| 255 | block-reduce (below 256) -- this milestone's target, confirmed still reached |
+| 256 | per-thread (>= 256) -- unaffected |
+| 257 | per-thread (>= 256) -- unaffected |
+
+Confirms the M21 dispatch threshold is completely unaffected by this
+milestone's new profiling-only kernel additions (also covered by
+`tests/test_cuda_conv2d_backward_weight_below256_gridsplit.py::
+test_production_dispatch_unaffected_at_and_above_threshold`, which runs the
+real production entry point, not a forced kernel, at all three values).
+
+## 7. Fresh Amdahl fraction (this session, `m35_mnist` re-run)
+`mnist_conv1`'s own below-256 dWeight call: **18.45%** of the full,
+fresh-this-session MNIST training step (11.60ms total; `backward:conv2d` as
+a whole op is 49.65% for context) -- consistent with M45's 18.66% within
+normal same-machine run-to-run variance. Even the milestone's own
+acceptance-bar speedup (1.15x) would project to only a 1.025x whole-step
+speedup; the actually-measured 1.019x kernel-level result at `mnist_conv1`
+projects to an unmeasurable ~1.003x whole-step effect, well under any
+credible noise floor.
+
+## 8. Root cause (experimentally verified, not M45's hypothesis restated)
+M45 already corrected M44's "insufficient threads" framing (Section 6 of
+M45's own report, above) -- this milestone re-confirms that correction
+still holds (Section 3: register counts essentially unchanged) and adds the
+new, decisive evidence M45 did not have: **a real occupancy query showing
+identical per-SM concurrent-block capacity (5 blocks/SM, 62.5% occupancy)
+between the production kernel and the grid-split candidate, at every
+`num_splits` value** (the occupancy query depends only on the *kernel's*
+register/shared-memory footprint per block, not the grid dimensions a
+caller chooses -- so this holds for `num_splits` in {1,2,4,8} alike). Grid
+splitting is therefore not "creating more independent parallel work that
+fits on the GPU" -- the 940MX's 3 SMs already have a fixed, register-bound
+ceiling of 15 concurrently resident blocks regardless of how the same total
+reduction work is chopped up. What grid-splitting *actually* changes is
+tail latency (the last-finishing block's own duration, which shrinks
+roughly proportionally to `1/num_splits`) traded against fixed per-block
+overhead (shared-memory tree-reduction setup/`__syncthreads()`, one block
+launch, and one additional second-stage-reduce kernel launch per
+`conv2d_backward` call, all now paid by more, smaller blocks). The
+benchmark data in Section 6 traces this tradeoff directly: the shortest
+reduction (256 elements, `reduction_small`) has essentially no tail latency
+to shrink and is pure overhead-dominated (`num_splits=8`: 0.17x); the
+longest reduction (204,800, `reduction_large`) has the most tail latency to
+amortize and shows the clearest (if still sub-bar) win at `num_splits=2`
+(1.046x); every value in between falls on a smooth continuum. **The
+milestone's own motivating hypothesis -- that below-256 dWeight is limited
+by insufficient independent blocks, not insufficient per-block threads --
+is answered directly by the occupancy query: it is neither.** The kernel is
+already running at whatever occupancy this device's register budget allows
+regardless of block count; the actual, small, real lever available (tail
+latency vs. fixed overhead) tops out at ~1.07x, not enough to matter.
+
+## 9. Correctness validation
+`tests/test_cuda_conv2d_backward_weight_below256_gridsplit.py` (new, 31
+tests): `dweight_below256_gridsplit` (`f32`, 5 shapes x 4 `num_splits` = 20
+cases spanning 9-255 weight elements, strided/no-padding variants; plus 4
+`f64` cases at one shape x 4 `num_splits`), a direct same-inputs comparison
+against the production kernel at all 4 `num_splits` values (rules out a
+shared bug that happens to cancel against the CPU reference), a
+finite-difference check of the candidate's own output, explicit-stream
+execution, cross-stream execution (producer streams != compute stream), the
+255/256/257 production-dispatch boundary check, a 50-iteration repeated-use
+memory-safety check, and a 10x4-configuration allocator-reuse-across-
+split-counts check. All pass at `rtol=atol=1e-4` (f32) / `1e-6` (f64) /
+`1e-2` (finite difference); max observed correctness deviation across every
+shape/`num_splits` combination in the benchmark sweep itself was `6.33e-04`
+(float32 accumulation-order noise from summing the reduction dimension in a
+different order per split -- expected and within the milestone's own
+`1e-3` correctness bar, not a bug).
+
+## 10. Memory results
+`test_gridsplit_repeated_use_does_not_grow_active_memory` (50 iterations)
+and `test_gridsplit_allocator_reuse_across_split_counts` (10 iterations x 4
+distinct `num_splits`, each allocating a differently-sized partial buffer):
+`allocated_bytes`/`reserved_bytes`/`pending_bytes` all return to baseline in
+both. The M25 caching allocator handles the varying partial-buffer sizes
+(`num_splits * weight_elements * itemsize` -- tiny, 36 bytes to 8,160 bytes
+across this milestone's shapes) without growth.
+
+## 11. Full regression check
+Full suite: **1,550 tests passed** (1,519 pre-existing + 31 new), verified
+on a clean CUDA rebuild (`_forge_cuda_kernels_sm_50.dll` deleted and
+recompiled, 14.45s) immediately before running. No regression anywhere
+outside this milestone's own new, inert profiling-only kernel surface.
+
+## 12. Production decision
+**Rejected.** The grid-split candidate never clears the milestone's own
+1.15x acceptance bar at `mnist_conv1`'s own shape (1.019x isolated kernel,
+1.012x complete `conv2d_backward`) or anywhere in the below-256 sweep (best
+anywhere: 1.072x at `k1_wide`) and regresses outright at the shortest
+tested reduction length (`reduction_small`, 0.795x at its best configuration,
+down to 0.46x at `num_splits=8`). `CUDABackend.conv2d_backward`, the M21
+dispatch threshold, and `k_conv2d_backward_weight_reduce` are byte-for-byte
+unchanged. The new kernel (`k_conv2d_backward_weight_reduce_gridsplit`), the
+occupancy-diagnostic exports, and the Python wrapper
+(`experimental_conv_dweight_gridsplit.py`) remain in the codebase as
+documented, tested, profiling-only code, per the M33/M45 convention, so this
+negative result -- and the occupancy evidence behind it -- stays
+reproducible.
+
+`num_splits=16` (mentioned as a candidate value in the milestone brief) was
+not benchmarked: `num_splits=8` already regresses relative to `num_splits=4`
+at every single sweep point in Section 6 (monotonically increasing cost
+with split count, visible in the full reduction-size-sweep table), so 16
+splits would only extend a trend already conclusively established in the
+wrong direction -- benchmarking it would not change the accept/reject
+decision and was judged not worth the machine time, per the brief's own
+"do not blindly use 16 if the reduction length does not support it
+efficiently" instruction.
+
+## 13. Updated bottleneck ranking
+The below-256 block-reduce kernel remains the largest single absolute
+contributor (18.45% this session, consistent with M45's 18.66% within
+same-machine run-to-run variance) -- **unchanged by this milestone**, since
+nothing was accepted into production. It has now been investigated at four
+distinct algorithmic angles across four milestones (M21's original design
+choice, M33's shared-memory/warp designs at the >= 1,152 regime, M45's
+warp-shuffle/sub-warp designs, M46's grid-split design) without displacing
+the current M21 kernel, and this milestone's occupancy evidence gives a
+structural reason none of the block/thread-count-restructuring angles have
+worked: **the 940MX's register-bound 5-blocks/SM ceiling is a fixed
+property of this kernel's own register footprint at this device's compute
+capability, not of how work is distributed across the grid** -- any future
+candidate that wants a materially different occupancy ceiling would need to
+either reduce registers/thread substantially (a genuinely different kernel
+body, not a different launch geometry) or accept a fundamentally different
+algorithmic shape (e.g. the im2col+GEMM restructuring M34 already rejected
+at this element count, or accepting this kernel's ~3-6% roofline ceiling as
+the practical floor for the below-256 regime specifically). `dInput`
+(extensively optimized in M36) and `dWeight`'s `blocks_y==1`/`blocks_y>=2`
+GEMM paths (optimized in M38/M39/M43) remain unchanged and healthy.
+
+## 14. Limitations
+- **The register-bound occupancy ceiling itself was not further
+  investigated** -- e.g. whether a hand-tuned lower-register-count
+  reduction body could raise the 5-blocks/SM cap and, if so, whether that
+  would actually help (a plausible, genuinely different next angle, not
+  pursued here since it is a different kernel-body question than this
+  milestone's grid-geometry question).
+- **`num_splits=16` was not measured** (Section 12 explains the reasoning;
+  the monotonic trend across 1/2/4/8 makes it very unlikely to reverse, but
+  this is inference, not direct measurement).
+- **A non-uniform (front-loaded/back-loaded) split geometry was not tried**
+  -- only equal-sized contiguous chunks were tested; an unequal split could
+  in principle balance per-block work against a fixed per-block overhead
+  differently, but there is no evidence in this milestone's data that the
+  bottleneck is chunk-size imbalance rather than fixed per-block/per-launch
+  overhead itself, so this was judged unlikely to change the outcome and
+  not pursued.
+- **940MX clock/power-state drift** (Section 5) was observed and corrected
+  for via interleaving, but its underlying cause (thermal, WDDM power
+  management, or driver-level DVFS) was not further diagnosed -- out of
+  scope for this milestone. Every comparison in Sections 6-7 is same-session
+  and truly interleaved, the primary evidence; the cross-session Amdahl-
+  fraction comparison against M45 (18.45% vs. 18.66%) is directional only.
+
+## Why no ADR
+No production code, public API, or cross-cutting architectural decision was
+touched -- a rejected profiling-only kernel-selection experiment, the same
+category as Milestone 33's and Milestone 45's own rejected candidates.
+
+## Suggested Commit Message
+`perf: characterize CUDA dWeight grid-split reduction (rejected)`
