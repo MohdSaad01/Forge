@@ -1540,3 +1540,53 @@ angle — M36's channel-fusion benefit requires multiple `Cin` accumulators
 to amortize its register cost, and degenerates to none of that benefit at
 `Cin=1`. Full 19-section report: `docs/performance/
 m47-bottleneck-recharacterization.md`.
+
+## Milestone 48: CUDA dInput low-Cin value assessment (ACCEPTED)
+
+### New: `benchmarks/m48_dinput_value_assessment.py`
+
+Before designing any candidate, values M47's selected target: greps
+`examples/`/`tests/`/`benchmarks/` for every real `Conv2d` shape (finds
+`Cin=1` matters to exactly one real Forge workload — `examples/mnist/
+model.py`'s first layer — everywhere else it is test-only or a deliberate
+sweep point), then profiles the *current* channel-fused kernel at `Cin=1`
+fresh: `nvcc -Xptxas -v` and a real `cudaOccupancyMaxActiveBlocksPer
+Multiprocessor` query, *before* writing any candidate. Only after that
+evidence justified it did this milestone template the kernel's accumulator
+array bound (`CIN_MAX`) and instantiate it at `CIN_MAX=1`, benchmark it via
+a round-robin-interleaved A/B against the unspecialized kernel, and (once
+that cleared the bar) promote it to production.
+
+    python -m benchmarks.m48_dinput_value_assessment
+
+### Measured example (940MX, real hardware, this session)
+
+**Root cause was not primarily register pressure.** Shrinking the
+channel-fused kernel's accumulator array from `MAX_CIN_REG=16` to a
+`Cin=1`-specialized `CIN_MAX=1` only drops f32 register usage 54→48 and
+occupancy 4→5 blocks/SM (50%→62.5%) — a real but modest gain, not the
+dramatic jump a pure register-pressure story predicts. The larger effect is
+per-thread instruction overhead: the unspecialized kernel's `#pragma
+unroll`ed accumulator loop still emits 16 runtime-checked iterations per
+`Cout*KH*KW` step even when only the first is ever useful at `Cin=1`.
+
+**Isolated kernel speedup: 2.18x-2.53x** across 4 `Cin=1` shapes (mnist_
+conv1 and 3 others spanning batch/spatial/stride variation), measured via
+round-robin-interleaved, order-independent A/B (reproduced across 2
+independent script runs), bit-exact correct against both the M36
+channel-fused kernel and the original (pre-M36) kernel. **End-to-end
+`conv2d_backward()` speedup at `mnist_conv1`: 1.155x-1.158x** (measured,
+not just Amdahl-projected). **Amdahl projection at the measured speedup: a
+fresh same-session fraction reconstruction put dInput at ~15.4% of the
+full step pre-M48 (M47's own carried-over figure was 11.75%) — projecting
+to ~1.09x-1.10x whole-training-step improvement**, comparable to or better
+than M43's own accepted full-pipeline win (1.02x-1.04x/1.11x-1.24x).
+
+**Decision: ACCEPT.** `k_conv2d_backward_input_channelfused_lowcin<T,1>`
+(`kernels.cu`) is now production, dispatched at `Cin<=CONV2D_DINPUT_
+LOWCIN_MAX_CIN=1` — the one real Forge shape it was measured at — ahead of
+the unchanged M36 channel-fused path (`Cin<=16`) and M32 fallback. No
+regression confirmed at `Cin=2` (still M36 channel-fused, byte-for-byte
+unchanged) or `mnist_conv2`'s `Cin=16`. 29 new tests (`tests/
+test_cuda_conv2d_dinput_lowcin_candidate.py`); full suite 1,579 passed.
+Full report: `docs/performance/m48-dinput-value-assessment.md`.

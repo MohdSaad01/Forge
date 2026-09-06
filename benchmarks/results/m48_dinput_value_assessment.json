@@ -1,0 +1,539 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "31c29631ba933f671ce6e093c302d912817bd229",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "hardware_ceilings": {
+      "theoretical_specs": {
+        "gpu": "NVIDIA GeForce 940MX (GM108, Maxwell) -- public specification, not runtime-queried",
+        "sm_count": 3,
+        "cuda_cores_per_sm": 128,
+        "cuda_cores_total": 384,
+        "memory_bus_bits": 64,
+        "sm_clock_mhz": 1241.0,
+        "mem_clock_mhz": 1001.0,
+        "theoretical_fp32_gflops": 953.088,
+        "theoretical_memory_gbps": 16.016,
+        "note": "Derived from public GM108 core-count specs + this run's nvidia-smi max clocks. Not an achievable Forge target -- see practical_ceilings for measured numbers."
+      },
+      "compute_ceiling_sweep": {
+        "sweep": [
+          {
+            "dim": 512,
+            "timing": {
+              "mean_s": 0.0025628117243448895,
+              "median_s": 0.00256275200843811,
+              "min_s": 0.002557408094406128,
+              "max_s": 0.0025681920051574708,
+              "stdev_s": 3.0657051141148427e-06
+            },
+            "achieved_gflops": 104.74255812475572
+          },
+          {
+            "dim": 1024,
+            "timing": {
+              "mean_s": 0.02169526392618815,
+              "median_s": 0.021713951110839843,
+              "min_s": 0.021332672119140625,
+              "max_s": 0.021831071853637696,
+              "stdev_s": 0.00012821049339543662
+            },
+            "achieved_gflops": 98.98398356923387
+          },
+          {
+            "dim": 2048,
+            "timing": {
+              "mean_s": 0.17804776407877604,
+              "median_s": 0.1779384307861328,
+              "min_s": 0.1777457580566406,
+              "max_s": 0.17867369079589843,
+              "stdev_s": 0.00029608418306330665
+            },
+            "achieved_gflops": 96.49022706288456
+          }
+        ],
+        "practical_compute_gflops": 104.74255812475572,
+        "best_dim": 512
+      },
+      "bandwidth_ceiling_measurement": {
+        "elements": 20000000,
+        "bytes_moved": 240000000,
+        "timing": {
+          "mean_s": 0.01590207150777181,
+          "median_s": 0.01589913558959961,
+          "min_s": 0.015887167930603026,
+          "max_s": 0.015917856216430663,
+          "stdev_s": 8.514419525090269e-06
+        },
+        "practical_bandwidth_gbps": 15.092373335304455
+      },
+      "ceilings": {
+        "practical_compute_gflops": 104.74255812475572,
+        "practical_bandwidth_gbps": 15.092373335304455
+      }
+    },
+    "real_workload_relevance": {
+      "real_forge_networks_with_conv2d": [
+        {
+          "file": "examples/mnist/model.py",
+          "layers": [
+            "Conv2d(1, 8, kernel_size=3)",
+            "Conv2d(8, 16, kernel_size=3)"
+          ],
+          "note": "Forge's only real (non-test, non-benchmark-synthetic) trained network. Its first layer is the only real Cin=1 shape anywhere in the repository."
+        }
+      ],
+      "synthetic_cin1_shapes": [
+        "tests/test_conv.py, tests/test_cuda_conv.py, tests/test_cuda_streams.py, tests/test_lifetime.py, tests/test_serialization.py, tests/test_cuda_persistence.py, tests/test_sequential_flatten_dropout_integration.py, tests/test_conv_trainer_integration.py: small Cin=1 Conv2d layers used purely for correctness/API coverage on tiny inputs (6x6-8x8 spatial, N<=4), never as a performance workload.",
+        "benchmarks/*.py sweep files (conv2d_backward_*, m4x_*): Cin=1 appears only as one point in a deliberate Cin sweep (1,2,4,8,16,...), constructed specifically to characterize the kernel across Cin -- not evidence of a second real Cin=1 workload."
+      ],
+      "conclusion": "Cin=1 matters to exactly one real Forge workload: mnist_conv1, the first layer of the one real trained network in the repository. It is not a broadly representative CNN input pattern within Forge's own scope today -- optimizing it helps MNIST specifically, not a class of real workloads."
+    },
+    "dispatch": {
+      "mnist_conv1": {
+        "Cin": 1,
+        "path": "k_conv2d_backward_input_channelfused_lowcin<T,1> (M48, NEW production)"
+      },
+      "mnist_conv2": {
+        "Cin": 8,
+        "path": "k_conv2d_backward_input_channelfused (M36, unchanged)"
+      }
+    },
+    "ptxas": {
+      "per_kernel_lines": {
+        "k_conv2d_backward_input_channelfused_lowcin": [
+          "0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads",
+          "ptxas info    : Used 48 registers, used 0 barriers, 396 bytes cmem[0]",
+          "0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads",
+          "ptxas info    : Used 48 registers, used 0 barriers, 396 bytes cmem[0]"
+        ],
+        "k_conv2d_backward_input_channelfused": [
+          "0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads",
+          "ptxas info    : Used 70 registers, used 0 barriers, 396 bytes cmem[0]",
+          "0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads",
+          "ptxas info    : Used 54 registers, used 0 barriers, 396 bytes cmem[0]"
+        ]
+      },
+      "returncode": 0
+    },
+    "occupancy": {
+      "threads_per_block": 256,
+      "max_active_blocks_per_sm_channelfused": 4,
+      "max_active_blocks_per_sm_lowcin1": 5,
+      "occupancy_fraction_channelfused": 0.5,
+      "occupancy_fraction_lowcin1": 0.625,
+      "sm_count": 3
+    },
+    "dinput_cin_sweep": [
+      {
+        "Cin": 1,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 1
+        },
+        "dispatch": {
+          "Cin": 1,
+          "path": "k_conv2d_backward_input_channelfused_lowcin<T,1> (M48, NEW production)"
+        },
+        "d_input_ms": {
+          "mean_ms": 0.1233738675713539,
+          "median_ms": 0.12256000190973282,
+          "min_ms": 0.12124799937009811,
+          "max_ms": 0.1475200057029724,
+          "stdev_ms": 0.004635769274502976
+        },
+        "roofline": {
+          "achieved_gflops": 29.28231132829319,
+          "achieved_gbps": 6.918547799487073,
+          "arithmetic_intensity": 4.232436080077979,
+          "fraction_of_compute_ceiling": 0.27956459964836744,
+          "classification": "memory_bandwidth_bound",
+          "note": "AI=4.232 is left of the ridge point (6.940) -- bandwidth, not compute, sets this op's ceiling."
+        }
+      },
+      {
+        "Cin": 8,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 8
+        },
+        "dispatch": {
+          "Cin": 8,
+          "path": "k_conv2d_backward_input_channelfused (M36, unchanged)"
+        },
+        "d_input_ms": {
+          "mean_ms": 1.1537887970606486,
+          "median_ms": 1.1533600091934204,
+          "min_ms": 1.1385600566864014,
+          "max_ms": 1.182528018951416,
+          "stdev_ms": 0.007666765461991607
+        },
+        "roofline": {
+          "achieved_gflops": 25.04910437129232,
+          "achieved_gbps": 1.047706480665766,
+          "arithmetic_intensity": 23.90851334180432,
+          "fraction_of_compute_ceiling": 0.23914925145762703,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 23.9% of the 104.74 GFLOP/s roofline ceiling achieved, with elapsed time (1153.79us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cin": 16,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 16
+        },
+        "dispatch": {
+          "Cin": 16,
+          "path": "k_conv2d_backward_input_channelfused (M36, unchanged)"
+        },
+        "d_input_ms": {
+          "mean_ms": 1.9683050672213236,
+          "median_ms": 1.9681599736213684,
+          "min_ms": 1.953984022140503,
+          "max_ms": 1.9931199550628662,
+          "stdev_ms": 0.00704228586826624
+        },
+        "roofline": {
+          "achieved_gflops": 29.366764818423565,
+          "achieved_gbps": 0.8204256682017781,
+          "arithmetic_intensity": 35.79454660748256,
+          "fraction_of_compute_ceiling": 0.2803708955002387,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 28.0% of the 104.74 GFLOP/s roofline ceiling achieved, with elapsed time (1968.31us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cin": 17,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 17
+        },
+        "dispatch": {
+          "Cin": 17,
+          "path": "k_conv2d_backward_input (M32 original, fallback -- unused by any real Forge shape)"
+        },
+        "d_input_ms": {
+          "mean_ms": 4.613388760884603,
+          "median_ms": 4.528447866439819,
+          "min_ms": 4.374591827392578,
+          "max_ms": 4.879839897155762,
+          "stdev_ms": 0.2025356099335832
+        },
+        "roofline": {
+          "achieved_gflops": 13.312431963402057,
+          "achieved_gbps": 0.3610361247077357,
+          "arithmetic_intensity": 36.8728530259366,
+          "fraction_of_compute_ceiling": 0.12709668545182962,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 12.7% of the 104.74 GFLOP/s roofline ceiling achieved, with elapsed time (4613.39us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cin": 32,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 32
+        },
+        "dispatch": {
+          "Cin": 32,
+          "path": "k_conv2d_backward_input (M32 original, fallback -- unused by any real Forge shape)"
+        },
+        "d_input_ms": {
+          "mean_ms": 9.03702408472697,
+          "median_ms": 9.259856224060059,
+          "min_ms": 8.464544296264648,
+          "max_ms": 9.294783592224121,
+          "stdev_ms": 0.3472202122675169
+        },
+        "roofline": {
+          "achieved_gflops": 12.792430662587165,
+          "achieved_gbps": 0.2685485816178747,
+          "arithmetic_intensity": 47.63544303797468,
+          "fraction_of_compute_ceiling": 0.12213211985285374,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 12.2% of the 104.74 GFLOP/s roofline ceiling achieved, with elapsed time (9037.02us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cin": 64,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 64
+        },
+        "dispatch": {
+          "Cin": 64,
+          "path": "k_conv2d_backward_input (M32 original, fallback -- unused by any real Forge shape)"
+        },
+        "d_input_ms": {
+          "mean_ms": 19.52407366434733,
+          "median_ms": 19.111696243286133,
+          "min_ms": 17.828832626342773,
+          "max_ms": 21.031360626220703,
+          "stdev_ms": 1.3049846737673054
+        },
+        "roofline": {
+          "achieved_gflops": 11.842354826913583,
+          "achieved_gbps": 0.2074845685200102,
+          "arithmetic_intensity": 57.07583417593529,
+          "fraction_of_compute_ceiling": 0.11306153906236002,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 11.3% of the 104.74 GFLOP/s roofline ceiling achieved, with elapsed time (19524.07us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      }
+    ],
+    "cin1_ab_sweep": [
+      {
+        "label": "mnist_conv1 (N=64,Cin=1,Cout=8,H=W=28,K=3,P=1)",
+        "config": {
+          "N": 64,
+          "Cin": 1,
+          "Cout": 8,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "timed_ms": {
+          "production (lowcin1)": {
+            "mean_ms": 0.38114400058984754,
+            "median_ms": 0.37723200023174286,
+            "min_ms": 0.3717760145664215,
+            "max_ms": 0.39478400349617004,
+            "stdev_ms": 0.007568037288036811
+          },
+          "pre-M48 baseline (channelfused, forced)": {
+            "mean_ms": 0.8631983965635299,
+            "median_ms": 0.8484799861907959,
+            "min_ms": 0.842848002910614,
+            "max_ms": 0.8936319947242737,
+            "stdev_ms": 0.022269318652288136
+          }
+        },
+        "production_ms": 0.38114400058984754,
+        "pre_m48_baseline_ms": 0.8631983965635299,
+        "speedup": 2.2647566148953384
+      },
+      {
+        "label": "cin1_large_spatial (N=16,Cin=1,Cout=32,H=W=64,K=3,P=1)",
+        "config": {
+          "N": 16,
+          "Cin": 1,
+          "Cout": 32,
+          "H": 64,
+          "W": 64,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "timed_ms": {
+          "production (lowcin1)": {
+            "mean_ms": 1.427232801914215,
+            "median_ms": 1.444495975971222,
+            "min_ms": 1.293984055519104,
+            "max_ms": 1.4882240295410156,
+            "stdev_ms": 0.049244733852002044
+          },
+          "pre-M48 baseline (channelfused, forced)": {
+            "mean_ms": 3.608296012878418,
+            "median_ms": 3.594591975212097,
+            "min_ms": 3.564608097076416,
+            "max_ms": 3.7207040786743164,
+            "stdev_ms": 0.041568971190253136
+          }
+        },
+        "production_ms": 1.427232801914215,
+        "pre_m48_baseline_ms": 3.608296012878418,
+        "speedup": 2.5281762078610757
+      },
+      {
+        "label": "cin1_batch64_cout16 (N=64,Cin=1,Cout=16,H=W=28,K=3,P=1)",
+        "config": {
+          "N": 64,
+          "Cin": 1,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "timed_ms": {
+          "production (lowcin1)": {
+            "mean_ms": 0.5967015996575356,
+            "median_ms": 0.6031199991703033,
+            "min_ms": 0.5401279926300049,
+            "max_ms": 0.6191040277481079,
+            "stdev_ms": 0.01906207523654217
+          },
+          "pre-M48 baseline (channelfused, forced)": {
+            "mean_ms": 1.4792376071214677,
+            "median_ms": 1.47952002286911,
+            "min_ms": 1.4704320430755615,
+            "max_ms": 1.4852800369262695,
+            "stdev_ms": 0.0036096946098986846
+          }
+        },
+        "production_ms": 0.5967015996575356,
+        "pre_m48_baseline_ms": 1.4792376071214677,
+        "speedup": 2.4790240347444104
+      },
+      {
+        "label": "cin1_strided (N=32,Cin=1,Cout=8,H=W=32,K=3,S=2,P=1)",
+        "config": {
+          "N": 32,
+          "Cin": 1,
+          "Cout": 8,
+          "H": 32,
+          "W": 32,
+          "K": 3,
+          "S": 2,
+          "P": 1
+        },
+        "timed_ms": {
+          "production (lowcin1)": {
+            "mean_ms": 0.13131279963999987,
+            "median_ms": 0.12809599936008453,
+            "min_ms": 0.12483199685811996,
+            "max_ms": 0.26150399446487427,
+            "stdev_ms": 0.021151696900791012
+          },
+          "pre-M48 baseline (channelfused, forced)": {
+            "mean_ms": 0.2866088002920151,
+            "median_ms": 0.28670400381088257,
+            "min_ms": 0.2804799973964691,
+            "max_ms": 0.31094399094581604,
+            "stdev_ms": 0.004636152758457364
+          }
+        },
+        "production_ms": 0.13131279963999987,
+        "pre_m48_baseline_ms": 0.2866088002920151,
+        "speedup": 2.1826417613345113
+      }
+    ],
+    "cin2_no_regression_check": {
+      "config": {
+        "N": 32,
+        "Cin": 2,
+        "Cout": 8,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "d_input_ms": {
+        "mean_ms": 0.45439680218696593,
+        "median_ms": 0.453344002366066,
+        "min_ms": 0.4511359930038452,
+        "max_ms": 0.48403200507164,
+        "stdev_ms": 0.005774060473531985
+      }
+    },
+    "end_to_end_backward_delta": {
+      "config": {
+        "N": 64,
+        "Cin": 1,
+        "Cout": 8,
+        "H": 28,
+        "W": 28,
+        "K": 3,
+        "S": 1,
+        "P": 1
+      },
+      "new_d_input_ms": 0.3614325334628423,
+      "old_d_input_ms": 0.7829770704110464,
+      "d_weight_ms": 2.1385898351669312,
+      "d_bias_ms": 0.2258634661634763,
+      "new_backward_total_ms": 2.7258858347932495,
+      "old_backward_total_ms": 3.1474303717414536,
+      "backward_total_speedup": 1.1546449713952078,
+      "new_forward_ms": 0.66860906680425,
+      "din_share_of_conv_bwd_new": 0.2658243305426412,
+      "din_share_of_conv_bwd_old": 0.32725565656925404
+    },
+    "mnist_fractions": {
+      "n_trials": 5,
+      "conv_bwd_frac_mean": 0.4695615222463478,
+      "conv_bwd_frac_range": [
+        0.4603918025863748,
+        0.47712981280469585
+      ]
+    },
+    "amdahl_pre_m48_fraction_m47_carried_over": 0.1175,
+    "fresh_dinput_fraction_old": 0.15366666426238693,
+    "fresh_dinput_fraction_new": 0.12482087729971893,
+    "amdahl_at_measured_speedups": {
+      "dInput (pre-M48 fraction, M47 carried-over)": {
+        "2.18x": 1.0679207387268228,
+        "2.26x": 1.070101091408414,
+        "2.48x": 1.075408698668748,
+        "2.53x": 1.0764926762331266
+      },
+      "dInput (pre-M48 fraction, fresh this-session reconstruction)": {
+        "2.18x": 1.0907235117155527,
+        "2.26x": 1.093700092280584,
+        "2.48x": 1.1009630449688974,
+        "2.53x": 1.1024493531038904
+      }
+    },
+    "amdahl_at_hypothetical_speedups": {
+      "dInput (pre-M48 fraction, M47 carried-over)": {
+        "1.25x": 1.0240655401945724,
+        "1.5x": 1.0407632263660016,
+        "2.0x": 1.0624169986719787
+      }
+    }
+  }
+}

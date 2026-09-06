@@ -2834,3 +2834,65 @@ CUDA rebuild (`_forge_cuda_kernels_sm_50.dll` deleted and recompiled in
 
 **Why no ADR.** Measurement and documentation only -- no production code,
 public API, or cross-cutting architectural decision was touched.
+
+### M48 — CUDA dInput low-Cin value assessment (ACCEPTED)
+
+Before designing any candidate, valued M47's selected target rather than
+assuming it: grepped `examples/`/`tests/`/`benchmarks/` for every real
+`Conv2d` shape (`Cin=1` matters to exactly one real Forge workload --
+`examples/mnist/model.py`'s first layer -- everywhere else it is test-only
+or a deliberate sweep point) and profiled the *current* M36 channel-fused
+kernel fresh at `Cin=1` (`nvcc -Xptxas -v`, a real `cudaOccupancyMax
+ActiveBlocksPerMultiprocessor` query) before writing any candidate code,
+per the brief's PROFILE-before-DESIGN discipline.
+
+**Root cause was more nuanced than M47's own hypothesis.** Shrinking the
+channel-fused kernel's accumulator array from `MAX_CIN_REG=16` to a
+`Cin=1`-specialized `CIN_MAX=1` template parameter only drops f32 register
+usage 54->48 and occupancy 4->5 blocks/SM (50%->62.5%) -- a real but modest
+gain, not the dramatic jump a pure register-pressure story predicts. The
+larger effect is per-thread instruction overhead: the unspecialized
+kernel's `#pragma unroll`ed accumulator loop still emits 16 runtime-checked
+iterations per `Cout*KH*KW` outer-loop step even when only the first is
+ever useful at `Cin=1`.
+
+**Candidate benchmark** (`benchmarks/m48_dinput_value_assessment.py`, new):
+a same-session, round-robin-interleaved, order-independent A/B (reproduced
+across 2 independent script runs) measured a **2.18x-2.53x isolated kernel
+speedup** across 4 `Cin=1` shapes (mnist_conv1 plus batch/spatial/stride
+variations), bit-exact correct against both the M36 channel-fused kernel
+and the original pre-M36 kernel. **End-to-end `conv2d_backward()` speedup
+at `mnist_conv1`: 1.155x-1.158x** (directly measured, not just
+Amdahl-projected). A fresh same-session fraction reconstruction (this
+session's own measured whole-step `conv2d backward` fraction times a fresh
+dInput-of-conv2d-backward ratio, before/after M48) put dInput at ~15.4% of
+the full training step pre-M48 (M47's own carried-over figure was 11.75%)
+-- **Amdahl projects ~1.09x-1.10x whole-training-step improvement** at the
+real measured kernel speedup, comparable to or better than M43's own
+accepted full-pipeline win (1.02x-1.04x/1.11x-1.24x).
+
+**Decision: ACCEPT.** `k_conv2d_backward_input_channelfused_lowcin<T,
+CIN_MAX>` (`kernels.cu`), instantiated at `CIN_MAX=1`, is now production --
+`CUDABackend.conv2d_backward`'s `cf_conv2d_backward_input_*` dispatches to
+it whenever `Cin<=CONV2D_DINPUT_LOWCIN_MAX_CIN` (1, the one real Forge
+shape it was measured at), ahead of the unchanged M36 channel-fused path
+(`Cin<=16`) and the M32 fallback (`Cin>16`, still unreached by any real
+Forge shape). No regression confirmed at `Cin=2` (still M36 channel-fused,
+byte-for-byte unchanged) or `mnist_conv2`'s own `Cin=16` shape. Production
+changes limited to exactly what the brief scoped: the new specialized
+kernel, its minimal launcher, and the minimal `Cin<=1` dispatch condition
+-- dWeight, dBias, Conv2d forward, `k_matmul`, the allocator, streams, and
+public APIs are all untouched.
+
+**Tests.** 29 new tests (`tests/test_cuda_conv2d_dinput_lowcin_candidate.py`:
+kernel-level parity against both the M36 channel-fused and original
+kernels across shape/stride/padding/kernel-size/dtype combinations,
+production dispatch correctness at and across the new `Cin<=1` boundary
+via the real `nn.Conv2d`/autograd API, f32/f64, explicit-stream and
+cross-stream correctness, repeated-use and allocator-reuse memory safety,
+and an occupancy-regression guard). Full suite: **1,579 passed** (1,550 +
+29), verified on a clean CUDA rebuild.
+
+**Why no ADR.** A new dispatch band within an existing, already-documented
+hybrid-dispatch pattern (Section 38's convention, extended identically by
+M36 itself) -- not a new architectural decision.

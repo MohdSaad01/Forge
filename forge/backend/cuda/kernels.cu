@@ -1154,22 +1154,101 @@ __global__ void k_conv2d_backward_input_channelfused(
     }
 }
 
-// Milestone 36 production dispatch: `k_conv2d_backward_input_channelfused`
-// (defined below, in the "dInput candidate kernels" section) measured
-// 1.0x-6.9x faster than `k_conv2d_backward_input` (this section, unchanged)
-// at every one of the 7 representative shapes/batch sizes -- see
-// `docs/performance/conv2d-backward-profiling.md`'s **Milestone 36** section
-// for the full before/after evidence. It requires `Cin <=
-// CONV2D_DINPUT_CHANNELFUSED_MAX_CIN` for correctness (its register-resident
-// accumulator array is sized and fully unrolled at that bound at compile
-// time -- see that kernel's own comment); every one of Forge's representative
-// shapes satisfies this (`Cin` in {1, 8, 16}), so this dispatch is exercised
-// by every one of them. A layer with `Cin` above the bound (never produced by
-// Forge's own `nn.Conv2d`/MNIST-scale test shapes, but not otherwise
-// prohibited by `Conv2d`'s public API) transparently falls back to the
-// unchanged, always-correct `k_conv2d_backward_input` -- Section 38's
-// sanctioned hybrid dispatch, kept to this one simple boundary check.
+// `k_conv2d_backward_input_channelfused_lowcin<T, CIN_MAX>` (Milestone 48) is
+// the identical kernel body above, but with the accumulator array's
+// compile-time bound turned into a real template parameter (`CIN_MAX`)
+// instead of the fixed `MAX_CIN_REG=16`. M47's fresh `Cin` sweep found the
+// kernel above drops from 29.0% of the practical compute ceiling at `Cin=16`
+// down to only 4.7% at `Cin=1` (`mnist_conv1`'s own real shape) -- M48
+// measured that most of this gap is *not* register pressure from the unused
+// accumulator slots (register count only drops 54->48 going from
+// `MAX_CIN_REG=16` to `CIN_MAX=1`, f32, `nvcc -Xptxas -v`; occupancy only
+// rises 4->5 blocks/SM), but per-thread instruction overhead: the `#pragma
+// unroll`ed `ci` loop above still emits 16 runtime-checked iterations
+// (`if (ci >= Cin) break`) at every one of `Cout*KH*KW` outer-loop steps even
+// when only the first is ever useful. Instantiated at `CIN_MAX=1` --
+// `mnist_conv1`'s exact value, Forge's only real `Cin=1` workload -- this
+// measured a reproducible, order-independent, bit-exact-correct 2.24x-2.62x
+// isolated speedup over the kernel above at `Cin=1` (see
+// `docs/performance/m48-dinput-value-assessment.md`), clearing this
+// codebase's acceptance bar by a wide margin. Promoted to production below,
+// dispatched only at `Cin<=CONV2D_DINPUT_LOWCIN_MAX_CIN=1` -- the one real
+// Forge shape it was measured at; a wider band was not tested and is not
+// claimed. `Cin` above that bound is unaffected and continues to reach the
+// unchanged `k_conv2d_backward_input_channelfused` above.
+
+template <typename T, int CIN_MAX>
+__global__ void k_conv2d_backward_input_channelfused_lowcin(
+    const T* grad_out, const T* w, T* grad_x,
+    int N, int Cin, int H, int W,
+    int Cout, int KH, int KW,
+    int SH, int SW, int PH, int PW,
+    int Hout, int Wout)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = static_cast<long long>(N) * H * W;
+    if (idx >= total) return;
+
+    int wi = static_cast<int>(idx % W);
+    long long t1 = idx / W;
+    int hi = static_cast<int>(t1 % H);
+    int n = static_cast<int>(t1 / H);
+
+    T acc[CIN_MAX];
+#pragma unroll
+    for (int ci = 0; ci < CIN_MAX; ++ci) acc[ci] = static_cast<T>(0);
+
+    for (int kh = 0; kh < KH; ++kh) {
+        int t = hi + PH - kh;
+        if (t % SH != 0) continue;
+        int ho = t / SH;
+        if (ho < 0 || ho >= Hout) continue;
+        for (int kw_ = 0; kw_ < KW; ++kw_) {
+            int tw = wi + PW - kw_;
+            if (tw % SW != 0) continue;
+            int wo = tw / SW;
+            if (wo < 0 || wo >= Wout) continue;
+            for (int co = 0; co < Cout; ++co) {
+                long long g_idx = ((static_cast<long long>(n) * Cout + co) * Hout + ho) * Wout + wo;
+                T g = grad_out[g_idx];  // read once, reused across every ci below
+                long long w_base = static_cast<long long>(co) * Cin * KH * KW + kh * KW + kw_;
+#pragma unroll
+                for (int ci = 0; ci < CIN_MAX; ++ci) {
+                    if (ci >= Cin) break;
+                    acc[ci] += g * w[w_base + static_cast<long long>(ci) * KH * KW];
+                }
+            }
+        }
+    }
+
+    long long out_base = static_cast<long long>(n) * Cin * H * W + static_cast<long long>(hi) * W + wi;
+#pragma unroll
+    for (int ci = 0; ci < CIN_MAX; ++ci) {
+        if (ci >= Cin) break;
+        grad_x[out_base + static_cast<long long>(ci) * H * W] = acc[ci];
+    }
+}
+
+// Milestone 36 production dispatch (extended by Milestone 48):
+// `k_conv2d_backward_input_channelfused` measured 1.0x-6.9x faster than
+// `k_conv2d_backward_input` (this section, unchanged) at every one of the 7
+// representative shapes/batch sizes -- see `docs/performance/conv2d-
+// backward-profiling.md`'s **Milestone 36** section for the full before/
+// after evidence. It requires `Cin <= CONV2D_DINPUT_CHANNELFUSED_MAX_CIN`
+// for correctness (its register-resident accumulator array is sized and
+// fully unrolled at that bound at compile time -- see that kernel's own
+// comment); every one of Forge's representative shapes satisfies this
+// (`Cin` in {1, 8, 16}), so this dispatch is exercised by every one of them.
+// A layer with `Cin` above the bound (never produced by Forge's own
+// `nn.Conv2d`/MNIST-scale test shapes, but not otherwise prohibited by
+// `Conv2d`'s public API) transparently falls back to the unchanged,
+// always-correct `k_conv2d_backward_input` -- Section 38's sanctioned hybrid
+// dispatch, kept to this one simple boundary check. Milestone 48 adds one
+// more, narrower band ahead of it: `Cin<=CONV2D_DINPUT_LOWCIN_MAX_CIN` (1)
+// reaches `k_conv2d_backward_input_channelfused_lowcin<T,1>` instead --
+// see that kernel's own comment above for the measured justification.
 constexpr int CONV2D_DINPUT_CHANNELFUSED_MAX_CIN = 16;
+constexpr int CONV2D_DINPUT_LOWCIN_MAX_CIN = 1;
 
 #define CONV2D_BACKWARD_INPUT_LAUNCHER(TYPE, SUFFIX)                                      \
     extern "C" __declspec(dllexport) int cf_conv2d_backward_input_##SUFFIX(               \
@@ -1177,7 +1256,13 @@ constexpr int CONV2D_DINPUT_CHANNELFUSED_MAX_CIN = 16;
         int N, int Cin, int H, int W, int Cout, int KH, int KW,                           \
         int SH, int SW, int PH, int PW, int Hout, int Wout, void* stream) {               \
         cudaStream_t s = (cudaStream_t)stream;                                            \
-        if (Cin <= CONV2D_DINPUT_CHANNELFUSED_MAX_CIN) {                                  \
+        if (Cin <= CONV2D_DINPUT_LOWCIN_MAX_CIN) {                                        \
+            long long total = static_cast<long long>(N) * H * W;                          \
+            int blocks, threads;                                                          \
+            launch_config(total, blocks, threads);                                        \
+            k_conv2d_backward_input_channelfused_lowcin<TYPE, 1><<<blocks, threads, 0, s>>>( \
+                grad_out, w, grad_x, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout); \
+        } else if (Cin <= CONV2D_DINPUT_CHANNELFUSED_MAX_CIN) {                           \
             long long total = static_cast<long long>(N) * H * W;                          \
             int blocks, threads;                                                          \
             launch_config(total, blocks, threads);                                        \
@@ -1491,6 +1576,53 @@ __global__ void k_conv2d_backward_input_warp(
 
 CONV2D_BACKWARD_INPUT_WARP_LAUNCHER(float, f32)
 CONV2D_BACKWARD_INPUT_WARP_LAUNCHER(double, f64)
+
+// -- Milestone 48: low-Cin-specialized channel-fused kernel, forced launcher --
+//
+// `k_conv2d_backward_input_channelfused_lowcin<T, CIN_MAX>` is now production
+// (defined earlier in this file, immediately after `k_conv2d_backward_input_
+// channelfused`, alongside the dispatch it is promoted into -- see that
+// kernel's own comment for the measured justification). Only its
+// profiling-only *forced* launcher (bypassing the `Cin`-based dispatch, for
+// direct A/B comparison against the unspecialized channel-fused kernel at
+// `Cin=1` regardless of which path production would pick) lives here,
+// mirroring Candidate B's (M36) own forced launcher above. Used by
+// `benchmarks/m48_dinput_value_assessment.py` and
+// `tests/test_cuda_conv2d_dinput_lowcin_candidate.py`.
+
+#define CONV2D_BACKWARD_INPUT_CHANNELFUSED_LOWCIN1_LAUNCHER(TYPE, SUFFIX)                       \
+    extern "C" __declspec(dllexport) int cf_conv2d_backward_input_channelfused_lowcin1_##SUFFIX( \
+        const TYPE* grad_out, const TYPE* w, TYPE* grad_x,                               \
+        int N, int Cin, int H, int W, int Cout, int KH, int KW,                          \
+        int SH, int SW, int PH, int PW, int Hout, int Wout, void* stream) {              \
+        long long total = static_cast<long long>(N) * H * W;                             \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_conv2d_backward_input_channelfused_lowcin<TYPE, 1><<<blocks, threads, 0, (cudaStream_t)stream>>>( \
+            grad_out, w, grad_x, N, Cin, H, W, Cout, KH, KW, SH, SW, PH, PW, Hout, Wout); \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+CONV2D_BACKWARD_INPUT_CHANNELFUSED_LOWCIN1_LAUNCHER(float, f32)
+CONV2D_BACKWARD_INPUT_CHANNELFUSED_LOWCIN1_LAUNCHER(double, f64)
+
+// Real `cudaOccupancyMaxActiveBlocksPerMultiprocessor` queries (not a
+// hand-derived register-arithmetic estimate) for the production
+// channel-fused kernel and this M48 low-Cin candidate, both at their actual
+// launch configuration (256 threads/block, 0 shared memory). Diagnostic-only
+// -- touches no kernel dispatch or production code path.
+
+extern "C" __declspec(dllexport) int cf_occupancy_conv2d_backward_input_channelfused_f32(
+    int* max_active_blocks) {
+    return static_cast<int>(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        max_active_blocks, k_conv2d_backward_input_channelfused<float>, 256, 0));
+}
+
+extern "C" __declspec(dllexport) int cf_occupancy_conv2d_backward_input_channelfused_lowcin1_f32(
+    int* max_active_blocks) {
+    return static_cast<int>(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        max_active_blocks, (k_conv2d_backward_input_channelfused_lowcin<float, 1>), 256, 0));
+}
 
 // -- Conv2d backward: weight and bias (Milestone 21: block-per-output-element,
 //    shared-memory tree reduction) ------------------------------------------
