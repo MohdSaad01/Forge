@@ -1484,3 +1484,59 @@ timing-setup bug), via a different mechanism (clock drift vs. buffer
 reuse). Production dispatch, the M21 dispatch threshold, and
 `k_conv2d_backward_weight_reduce` are byte-for-byte unchanged. Full report:
 `docs/performance/conv2d-backward-profiling.md`'s **Milestone 46** section.
+
+## Milestone 47: fresh post-M46 CUDA bottleneck re-characterization (measurement-only)
+
+### New: `benchmarks/m47_bottleneck_recharacterization.py`
+
+Re-measures the whole CUDA training pipeline fresh against the current
+(post-M43, unchanged by M45/M46) production dispatch, reusing M44's own
+`_profile_shape_full`/sweep functions, M43's `_candidate_b_comparison`,
+and M42's forward-sweep/memory functions directly. Adds exactly one new
+measurement no prior milestone produced: `_below256_three_way_
+reassessment` — a single `_interleaved_multi_time` round-robin call per
+shape that times production together with *every* M45 warp-shuffle
+configuration and *every* M46 grid-split configuration at once (each
+prior milestone only ever compared its own candidate against production
+in isolation). Also re-runs M46's real `cudaOccupancyMaxActiveBlocksPer
+Multiprocessor` query fresh.
+
+    python -m benchmarks.m47_bottleneck_recharacterization
+    python -m benchmarks.pipeline_profile --output benchmarks/results/m47_pipeline_profile.json
+
+### Measured example (940MX, real hardware, this session)
+
+**Below-256 dWeight formally reclassified as a practical optimization
+floor / deprioritized.** The fresh three-way reassessment found the best
+result across *both* rejected techniques (always a grid-split
+configuration, never warp-shuffle) is only 1.09x-1.18x, short of the
+1.15x bar at `mnist_conv1`'s own real shape (1.09x); a fresh occupancy
+re-query reproduced M46's identical-occupancy finding exactly (5
+blocks/SM, 62.5%, production and grid-split alike). Four independent
+angles (M21, M33, M45, M46) have now been tried against this kernel
+without a milestone-clearing win.
+
+**New measurement-quality finding**: sustained CUDA benchmarking over
+many minutes in one session causes cumulative thermal drift far larger
+than the within-call drift M46 already documented — the same kernel/shape
+measured late in a long session ran up to ~2.5-3x slower than early in
+that same session (e.g. `batch_128` forward: 91.6ms in the main script,
+reproducing at 21.8-41.0ms across 3 standalone re-runs immediately after;
+an in-script M43 re-confirmation drew an anomalous 3.877x "speedup" that
+3 independent re-runs could only reproduce at 1.14-1.19x, matching M43/
+M44's own history). Every headline number in the M47 report was
+independently re-verified or averaged across repeated trials in response.
+
+With below-256 dWeight set aside, dInput (11.75% of the full step),
+conv2d forward (11.9%), and dWeight `blocks_y==1` (12.7%, just optimized
+in M43 and reconfirmed unregressed by 3 fresh interleaved re-runs) are
+now close together — no single component dominates the way below-256
+dWeight did in M42/M44. **M48 is recommended to target the M36 channel-
+fused dInput kernel's low-`Cin` regime** (`Cin=1`, `mnist_conv1`'s own
+real shape): the worst-roofline-efficiency live candidate measured this
+session (4.7% of the practical compute ceiling, consistent with M44's own
+8.3% finding at this exact shape), with a genuinely untried structural
+angle — M36's channel-fusion benefit requires multiple `Cin` accumulators
+to amortize its register cost, and degenerates to none of that benefit at
+`Cin=1`. Full 19-section report: `docs/performance/
+m47-bottleneck-recharacterization.md`.

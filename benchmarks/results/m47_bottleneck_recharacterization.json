@@ -1,0 +1,3088 @@
+{
+  "environment": {
+    "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+    "machine": "AMD64",
+    "numpy_version": "2.3.2",
+    "forge_version": "0.1.0",
+    "forge_commit": "d1fe3b7093c0d7f25ec04be89a9f0e006c3080d3",
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "gpu_name": "NVIDIA GeForce 940MX",
+      "driver_version": "582.53",
+      "memory_total": "2048 MiB",
+      "compute_capability": "5.0"
+    }
+  },
+  "profile": {
+    "hardware_ceilings": {
+      "theoretical_specs": {
+        "gpu": "NVIDIA GeForce 940MX (GM108, Maxwell) -- public specification, not runtime-queried",
+        "sm_count": 3,
+        "cuda_cores_per_sm": 128,
+        "cuda_cores_total": 384,
+        "memory_bus_bits": 64,
+        "sm_clock_mhz": 1241.0,
+        "mem_clock_mhz": 1001.0,
+        "theoretical_fp32_gflops": 953.088,
+        "theoretical_memory_gbps": 16.016,
+        "note": "Derived from public GM108 core-count specs + this run's nvidia-smi max clocks. Not an achievable Forge target -- see practical_ceilings for measured numbers."
+      },
+      "compute_ceiling_sweep": {
+        "sweep": [
+          {
+            "dim": 512,
+            "timing": {
+              "mean_s": 0.0025666731039683025,
+              "median_s": 0.0025669760704040527,
+              "min_s": 0.0025584321022033693,
+              "max_s": 0.0025764799118041994,
+              "stdev_s": 4.653883762217756e-06
+            },
+            "achieved_gflops": 104.58498029413063
+          },
+          {
+            "dim": 1024,
+            "timing": {
+              "mean_s": 0.03086477254231771,
+              "median_s": 0.032462879180908205,
+              "min_s": 0.021288864135742186,
+              "max_s": 0.043843711853027344,
+              "stdev_s": 0.008765031251911156
+            },
+            "achieved_gflops": 69.57717394662971
+          },
+          {
+            "dim": 2048,
+            "timing": {
+              "mean_s": 0.23928353881835937,
+              "median_s": 0.18198255920410156,
+              "min_s": 0.17664710998535157,
+              "max_s": 0.5686846923828125,
+              "stdev_s": 0.12486608731915405
+            },
+            "achieved_gflops": 71.79712097555225
+          }
+        ],
+        "practical_compute_gflops": 104.58498029413063,
+        "best_dim": 512
+      },
+      "bandwidth_ceiling_measurement": {
+        "elements": 20000000,
+        "bytes_moved": 240000000,
+        "timing": {
+          "mean_s": 0.015904529062906902,
+          "median_s": 0.015902688026428222,
+          "min_s": 0.015887871742248535,
+          "max_s": 0.015924415588378905,
+          "stdev_s": 1.0098050739159113e-05
+        },
+        "practical_bandwidth_gbps": 15.090041273824093
+      },
+      "ceilings": {
+        "practical_compute_gflops": 104.58498029413063,
+        "practical_bandwidth_gbps": 15.090041273824093
+      }
+    },
+    "ptxas": {
+      "per_kernel_lines": {
+        "k_conv2d_forward": [
+          "ptxas info    : Used 55 registers, used 0 barriers, 408 bytes cmem[0], 4 bytes cmem[2]",
+          "ptxas info    : Used 48 registers, used 0 barriers, 408 bytes cmem[0], 4 bytes cmem[2]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 48 registers, used 0 barriers, 376 bytes cmem[0], 140 bytes cmem[2]",
+          "ptxas info    : Used 30 registers, used 0 barriers, 376 bytes cmem[0], 24 bytes cmem[2]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 368 bytes cmem[0], 208 bytes cmem[2]",
+          "ptxas info    : Used 29 registers, used 0 barriers, 368 bytes cmem[0], 56 bytes cmem[2]",
+          "ptxas info    : Used 20 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 30 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 12 registers, used 1 barriers, 344 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 1 barriers, 344 bytes cmem[0]"
+        ],
+        "k_conv2d_output_permute": [
+          "ptxas info    : Used 31 registers, used 0 barriers, 364 bytes cmem[0]",
+          "ptxas info    : Used 15 registers, used 0 barriers, 352 bytes cmem[0], 20 bytes cmem[2]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 392 bytes cmem[0]",
+          "ptxas info    : Used 30 registers, used 0 barriers, 392 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 384 bytes cmem[0]",
+          "ptxas info    : Used 30 registers, used 0 barriers, 384 bytes cmem[0]"
+        ],
+        "k_conv2d_forward_halffused_gemm": [
+          "ptxas info    : Used 40 registers, used 1 barriers, 4096 bytes smem, 408 bytes cmem[0]",
+          "ptxas info    : Used 38 registers, used 1 barriers, 2048 bytes smem, 408 bytes cmem[0]"
+        ],
+        "k_matmul": [
+          "ptxas info    : Used 32 registers, used 1 barriers, 4096 bytes smem, 356 bytes cmem[0]",
+          "ptxas info    : Used 30 registers, used 1 barriers, 2048 bytes smem, 356 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 344 bytes cmem[0]",
+          "ptxas info    : Used 26 registers, used 0 barriers, 416 bytes cmem[0], 48 bytes cmem[2]",
+          "ptxas info    : Used 24 registers, used 0 barriers, 416 bytes cmem[0], 16 bytes cmem[2]",
+          "ptxas info    : Used 10 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 26 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 16 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 18 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 8 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 22 registers, used 0 barriers, 352 bytes cmem[0], 36 bytes cmem[2]",
+          "ptxas info    : Used 14 registers, used 0 barriers, 352 bytes cmem[0], 12 bytes cmem[2]",
+          "ptxas info    : Used 9 registers, used 0 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 20 registers, used 0 barriers, 344 bytes cmem[0], 104 bytes cmem[2]",
+          "ptxas info    : Used 9 registers, used 0 barriers, 344 bytes cmem[0], 44 bytes cmem[2]",
+          "ptxas info    : Used 16 registers, used 0 barriers, 344 bytes cmem[0], 112 bytes cmem[2]",
+          "ptxas info    : Used 9 registers, used 0 barriers, 344 bytes cmem[0], 12 bytes cmem[2]",
+          "ptxas info    : Used 10 registers, used 0 barriers, 344 bytes cmem[0]",
+          "ptxas info    : Used 19 registers, used 0 barriers, 364 bytes cmem[0]"
+        ],
+        "k_matmul_splitk": [
+          "ptxas info    : Used 32 registers, used 1 barriers, 4096 bytes smem, 360 bytes cmem[0]",
+          "ptxas info    : Used 27 registers, used 1 barriers, 2048 bytes smem, 360 bytes cmem[0]",
+          "ptxas info    : Used 53 registers, used 1 barriers, 4096 bytes smem, 400 bytes cmem[0]",
+          "ptxas info    : Used 50 registers, used 1 barriers, 2048 bytes smem, 400 bytes cmem[0]",
+          "ptxas info    : Used 49 registers, used 1 barriers, 4096 bytes smem, 396 bytes cmem[0]",
+          "ptxas info    : Used 47 registers, used 1 barriers, 2048 bytes smem, 396 bytes cmem[0]"
+        ],
+        "k_im2col_conv2d": [
+          "ptxas info    : Used 28 registers, used 1 barriers, 16 bytes smem, 404 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 348 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 384 bytes cmem[0]",
+          "ptxas info    : Used 37 registers, used 1 barriers, 352 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 1 barriers, 352 bytes cmem[0]"
+        ],
+        "k_im2col_conv2d_smem": [
+          "ptxas info    : Used 34 registers, used 1 barriers, 388 bytes cmem[0]"
+        ],
+        "k_conv2d_backward_input_channelfused": [
+          "ptxas info    : Used 70 registers, used 0 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 48 registers, used 0 barriers, 512 bytes cumulative stack size, 396 bytes cmem[0]",
+          "ptxas info    : Used 54 registers, used 0 barriers, 396 bytes cmem[0]"
+        ],
+        "k_conv2d_backward_weight_reduce": [
+          "ptxas info    : Used 46 registers, used 1 barriers, 400 bytes cmem[0]",
+          "ptxas info    : Used 48 registers, used 1 barriers, 400 bytes cmem[0]",
+          "ptxas info    : Used 48 registers, used 0 barriers, 412 bytes cmem[0], 4 bytes cmem[2]",
+          "ptxas info    : Used 47 registers, used 0 barriers, 408 bytes cmem[0]",
+          "ptxas info    : Used 46 registers, used 0 barriers, 408 bytes cmem[0]",
+          "ptxas info    : Used 53 registers, used 0 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 45 registers, used 1 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 47 registers, used 0 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 42 registers, used 1 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 53 registers, used 0 barriers, 408 bytes cmem[0]",
+          "ptxas info    : Used 48 registers, used 0 barriers, 408 bytes cmem[0]",
+          "ptxas info    : Used 128 registers, used 1 barriers, 256 bytes cumulative stack size, 272 bytes smem, 396 bytes cmem[0]",
+          "ptxas info    : Used 126 registers, used 1 barriers, 256 bytes cumulative stack size, 272 bytes smem, 396 bytes cmem[0]",
+          "ptxas info    : Used 48 registers, used 0 barriers, 512 bytes cumulative stack size, 396 bytes cmem[0]"
+        ],
+        "k_dweight_halffused_gemm_splitk": [
+          "ptxas info    : Used 52 registers, used 1 barriers, 4096 bytes smem, 400 bytes cmem[0]",
+          "ptxas info    : Used 32 registers, used 0 barriers, 348 bytes cmem[0]",
+          "ptxas info    : Used 49 registers, used 1 barriers, 2048 bytes smem, 400 bytes cmem[0]",
+          "ptxas info    : Used 54 registers, used 1 barriers, 4096 bytes smem, 400 bytes cmem[0]"
+        ],
+        "k_conv2d_grad_output_permute": [
+          "ptxas info    : Used 29 registers, used 0 barriers, 352 bytes cmem[0]"
+        ],
+        "k_conv2d_backward_weight_warp": [
+          "ptxas info    : Used 47 registers, used 0 barriers, 408 bytes cmem[0]",
+          "ptxas info    : Used 46 registers, used 0 barriers, 408 bytes cmem[0]"
+        ],
+        "k_conv2d_backward_weight_warp_subgroup": [
+          "ptxas info    : Used 48 registers, used 0 barriers, 412 bytes cmem[0], 4 bytes cmem[2]"
+        ],
+        "k_conv2d_backward_weight": [
+          "ptxas info    : Used 53 registers, used 0 barriers, 396 bytes cmem[0]",
+          "ptxas info    : Used 47 registers, used 0 barriers, 396 bytes cmem[0]"
+        ],
+        "k_conv2d_backward_weight_reduce_gridsplit": [
+          "ptxas info    : Used 46 registers, used 1 barriers, 400 bytes cmem[0]",
+          "ptxas info    : Used 48 registers, used 1 barriers, 400 bytes cmem[0]"
+        ]
+      }
+    },
+    "shapes": [
+      {
+        "name": "mnist_conv1",
+        "config": {
+          "N": 64,
+          "Cin": 1,
+          "Cout": 8,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 7225344,
+          "blocks_x": null,
+          "path": "cf_conv2d_forward (M15 per-thread, unchanged)"
+        },
+        "dweight_dispatch": {
+          "weight_elements": 72,
+          "blocks_y": null,
+          "path": "cf_conv2d_backward_weight (M21 per-thread/block-reduce)"
+        },
+        "dinput_dispatch": {
+          "Cin": 1,
+          "path": "k_conv2d_backward_input_channelfused (M36)"
+        },
+        "forward_ms": {
+          "mean_ms": 0.6687295993169149,
+          "median_ms": 0.6678400039672852,
+          "min_ms": 0.6670079827308655,
+          "max_ms": 0.6945279836654663,
+          "stdev_ms": 0.004897770420834724
+        },
+        "forward_stages_ms": {},
+        "real_conv2d_call_ms": {
+          "mean_ms": 0.8808618664741517,
+          "median_ms": 0.870639979839325,
+          "min_ms": 0.8253759741783142,
+          "max_ms": 1.0169600248336792,
+          "stdev_ms": 0.053379877989090475
+        },
+        "d_input_ms": {
+          "mean_ms": 0.7836885392665863,
+          "median_ms": 0.7826720178127289,
+          "min_ms": 0.7786239981651306,
+          "max_ms": 0.8150399923324585,
+          "stdev_ms": 0.0061160584877906765
+        },
+        "d_weight_ms": {
+          "mean_ms": 2.1082176208496093,
+          "median_ms": 2.0855040550231934,
+          "min_ms": 2.0771520137786865,
+          "max_ms": 2.1729280948638916,
+          "stdev_ms": 0.03848840508009918
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.21796586662530898,
+          "median_ms": 0.21651199460029602,
+          "min_ms": 0.21593600511550903,
+          "max_ms": 0.246848002076149,
+          "stdev_ms": 0.005569957326618485
+        },
+        "dweight_stages_ms": {},
+        "backward_total_ms": 3.1098720267415043,
+        "real_conv2d_backward_call_ms": {
+          "mean_ms": 3.867570145924886,
+          "median_ms": 3.815455913543701,
+          "min_ms": 3.653183937072754,
+          "max_ms": 4.360544204711914,
+          "stdev_ms": 0.15472375565822558
+        },
+        "d_input_pct_of_backward": 25.200025355632658,
+        "d_weight_pct_of_backward": 67.7911374719358,
+        "d_bias_pct_of_backward": 7.00883717243155,
+        "roofline_forward": {
+          "achieved_gflops": 10.804582311565765,
+          "achieved_gbps": 2.7015762452348553,
+          "arithmetic_intensity": 3.999362346564642,
+          "fraction_of_compute_ceiling": 0.10330912030751824,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 17.9% of the 60.35 GFLOP/s roofline ceiling achieved, with elapsed time (668.73us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        },
+        "roofline_dinput": {
+          "achieved_gflops": 9.219662707791832,
+          "achieved_gbps": 2.3052831698811445,
+          "arithmetic_intensity": 3.999362346564642,
+          "fraction_of_compute_ceiling": 0.08815474919881248,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 15.3% of the 60.35 GFLOP/s roofline ceiling achieved, with elapsed time (783.69us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        },
+        "roofline_dweight": {
+          "achieved_gflops": 3.427228730347199,
+          "achieved_gbps": 0.8569437908748397,
+          "arithmetic_intensity": 3.999362346564642,
+          "fraction_of_compute_ceiling": 0.032769798499828535,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 5.7% of the 60.35 GFLOP/s roofline ceiling achieved, with elapsed time (2108.22us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "mnist_conv2",
+        "config": {
+          "N": 64,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 13,
+        "Wout": 13,
+        "forward_dispatch": {
+          "total_flops": 24920064,
+          "blocks_x": 1,
+          "path": "conv2d_forward_halffused_gemm (M41 Candidate B)"
+        },
+        "dweight_dispatch": {
+          "weight_elements": 1152,
+          "blocks_y": 1,
+          "path": "dweight_halffused_gemm_splitk_tworeduce (M43, permute + partial-GEMM + reduce)"
+        },
+        "dinput_dispatch": {
+          "Cin": 8,
+          "path": "k_conv2d_backward_input_channelfused (M36)"
+        },
+        "forward_ms": {
+          "mean_ms": 0.946506667137146,
+          "median_ms": 0.8980160057544708,
+          "min_ms": 0.856607973575592,
+          "max_ms": 1.3081920146942139,
+          "stdev_ms": 0.1035765027152647
+        },
+        "forward_stages_ms": {},
+        "real_conv2d_call_ms": {
+          "mean_ms": 0.8751445333162944,
+          "median_ms": 0.8619039952754974,
+          "min_ms": 0.7685760259628296,
+          "max_ms": 1.146016001701355,
+          "stdev_ms": 0.07338273803187295
+        },
+        "d_input_ms": {
+          "mean_ms": 0.8880853295326233,
+          "median_ms": 0.8866240084171295,
+          "min_ms": 0.8762239813804626,
+          "max_ms": 0.9197760224342346,
+          "stdev_ms": 0.00792026937305081
+        },
+        "d_weight_ms": {
+          "mean_ms": 1.8094474417623134
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.09398293321331343,
+          "median_ms": 0.0934240035712719,
+          "min_ms": 0.09030400216579437,
+          "max_ms": 0.12240000069141388,
+          "stdev_ms": 0.005551903809358767
+        },
+        "dweight_stages_ms": {
+          "permute_ms": {
+            "mean_ms": 0.9691391738752524,
+            "median_ms": 0.117552001029253,
+            "min_ms": 0.11612799763679504,
+            "max_ms": 21.950815200805664,
+            "stdev_ms": 3.9659858123538463
+          },
+          "partial_gemm_ms": {
+            "mean_ms": 0.8098218679428101,
+            "median_ms": 0.8082720041275024,
+            "min_ms": 0.8002880215644836,
+            "max_ms": 0.83651202917099,
+            "stdev_ms": 0.007603762033901674
+          },
+          "reduce_ms": {
+            "mean_ms": 0.030486399944250783,
+            "median_ms": 0.007376000052317977,
+            "min_ms": 0.0063680000603199005,
+            "max_ms": 0.6963199973106384,
+            "stdev_ms": 0.12575700559856393
+          }
+        },
+        "backward_total_ms": 2.79151570450825,
+        "real_conv2d_backward_call_ms": {
+          "mean_ms": 2.8001248121261595,
+          "median_ms": 2.6834880113601685,
+          "min_ms": 2.4571518898010254,
+          "max_ms": 3.6735360622406006,
+          "stdev_ms": 0.2989497632581187
+        },
+        "d_input_pct_of_backward": 31.813732163440125,
+        "d_weight_pct_of_backward": 64.8195329454922,
+        "d_bias_pct_of_backward": 3.366734891067695,
+        "roofline_forward": {
+          "achieved_gflops": 26.328461135276036,
+          "achieved_gbps": 1.101887642434198,
+          "arithmetic_intensity": 23.8939617083947,
+          "fraction_of_compute_ceiling": 0.25174227753575057,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 25.2% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (946.51us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        },
+        "roofline_dinput": {
+          "achieved_gflops": 28.060438756616772,
+          "achieved_gbps": 1.1743736387908523,
+          "arithmetic_intensity": 23.8939617083947,
+          "fraction_of_compute_ceiling": 0.26830275894015293,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 26.8% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (888.09us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        },
+        "roofline_dweight": {
+          "achieved_gflops": 13.77219554701687,
+          "achieved_gbps": 0.5763881149176808,
+          "arithmetic_intensity": 23.8939617083947,
+          "fraction_of_compute_ceiling": 0.13168425818204962,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 13.2% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (1809.45us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "large_channel",
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 462422016,
+          "blocks_x": 2,
+          "path": "conv2d_forward_halffused_gemm (M41 Candidate B)"
+        },
+        "dweight_dispatch": {
+          "weight_elements": 4608,
+          "blocks_y": 2,
+          "path": "dweight_im2col_smem_gemm_splitk (M39, im2col[-smem] + permute + split-K GEMM)"
+        },
+        "dinput_dispatch": {
+          "Cin": 16,
+          "path": "k_conv2d_backward_input_channelfused (M36)"
+        },
+        "forward_ms": {
+          "mean_ms": 10.158374373118082,
+          "median_ms": 10.223983764648438,
+          "min_ms": 9.657888412475586,
+          "max_ms": 10.925215721130371,
+          "stdev_ms": 0.2873576190321259
+        },
+        "forward_stages_ms": {},
+        "real_conv2d_call_ms": {
+          "mean_ms": 10.28451623916626,
+          "median_ms": 10.251664161682129,
+          "min_ms": 10.092063903808594,
+          "max_ms": 10.71724796295166,
+          "stdev_ms": 0.14589374274241823
+        },
+        "d_input_ms": {
+          "mean_ms": 13.405649058024089,
+          "median_ms": 12.90558385848999,
+          "min_ms": 12.825216293334961,
+          "max_ms": 23.887903213500977,
+          "stdev_ms": 1.9911049589358356
+        },
+        "d_weight_ms": {
+          "mean_ms": 17.97238291501999
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.7218432068824768,
+          "median_ms": 0.7214080095291138,
+          "min_ms": 0.7145280241966248,
+          "max_ms": 0.7460160255432129,
+          "stdev_ms": 0.005977797404609511
+        },
+        "dweight_stages_ms": {
+          "permute_ms": {
+            "mean_ms": 1.0216970642407734,
+            "median_ms": 1.0207040309906006,
+            "min_ms": 1.0201280117034912,
+            "max_ms": 1.0477759838104248,
+            "stdev_ms": 0.004945945601312072
+          },
+          "im2col_ms": {
+            "mean_ms": 4.127320512135824,
+            "median_ms": 4.125247955322266,
+            "min_ms": 4.065695762634277,
+            "max_ms": 4.2208638191223145,
+            "stdev_ms": 0.06070077171050924
+          },
+          "splitk_gemm_ms": {
+            "mean_ms": 12.823365338643391,
+            "median_ms": 12.475951671600342,
+            "min_ms": 5.211359977722168,
+            "max_ms": 41.34947204589844,
+            "stdev_ms": 6.586076484373497
+          }
+        },
+        "backward_total_ms": 32.099875179926556,
+        "real_conv2d_backward_call_ms": {
+          "mean_ms": 41.193063481648764,
+          "median_ms": 39.56051063537598,
+          "min_ms": 24.853759765625,
+          "max_ms": 77.46502685546875,
+          "stdev_ms": 12.71490659971281
+        },
+        "d_input_pct_of_backward": 41.76230898993409,
+        "d_weight_pct_of_backward": 55.98894953416797,
+        "d_bias_pct_of_backward": 2.2487414758979396,
+        "roofline_forward": {
+          "achieved_gflops": 45.521261475034706,
+          "achieved_gbps": 0.9501740776105378,
+          "arithmetic_intensity": 47.90833863781031,
+          "fraction_of_compute_ceiling": 0.4352562035869063,
+          "classification": "compute_bound",
+          "note": "AI=47.908 is at/right of the ridge point (6.931) -- compute, not bandwidth, sets this op's ceiling."
+        },
+        "roofline_dinput": {
+          "achieved_gflops": 34.49456374685659,
+          "achieved_gbps": 0.7200116874775684,
+          "arithmetic_intensity": 47.90833863781031,
+          "fraction_of_compute_ceiling": 0.3298233039758238,
+          "classification": "compute_bound",
+          "note": "AI=47.908 is at/right of the ridge point (6.931) -- compute, not bandwidth, sets this op's ceiling."
+        },
+        "roofline_dweight": {
+          "achieved_gflops": 25.729588457273625,
+          "achieved_gbps": 0.5370586663793695,
+          "arithmetic_intensity": 47.90833863781031,
+          "fraction_of_compute_ceiling": 0.24601609509236178,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 24.6% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (17972.38us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "large_spatial",
+        "config": {
+          "N": 32,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 56,
+          "W": 56,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 56,
+        "Wout": 56,
+        "forward_dispatch": {
+          "total_flops": 231211008,
+          "blocks_x": 1,
+          "path": "conv2d_forward_halffused_gemm (M41 Candidate B)"
+        },
+        "dweight_dispatch": {
+          "weight_elements": 1152,
+          "blocks_y": 1,
+          "path": "dweight_halffused_gemm_splitk_tworeduce (M43, permute + partial-GEMM + reduce)"
+        },
+        "dinput_dispatch": {
+          "Cin": 8,
+          "path": "k_conv2d_backward_input_channelfused (M36)"
+        },
+        "forward_ms": {
+          "mean_ms": 6.425066661834717,
+          "median_ms": 6.2975358963012695,
+          "min_ms": 5.882688045501709,
+          "max_ms": 8.121248245239258,
+          "stdev_ms": 0.5501131493609949
+        },
+        "forward_stages_ms": {},
+        "real_conv2d_call_ms": {
+          "mean_ms": 6.689630953470866,
+          "median_ms": 6.3954079151153564,
+          "min_ms": 5.983263969421387,
+          "max_ms": 9.239935874938965,
+          "stdev_ms": 0.8672835627760026
+        },
+        "d_input_ms": {
+          "mean_ms": 7.703947734832764,
+          "median_ms": 7.713119983673096,
+          "min_ms": 7.632832050323486,
+          "max_ms": 7.762527942657471,
+          "stdev_ms": 0.04134527559038869
+        },
+        "d_weight_ms": {
+          "mean_ms": 9.322923757880925
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.7675264020760854,
+          "median_ms": 0.7671040296554565,
+          "min_ms": 0.7624959945678711,
+          "max_ms": 0.7923840284347534,
+          "stdev_ms": 0.005173003870073409
+        },
+        "dweight_stages_ms": {
+          "permute_ms": {
+            "mean_ms": 1.033733332157135,
+            "median_ms": 1.0325279831886292,
+            "min_ms": 1.031775951385498,
+            "max_ms": 1.0641920566558838,
+            "stdev_ms": 0.005798419391179746
+          },
+          "partial_gemm_ms": {
+            "mean_ms": 8.267806959152221,
+            "median_ms": 7.57696008682251,
+            "min_ms": 7.423647880554199,
+            "max_ms": 18.02889633178711,
+            "stdev_ms": 2.5563697406121255
+          },
+          "reduce_ms": {
+            "mean_ms": 0.02138346657156944,
+            "median_ms": 0.007055999943986535,
+            "min_ms": 0.006624000146985054,
+            "max_ms": 0.4311999976634979,
+            "stdev_ms": 0.07740373354531015
+          }
+        },
+        "backward_total_ms": 17.794397894789775,
+        "real_conv2d_backward_call_ms": {
+          "mean_ms": 20.471572176615396,
+          "median_ms": 18.449359893798828,
+          "min_ms": 17.644800186157227,
+          "max_ms": 31.699039459228516,
+          "stdev_ms": 4.427302487325247
+        },
+        "d_input_pct_of_backward": 43.29423102924146,
+        "d_weight_pct_of_backward": 52.39246538715811,
+        "d_bias_pct_of_backward": 4.313303583600422,
+        "roofline_forward": {
+          "achieved_gflops": 35.98577573885844,
+          "achieved_gbps": 1.5001245134548837,
+          "arithmetic_intensity": 23.98852589641434,
+          "fraction_of_compute_ceiling": 0.3440816801576429,
+          "classification": "compute_bound",
+          "note": "AI=23.989 is at/right of the ridge point (6.931) -- compute, not bandwidth, sets this op's ceiling."
+        },
+        "roofline_dinput": {
+          "achieved_gflops": 30.012016690429828,
+          "achieved_gbps": 1.2510988303335404,
+          "arithmetic_intensity": 23.98852589641434,
+          "fraction_of_compute_ceiling": 0.2869629712223039,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 28.7% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (7703.95us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        },
+        "roofline_dweight": {
+          "achieved_gflops": 24.800268027994004,
+          "achieved_gbps": 1.0338387667122553,
+          "arithmetic_intensity": 23.98852589641434,
+          "fraction_of_compute_ceiling": 0.23713030263281323,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 23.7% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (9322.92us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      }
+    ],
+    "batch_sweep": [
+      {
+        "name": "batch_32",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 32
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 231211008,
+          "blocks_x": 2,
+          "path": "conv2d_forward_halffused_gemm (M41 Candidate B)"
+        },
+        "dweight_dispatch": {
+          "weight_elements": 4608,
+          "blocks_y": 2,
+          "path": "dweight_im2col_smem_gemm_splitk (M39, im2col[-smem] + permute + split-K GEMM)"
+        },
+        "dinput_dispatch": {
+          "Cin": 16,
+          "path": "k_conv2d_backward_input_channelfused (M36)"
+        },
+        "forward_ms": {
+          "mean_ms": 6.99214719136556,
+          "median_ms": 5.300591945648193,
+          "min_ms": 4.93017578125,
+          "max_ms": 16.475168228149414,
+          "stdev_ms": 3.287262502634373
+        },
+        "forward_stages_ms": {},
+        "real_conv2d_call_ms": {
+          "mean_ms": 6.053473075230916,
+          "median_ms": 5.505568027496338,
+          "min_ms": 5.044447898864746,
+          "max_ms": 13.069727897644043,
+          "stdev_ms": 1.8816958235526302
+        },
+        "d_input_ms": {
+          "mean_ms": 7.143458159764608,
+          "median_ms": 6.7715840339660645,
+          "min_ms": 6.74073600769043,
+          "max_ms": 17.824159622192383,
+          "stdev_ms": 2.0173401336641734
+        },
+        "d_weight_ms": {
+          "mean_ms": 10.442525847752888
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.3661013334989548,
+          "median_ms": 0.365776002407074,
+          "min_ms": 0.35763201117515564,
+          "max_ms": 0.39366400241851807,
+          "stdev_ms": 0.005691461648694723
+        },
+        "dweight_stages_ms": {
+          "permute_ms": {
+            "mean_ms": 0.5867232084274292,
+            "median_ms": 0.5144960284233093,
+            "min_ms": 0.5132799744606018,
+            "max_ms": 2.034656047821045,
+            "stdev_ms": 0.295971338764105
+          },
+          "im2col_ms": {
+            "mean_ms": 2.0423391977945964,
+            "median_ms": 2.041200041770935,
+            "min_ms": 2.0390400886535645,
+            "max_ms": 2.0643200874328613,
+            "stdev_ms": 0.004662505692652937
+          },
+          "splitk_gemm_ms": {
+            "mean_ms": 7.813463441530863,
+            "median_ms": 8.629727840423584,
+            "min_ms": 2.8364479541778564,
+            "max_ms": 9.735520362854004,
+            "stdev_ms": 1.9218272464822805
+          }
+        },
+        "backward_total_ms": 17.95208534101645,
+        "real_conv2d_backward_call_ms": {
+          "mean_ms": 16.104838307698568,
+          "median_ms": 15.342047691345215,
+          "min_ms": 13.868576049804688,
+          "max_ms": 21.082176208496094,
+          "stdev_ms": 2.203564934747037
+        },
+        "d_input_pct_of_backward": 39.79180147636344,
+        "d_weight_pct_of_backward": 58.16887369565964,
+        "d_bias_pct_of_backward": 2.0393248279769267,
+        "roofline_forward": {
+          "achieved_gflops": 33.067239815191115,
+          "achieved_gbps": 0.6915369295959665,
+          "arithmetic_intensity": 47.81702668360864,
+          "fraction_of_compute_ceiling": 0.31617580002591317,
+          "classification": "compute_bound",
+          "note": "AI=47.817 is at/right of the ridge point (6.931) -- compute, not bandwidth, sets this op's ceiling."
+        },
+        "roofline_dinput": {
+          "achieved_gflops": 32.366817699345056,
+          "achieved_gbps": 0.6768889649602616,
+          "arithmetic_intensity": 47.81702668360864,
+          "fraction_of_compute_ceiling": 0.30947864223254534,
+          "classification": "compute_bound",
+          "note": "AI=47.817 is at/right of the ridge point (6.931) -- compute, not bandwidth, sets this op's ceiling."
+        },
+        "roofline_dweight": {
+          "achieved_gflops": 22.141291424215527,
+          "achieved_gbps": 0.4630419948676026,
+          "arithmetic_intensity": 47.81702668360864,
+          "fraction_of_compute_ceiling": 0.21170622552058854,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 21.2% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (10442.53us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "batch_64",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 64
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 462422016,
+          "blocks_x": 2,
+          "path": "conv2d_forward_halffused_gemm (M41 Candidate B)"
+        },
+        "dweight_dispatch": {
+          "weight_elements": 4608,
+          "blocks_y": 2,
+          "path": "dweight_im2col_smem_gemm_splitk (M39, im2col[-smem] + permute + split-K GEMM)"
+        },
+        "dinput_dispatch": {
+          "Cin": 16,
+          "path": "k_conv2d_backward_input_channelfused (M36)"
+        },
+        "forward_ms": {
+          "mean_ms": 10.447282123565675,
+          "median_ms": 10.290144443511963,
+          "min_ms": 9.965536117553711,
+          "max_ms": 12.151904106140137,
+          "stdev_ms": 0.49244132511671157
+        },
+        "forward_stages_ms": {},
+        "real_conv2d_call_ms": {
+          "mean_ms": 12.152958997090657,
+          "median_ms": 10.560783863067627,
+          "min_ms": 9.99942398071289,
+          "max_ms": 23.701984405517578,
+          "stdev_ms": 3.67206991788921
+        },
+        "d_input_ms": {
+          "mean_ms": 13.0120405515035,
+          "median_ms": 12.984655857086182,
+          "min_ms": 12.783231735229492,
+          "max_ms": 13.307168006896973,
+          "stdev_ms": 0.174822822941429
+        },
+        "d_weight_ms": {
+          "mean_ms": 21.952164216836294
+        },
+        "d_bias_ms": {
+          "mean_ms": 0.7305002629756927,
+          "median_ms": 0.7301919758319855,
+          "min_ms": 0.7220159769058228,
+          "max_ms": 0.7613760232925415,
+          "stdev_ms": 0.007150846238193153
+        },
+        "dweight_stages_ms": {
+          "permute_ms": {
+            "mean_ms": 1.4040149331092835,
+            "median_ms": 1.0213279724121094,
+            "min_ms": 1.0199999809265137,
+            "max_ms": 4.059040069580078,
+            "stdev_ms": 0.9571611377507382
+          },
+          "im2col_ms": {
+            "mean_ms": 4.444344504674276,
+            "median_ms": 4.068543910980225,
+            "min_ms": 4.065855979919434,
+            "max_ms": 12.55577564239502,
+            "stdev_ms": 1.6130648311837723
+          },
+          "splitk_gemm_ms": {
+            "mean_ms": 16.103804779052734,
+            "median_ms": 16.439071655273438,
+            "min_ms": 13.490943908691406,
+            "max_ms": 17.762176513671875,
+            "stdev_ms": 0.9713481692877971
+          }
+        },
+        "backward_total_ms": 35.69470503131549,
+        "real_conv2d_backward_call_ms": {
+          "mean_ms": 33.6000181833903,
+          "median_ms": 32.65363311767578,
+          "min_ms": 25.20649528503418,
+          "max_ms": 48.08860778808594,
+          "stdev_ms": 6.86214454967937
+        },
+        "d_input_pct_of_backward": 36.4536996175983,
+        "d_weight_pct_of_backward": 61.499777621295195,
+        "d_bias_pct_of_backward": 2.0465227611064836,
+        "roofline_forward": {
+          "achieved_gflops": 44.262422564135235,
+          "achieved_gbps": 0.9238980900331694,
+          "arithmetic_intensity": 47.90833863781031,
+          "fraction_of_compute_ceiling": 0.4232196864181966,
+          "classification": "compute_bound",
+          "note": "AI=47.908 is at/right of the ridge point (6.931) -- compute, not bandwidth, sets this op's ceiling."
+        },
+        "roofline_dinput": {
+          "achieved_gflops": 35.53800913620489,
+          "achieved_gbps": 0.7417917245027887,
+          "arithmetic_intensity": 47.90833863781031,
+          "fraction_of_compute_ceiling": 0.3398003139290098,
+          "classification": "compute_bound",
+          "note": "AI=47.908 is at/right of the ridge point (6.931) -- compute, not bandwidth, sets this op's ceiling."
+        },
+        "roofline_dweight": {
+          "achieved_gflops": 21.064985275818213,
+          "achieved_gbps": 0.43969350377750865,
+          "arithmetic_intensity": 47.90833863781031,
+          "fraction_of_compute_ceiling": 0.20141501405436887,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 20.1% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (21952.16us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "batch_128",
+        "config": {
+          "Cin": 16,
+          "Cout": 32,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "N": 128
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 924844032,
+          "blocks_x": 2,
+          "path": "conv2d_forward_halffused_gemm (M41 Candidate B)"
+        },
+        "dweight_dispatch": {
+          "weight_elements": 4608,
+          "blocks_y": 2,
+          "path": "dweight_im2col_smem_gemm_splitk (M39, im2col[-smem] + permute + split-K GEMM)"
+        },
+        "dinput_dispatch": {
+          "Cin": 16,
+          "path": "k_conv2d_backward_input_channelfused (M36)"
+        },
+        "forward_ms": {
+          "mean_ms": 91.60825621287027,
+          "median_ms": 31.366080284118652,
+          "min_ms": 19.850048065185547,
+          "max_ms": 447.6954650878906,
+          "stdev_ms": 120.41059973504338
+        },
+        "forward_stages_ms": {},
+        "real_conv2d_call_ms": {
+          "mean_ms": 71.50979067484538,
+          "median_ms": 29.188447952270508,
+          "min_ms": 20.28767967224121,
+          "max_ms": 326.4349060058594,
+          "stdev_ms": 77.7665597434023
+        },
+        "d_input_ms": {
+          "mean_ms": 31.671802647908528,
+          "median_ms": 34.086015701293945,
+          "min_ms": 25.13715171813965,
+          "max_ms": 58.36921691894531,
+          "stdev_ms": 7.168853150175648
+        },
+        "d_weight_ms": {
+          "mean_ms": 38.83168114821116
+        },
+        "d_bias_ms": {
+          "mean_ms": 2.132444802920024,
+          "median_ms": 1.3595839738845825,
+          "min_ms": 1.3536319732666016,
+          "max_ms": 5.392576217651367,
+          "stdev_ms": 1.5265392862738452
+        },
+        "dweight_stages_ms": {
+          "permute_ms": {
+            "mean_ms": 3.971737599372864,
+            "median_ms": 2.1070719957351685,
+            "min_ms": 2.105600118637085,
+            "max_ms": 17.449312210083008,
+            "stdev_ms": 4.161450615056778
+          },
+          "im2col_ms": {
+            "mean_ms": 11.986638991038005,
+            "median_ms": 8.19809627532959,
+            "min_ms": 8.111200332641602,
+            "max_ms": 19.82512092590332,
+            "stdev_ms": 5.259794450010267
+          },
+          "splitk_gemm_ms": {
+            "mean_ms": 22.873304557800292,
+            "median_ms": 22.43950366973877,
+            "min_ms": 11.022687911987305,
+            "max_ms": 35.10627365112305,
+            "stdev_ms": 4.5711402932507035
+          }
+        },
+        "backward_total_ms": 72.63592859903972,
+        "real_conv2d_backward_call_ms": {
+          "mean_ms": 69.47265625,
+          "median_ms": 66.00779342651367,
+          "min_ms": 51.641536712646484,
+          "max_ms": 114.97500610351562,
+          "stdev_ms": 15.091571439058201
+        },
+        "d_input_pct_of_backward": 43.603493833941634,
+        "d_weight_pct_of_backward": 53.460707252147024,
+        "d_bias_pct_of_backward": 2.935798913911339,
+        "roofline_forward": {
+          "achieved_gflops": 10.09564061399595,
+          "achieved_gbps": 0.21052705069710145,
+          "arithmetic_intensity": 47.95412551768079,
+          "fraction_of_compute_ceiling": 0.09653050166097821,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 9.7% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (91608.26us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        },
+        "roofline_dinput": {
+          "achieved_gflops": 29.200864954905644,
+          "achieved_gbps": 0.6089333219962321,
+          "arithmetic_intensity": 47.95412551768079,
+          "fraction_of_compute_ceiling": 0.2792070608301717,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 27.9% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (31671.80us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        },
+        "roofline_dweight": {
+          "achieved_gflops": 23.816739441954457,
+          "achieved_gbps": 0.49665673567904334,
+          "arithmetic_intensity": 47.95412551768079,
+          "fraction_of_compute_ceiling": 0.2277261933307556,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 22.8% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (38831.68us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      }
+    ],
+    "m43_stage_analysis": [
+      {
+        "name": "mnist_conv2",
+        "recommended_num_k_splits": 16,
+        "sweep": [
+          {
+            "num_k_splits": 16,
+            "atomic_gemm_only_ms": 7.116499253114065,
+            "tworeduce_gemm_only_ms": 1.8357034504413605,
+            "atomic_full_ms": 3.6426571051279706,
+            "tworeduce_full_ms": 1.8700160086154938,
+            "speedup_gemm_only": 3.8767150823860117,
+            "speedup_full": 1.9479283002635306
+          },
+          {
+            "num_k_splits": 32,
+            "atomic_gemm_only_ms": 3.137604264418284,
+            "tworeduce_gemm_only_ms": 1.039526398976644,
+            "atomic_full_ms": 2.9974122683207196,
+            "tworeduce_full_ms": 1.0223850687344869,
+            "speedup_gemm_only": 3.018301668439668,
+            "speedup_full": 2.931784080171408
+          },
+          {
+            "num_k_splits": 64,
+            "atomic_gemm_only_ms": 1.7829589366912841,
+            "tworeduce_gemm_only_ms": 1.2211989303429922,
+            "atomic_full_ms": 1.9488544066747029,
+            "tworeduce_full_ms": 1.3768085340658824,
+            "speedup_gemm_only": 1.4600069590549944,
+            "speedup_full": 1.4154868730508952
+          },
+          {
+            "num_k_splits": 96,
+            "atomic_gemm_only_ms": 1.5818645199139914,
+            "tworeduce_gemm_only_ms": 1.1797856072584787,
+            "atomic_full_ms": 1.7664149562517801,
+            "tworeduce_full_ms": 1.3238965312639872,
+            "speedup_gemm_only": 1.340806761992835,
+            "speedup_full": 1.3342545391861549
+          },
+          {
+            "num_k_splits": 128,
+            "atomic_gemm_only_ms": 1.2733194708824158,
+            "tworeduce_gemm_only_ms": 0.8871776004632314,
+            "atomic_full_ms": 1.3886069258054097,
+            "tworeduce_full_ms": 1.0001557270685832,
+            "speedup_gemm_only": 1.4352475425637032,
+            "speedup_full": 1.3883907157891917
+          },
+          {
+            "num_k_splits": 256,
+            "atomic_gemm_only_ms": 1.7964095989863078,
+            "tworeduce_gemm_only_ms": 1.4506357312202454,
+            "atomic_full_ms": 2.1325621366500855,
+            "tworeduce_full_ms": 1.5876522620519002,
+            "speedup_gemm_only": 1.2383602308452752,
+            "speedup_full": 1.343217395661905
+          }
+        ]
+      },
+      {
+        "name": "large_spatial",
+        "recommended_num_k_splits": 16,
+        "sweep": [
+          {
+            "num_k_splits": 16,
+            "atomic_gemm_only_ms": 12.816960016886393,
+            "tworeduce_gemm_only_ms": 10.939729007085164,
+            "atomic_full_ms": 14.847272491455078,
+            "tworeduce_full_ms": 12.799458122253418,
+            "speedup_gemm_only": 1.1715975787503905,
+            "speedup_full": 1.1599922707385
+          },
+          {
+            "num_k_splits": 32,
+            "atomic_gemm_only_ms": 10.931882762908936,
+            "tworeduce_gemm_only_ms": 10.0904394308726,
+            "atomic_full_ms": 10.644236755371093,
+            "tworeduce_full_ms": 11.579618231455486,
+            "speedup_gemm_only": 1.0833901573663745,
+            "speedup_full": 0.9192217344831393
+          },
+          {
+            "num_k_splits": 64,
+            "atomic_gemm_only_ms": 9.289022906621296,
+            "tworeduce_gemm_only_ms": 8.798620748519898,
+            "atomic_full_ms": 10.317852719624836,
+            "tworeduce_full_ms": 9.956990941365559,
+            "speedup_gemm_only": 1.0557362536831576,
+            "speedup_full": 1.0362420514776312
+          },
+          {
+            "num_k_splits": 96,
+            "atomic_gemm_only_ms": 7.989141321182251,
+            "tworeduce_gemm_only_ms": 7.941566912333171,
+            "atomic_full_ms": 9.773015467325846,
+            "tworeduce_full_ms": 9.363045406341552,
+            "speedup_gemm_only": 1.0059905569485534,
+            "speedup_full": 1.043785973814313
+          },
+          {
+            "num_k_splits": 128,
+            "atomic_gemm_only_ms": 8.322044801712035,
+            "tworeduce_gemm_only_ms": 7.914968538284302,
+            "atomic_full_ms": 9.553262964884441,
+            "tworeduce_full_ms": 9.816060829162598,
+            "speedup_gemm_only": 1.0514311916034444,
+            "speedup_full": 0.9732277673445737
+          },
+          {
+            "num_k_splits": 256,
+            "atomic_gemm_only_ms": 9.956282711029052,
+            "tworeduce_gemm_only_ms": 10.948083178202312,
+            "atomic_full_ms": 11.27413117090861,
+            "tworeduce_full_ms": 13.273698139190675,
+            "speedup_gemm_only": 0.9094087566718584,
+            "speedup_full": 0.849358713200029
+          }
+        ]
+      }
+    ],
+    "dweight_cout_sweep": [
+      {
+        "Cout": 2,
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cout": 2
+        },
+        "dispatch": {
+          "weight_elements": 288,
+          "blocks_y": 1,
+          "path": "dweight_halffused_gemm_splitk_tworeduce (M43, permute + partial-GEMM + reduce)"
+        },
+        "stages_ms": {
+          "permute_ms": 0.02370346679041783,
+          "partial_gemm_ms": 1.5406090418497722,
+          "reduce_ms": 0.07213653335347772
+        },
+        "total_ms": 1.636449041993668,
+        "roofline": {
+          "achieved_gflops": 3.807033302063619,
+          "achieved_gbps": 0.47658312601647007,
+          "arithmetic_intensity": 7.988183161004431,
+          "fraction_of_compute_ceiling": 0.03640133880942436,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 3.6% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (1636.45us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cout": 4,
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cout": 4
+        },
+        "dispatch": {
+          "weight_elements": 576,
+          "blocks_y": 1,
+          "path": "dweight_halffused_gemm_splitk_tworeduce (M43, permute + partial-GEMM + reduce)"
+        },
+        "stages_ms": {
+          "permute_ms": 0.06211520110567411,
+          "partial_gemm_ms": 2.156699760754903,
+          "reduce_ms": 0.06845120093785226
+        },
+        "total_ms": 2.2872661627984296,
+        "roofline": {
+          "achieved_gflops": 5.447565396042659,
+          "achieved_gbps": 0.3793104685895088,
+          "arithmetic_intensity": 14.361758630864562,
+          "fraction_of_compute_ceiling": 0.052087454438698014,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 5.2% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (2287.27us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cout": 8,
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cout": 8
+        },
+        "dispatch": {
+          "weight_elements": 1152,
+          "blocks_y": 1,
+          "path": "dweight_halffused_gemm_splitk_tworeduce (M43, permute + partial-GEMM + reduce)"
+        },
+        "stages_ms": {
+          "permute_ms": 0.11974719998737177,
+          "partial_gemm_ms": 2.5609088063240053,
+          "reduce_ms": 0.0600415983547767
+        },
+        "total_ms": 2.740697604666154,
+        "roofline": {
+          "achieved_gflops": 9.09259889072495,
+          "achieved_gbps": 0.38053961087291927,
+          "arithmetic_intensity": 23.8939617083947,
+          "fraction_of_compute_ceiling": 0.08693981549887267,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 8.7% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (2740.70us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cout": 16,
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cout": 16
+        },
+        "dispatch": {
+          "weight_elements": 2304,
+          "blocks_y": 1,
+          "path": "dweight_halffused_gemm_splitk_tworeduce (M43, permute + partial-GEMM + reduce)"
+        },
+        "stages_ms": {
+          "permute_ms": 0.2324672003587087,
+          "partial_gemm_ms": 2.5824021339416503,
+          "reduce_ms": 0.04311573139081399
+        },
+        "total_ms": 2.8579850656911727,
+        "roofline": {
+          "achieved_gflops": 17.438904282009155,
+          "achieved_gbps": 0.4876386572940183,
+          "arithmetic_intensity": 35.761939750183686,
+          "fraction_of_compute_ceiling": 0.1667438692722863,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 16.7% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (2857.99us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cout": 32,
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cout": 32
+        },
+        "dispatch": {
+          "weight_elements": 4608,
+          "blocks_y": 2,
+          "path": "dweight_im2col_smem_gemm_splitk (M39, im2col[-smem] + permute + split-K GEMM)"
+        },
+        "stages_ms": {
+          "permute_ms": 0.30334719866514204,
+          "im2col_ms": 1.5625141421953836,
+          "splitk_gemm_ms": 4.568766895929972
+        },
+        "total_ms": 6.434628236790498,
+        "roofline": {
+          "achieved_gflops": 15.491222232555753,
+          "achieved_gbps": 0.32559829766404785,
+          "arithmetic_intensity": 47.577712609970675,
+          "fraction_of_compute_ceiling": 0.1481209078874314,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 14.8% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (6434.63us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cout": 64,
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cout": 64
+        },
+        "dispatch": {
+          "weight_elements": 9216,
+          "blocks_y": 4,
+          "path": "dweight_im2col_smem_gemm_splitk (M39, im2col[-smem] + permute + split-K GEMM)"
+        },
+        "stages_ms": {
+          "permute_ms": 0.6079381386439006,
+          "im2col_ms": 1.3375178674856822,
+          "splitk_gemm_ms": 7.6828426678975426
+        },
+        "total_ms": 9.628298674027125,
+        "roofline": {
+          "achieved_gflops": 20.705684228282838,
+          "achieved_gbps": 0.36330239831840777,
+          "arithmetic_intensity": 56.99297423887588,
+          "fraction_of_compute_ceiling": 0.19797952029106852,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 19.8% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (9628.30us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cout": 128,
+        "config": {
+          "N": 64,
+          "Cin": 16,
+          "H": 13,
+          "W": 13,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cout": 128
+        },
+        "dispatch": {
+          "weight_elements": 18432,
+          "blocks_y": 8,
+          "path": "dweight_im2col_smem_gemm_splitk (M39, im2col[-smem] + permute + split-K GEMM)"
+        },
+        "stages_ms": {
+          "permute_ms": 1.6348074575265248,
+          "im2col_ms": 0.9933589259783427,
+          "splitk_gemm_ms": 13.31521390279134
+        },
+        "total_ms": 15.943380286296208,
+        "roofline": {
+          "achieved_gflops": 25.00856260342182,
+          "achieved_gbps": 0.3953831550651933,
+          "arithmetic_intensity": 63.251461988304094,
+          "fraction_of_compute_ceiling": 0.23912193254795033,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 23.9% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (15943.38us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      }
+    ],
+    "dweight_below_threshold_sweep": [
+      {
+        "label": "mnist_conv1 (we=72)",
+        "config": {
+          "N": 64,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 1,
+          "Cout": 8
+        },
+        "weight_elements": 72,
+        "d_weight_ms": {
+          "mean_ms": 2.4841344277064006,
+          "median_ms": 2.0878560543060303,
+          "min_ms": 2.0776960849761963,
+          "max_ms": 7.676864147186279,
+          "stdev_ms": 1.4111373040820618
+        },
+        "roofline": {
+          "achieved_gflops": 2.9085962174241735,
+          "achieved_gbps": 0.7272649901108832,
+          "arithmetic_intensity": 3.999362346564642,
+          "fraction_of_compute_ceiling": 0.027810840612525367,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 4.8% of the 60.35 GFLOP/s roofline ceiling achieved, with elapsed time (2484.13us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "label": "we_144a",
+        "config": {
+          "N": 64,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 1,
+          "Cout": 16
+        },
+        "weight_elements": 144,
+        "d_weight_ms": {
+          "mean_ms": 5.565182940165202,
+          "median_ms": 4.190208196640015,
+          "min_ms": 4.162176132202148,
+          "max_ms": 13.043168067932129,
+          "stdev_ms": 2.737108291167387
+        },
+        "roofline": {
+          "achieved_gflops": 2.596624074243107,
+          "achieved_gbps": 0.6131952959481146,
+          "arithmetic_intensity": 4.234579246450742,
+          "fraction_of_compute_ceiling": 0.02482788701532921,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 4.1% of the 63.90 GFLOP/s roofline ceiling achieved, with elapsed time (5565.18us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "label": "we_144b",
+        "config": {
+          "N": 64,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 2,
+          "Cout": 8
+        },
+        "weight_elements": 144,
+        "d_weight_ms": {
+          "mean_ms": 6.1057631810506185,
+          "median_ms": 4.174815893173218,
+          "min_ms": 4.148223876953125,
+          "max_ms": 16.0118408203125,
+          "stdev_ms": 3.769548785312643
+        },
+        "roofline": {
+          "achieved_gflops": 2.366729198546065,
+          "achieved_gbps": 0.32880672578829856,
+          "arithmetic_intensity": 7.197934266313877,
+          "fraction_of_compute_ceiling": 0.022629723617004754,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 2.3% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (6105.76us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "label": "we_216",
+        "config": {
+          "N": 64,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 3,
+          "Cout": 8
+        },
+        "weight_elements": 216,
+        "d_weight_ms": {
+          "mean_ms": 8.079315169652302,
+          "median_ms": 6.293520212173462,
+          "min_ms": 6.20963191986084,
+          "max_ms": 18.09894371032715,
+          "stdev_ms": 3.870608206602012
+        },
+        "roofline": {
+          "achieved_gflops": 2.682904620606952,
+          "achieved_gbps": 0.2733657437075881,
+          "arithmetic_intensity": 9.814340978571119,
+          "fraction_of_compute_ceiling": 0.025652867295682974,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 2.6% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (8079.32us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "label": "we_243",
+        "config": {
+          "N": 64,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 1,
+          "Cout": 27
+        },
+        "weight_elements": 243,
+        "d_weight_ms": {
+          "mean_ms": 10.869805908203125,
+          "median_ms": 7.078016042709351,
+          "min_ms": 6.984767913818359,
+          "max_ms": 18.84783935546875,
+          "stdev_ms": 5.07932359610775
+        },
+        "roofline": {
+          "achieved_gflops": 2.2434196347146313,
+          "achieved_gbps": 0.5170914777565838,
+          "arithmetic_intensity": 4.338535309937367,
+          "fraction_of_compute_ceiling": 0.02145068659386202,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 3.4% of the 65.47 GFLOP/s roofline ceiling achieved, with elapsed time (10869.81us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      }
+    ],
+    "dinput_cin_sweep": [
+      {
+        "Cin": 1,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 1
+        },
+        "dispatch": {
+          "Cin": 1,
+          "path": "k_conv2d_backward_input_channelfused (M36)"
+        },
+        "d_input_ms": {
+          "mean_ms": 0.7406335999568303,
+          "median_ms": 0.363632008433342,
+          "min_ms": 0.3572799861431122,
+          "max_ms": 1.4265600442886353,
+          "stdev_ms": 0.49765753276831864
+        },
+        "roofline": {
+          "achieved_gflops": 4.877812727117124,
+          "achieved_gbps": 1.152483495279923,
+          "arithmetic_intensity": 4.232436080077979,
+          "fraction_of_compute_ceiling": 0.0466397059443809,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 7.6% of the 63.87 GFLOP/s roofline ceiling achieved, with elapsed time (740.63us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cin": 8,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 8
+        },
+        "dispatch": {
+          "Cin": 8,
+          "path": "k_conv2d_backward_input_channelfused (M36)"
+        },
+        "d_input_ms": {
+          "mean_ms": 1.4668511907259623,
+          "median_ms": 1.1181439757347107,
+          "min_ms": 1.1056640148162842,
+          "max_ms": 3.6813759803771973,
+          "stdev_ms": 0.832564235594373
+        },
+        "roofline": {
+          "achieved_gflops": 19.703004764713974,
+          "achieved_gbps": 0.8240999548166399,
+          "arithmetic_intensity": 23.90851334180432,
+          "fraction_of_compute_ceiling": 0.18839229791220527,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 18.8% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (1466.85us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cin": 16,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 16
+        },
+        "dispatch": {
+          "Cin": 16,
+          "path": "k_conv2d_backward_input_channelfused (M36)"
+        },
+        "d_input_ms": {
+          "mean_ms": 1.9058549364407857,
+          "median_ms": 1.9046080112457275,
+          "min_ms": 1.8957760334014893,
+          "max_ms": 1.9295040369033813,
+          "stdev_ms": 0.006976612448150516
+        },
+        "roofline": {
+          "achieved_gflops": 30.329040733786147,
+          "achieved_gbps": 0.8473089788332758,
+          "arithmetic_intensity": 35.79454660748256,
+          "fraction_of_compute_ceiling": 0.28999422908040867,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 29.0% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (1905.85us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cin": 17,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 17
+        },
+        "dispatch": {
+          "Cin": 17,
+          "path": "k_conv2d_backward_input (M32 original, fallback -- unused by any real Forge shape)"
+        },
+        "d_input_ms": {
+          "mean_ms": 14.202101310094198,
+          "median_ms": 14.918560028076172,
+          "min_ms": 4.40780782699585,
+          "max_ms": 15.91494369506836,
+          "stdev_ms": 2.188968671289863
+        },
+        "roofline": {
+          "achieved_gflops": 4.324389937730465,
+          "achieved_gbps": 0.11727841983609626,
+          "arithmetic_intensity": 36.8728530259366,
+          "fraction_of_compute_ceiling": 0.04134809726567546,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 4.1% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (14202.10us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cin": 32,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 32
+        },
+        "dispatch": {
+          "Cin": 32,
+          "path": "k_conv2d_backward_input (M32 original, fallback -- unused by any real Forge shape)"
+        },
+        "d_input_ms": {
+          "mean_ms": 27.244613456726075,
+          "median_ms": 28.0108003616333,
+          "min_ms": 16.851648330688477,
+          "max_ms": 29.240224838256836,
+          "stdev_ms": 2.49860126730918
+        },
+        "roofline": {
+          "achieved_gflops": 4.243242583845858,
+          "achieved_gbps": 0.08907742456521653,
+          "arithmetic_intensity": 47.63544303797468,
+          "fraction_of_compute_ceiling": 0.040572198530920325,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 4.1% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (27244.61us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "Cin": 64,
+        "config": {
+          "N": 16,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 64
+        },
+        "dispatch": {
+          "Cin": 64,
+          "path": "k_conv2d_backward_input (M32 original, fallback -- unused by any real Forge shape)"
+        },
+        "d_input_ms": {
+          "mean_ms": 52.87961057027181,
+          "median_ms": 53.98761558532715,
+          "min_ms": 33.92127990722656,
+          "max_ms": 58.099998474121094,
+          "stdev_ms": 5.005947385354672
+        },
+        "roofline": {
+          "achieved_gflops": 4.372403758396504,
+          "achieved_gbps": 0.0766069181734365,
+          "arithmetic_intensity": 57.07583417593529,
+          "fraction_of_compute_ceiling": 0.04180718632923896,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 4.2% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (52879.61us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      }
+    ],
+    "sweep_shapes": [
+      {
+        "name": "k1_s1",
+        "config": {
+          "N": 16,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 1,
+          "S": 1,
+          "P": 0
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 3211264,
+          "blocks_x": null,
+          "path": "cf_conv2d_forward (M15 per-thread, unchanged)"
+        },
+        "forward_ms": {
+          "mean_ms": 1.1120895882447561,
+          "median_ms": 0.7257919907569885,
+          "min_ms": 0.7244799733161926,
+          "max_ms": 2.8795199394226074,
+          "stdev_ms": 0.8161636675311421
+        },
+        "roofline_forward": {
+          "achieved_gflops": 2.8875946991540786,
+          "achieved_gbps": 1.0833084067457823,
+          "arithmetic_intensity": 2.6655333616659584,
+          "fraction_of_compute_ceiling": 0.027610032444746104,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 7.2% of the 40.22 GFLOP/s roofline ceiling achieved, with elapsed time (1112.09us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "k3_s1",
+        "config": {
+          "N": 16,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 28901376,
+          "blocks_x": 1,
+          "path": "conv2d_forward_halffused_gemm (M41 Candidate B)"
+        },
+        "forward_ms": {
+          "mean_ms": 1.914736024538676,
+          "median_ms": 1.1476960182189941,
+          "min_ms": 0.910975992679596,
+          "max_ms": 5.390079975128174,
+          "stdev_ms": 1.454387757323495
+        },
+        "roofline_forward": {
+          "achieved_gflops": 15.094183025549597,
+          "achieved_gbps": 0.6313308907901537,
+          "arithmetic_intensity": 23.90851334180432,
+          "fraction_of_compute_ceiling": 0.14432457684745284,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 14.4% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (1914.74us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "k5_s1",
+        "config": {
+          "N": 16,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 5,
+          "S": 1,
+          "P": 2
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 80281600,
+          "blocks_x": 1,
+          "path": "conv2d_forward_halffused_gemm (M41 Candidate B)"
+        },
+        "forward_ms": {
+          "mean_ms": 3.4528053442637128,
+          "median_ms": 2.3938080072402954,
+          "min_ms": 1.8649280071258545,
+          "max_ms": 9.173727989196777,
+          "stdev_ms": 2.36033068781095
+        },
+        "roofline_forward": {
+          "achieved_gflops": 23.25112249185293,
+          "achieved_gbps": 0.3524739678771327,
+          "arithmetic_intensity": 65.96550273453934,
+          "fraction_of_compute_ceiling": 0.22231798893552782,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 22.2% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (3452.81us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "k3_s2",
+        "config": {
+          "N": 16,
+          "Cin": 8,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 2,
+          "P": 1
+        },
+        "Hout": 14,
+        "Wout": 14,
+        "forward_dispatch": {
+          "total_flops": 7225344,
+          "blocks_x": null,
+          "path": "cf_conv2d_forward (M15 per-thread, unchanged)"
+        },
+        "forward_ms": {
+          "mean_ms": 1.4141952008008958,
+          "median_ms": 1.5563679933547974,
+          "min_ms": 0.39846399426460266,
+          "max_ms": 1.5895359516143799,
+          "stdev_ms": 0.322962329350074
+        },
+        "roofline_forward": {
+          "achieved_gflops": 5.109156074004563,
+          "achieved_gbps": 0.4290213965203662,
+          "arithmetic_intensity": 11.90886075949367,
+          "fraction_of_compute_ceiling": 0.04885171904833539,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 4.9% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (1414.20us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "cin_low",
+        "config": {
+          "N": 16,
+          "Cin": 1,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 3612672,
+          "blocks_x": null,
+          "path": "cf_conv2d_forward (M15 per-thread, unchanged)"
+        },
+        "forward_ms": {
+          "mean_ms": 0.3263093342383703,
+          "median_ms": 0.32528001070022583,
+          "min_ms": 0.32447999715805054,
+          "max_ms": 0.3516800105571747,
+          "stdev_ms": 0.004833189694424684
+        },
+        "roofline_forward": {
+          "achieved_gflops": 11.071310627482475,
+          "achieved_gbps": 2.615824649920879,
+          "arithmetic_intensity": 4.232436080077979,
+          "fraction_of_compute_ceiling": 0.10585947041674591,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 17.3% of the 63.87 GFLOP/s roofline ceiling achieved, with elapsed time (326.31us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "cin_high",
+        "config": {
+          "N": 16,
+          "Cin": 64,
+          "Cout": 16,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 231211008,
+          "blocks_x": 1,
+          "path": "conv2d_forward_halffused_gemm (M41 Candidate B)"
+        },
+        "forward_ms": {
+          "mean_ms": 8.282132307688395,
+          "median_ms": 6.661456108093262,
+          "min_ms": 4.656832218170166,
+          "max_ms": 16.851360321044922,
+          "stdev_ms": 4.062931033041211
+        },
+        "roofline_forward": {
+          "achieved_gflops": 27.916845494651692,
+          "achieved_gbps": 0.4891184841661445,
+          "arithmetic_intensity": 57.07583417593529,
+          "fraction_of_compute_ceiling": 0.26692977725998007,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 26.7% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (8282.13us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "cout_low",
+        "config": {
+          "N": 16,
+          "Cin": 8,
+          "Cout": 4,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 7225344,
+          "blocks_x": null,
+          "path": "cf_conv2d_forward (M15 per-thread, unchanged)"
+        },
+        "forward_ms": {
+          "mean_ms": 0.7666730572779973,
+          "median_ms": 0.39475199580192566,
+          "min_ms": 0.3928320109844208,
+          "max_ms": 1.5591679811477661,
+          "stdev_ms": 0.5329142219414084
+        },
+        "roofline_forward": {
+          "achieved_gflops": 9.424283182264059,
+          "achieved_gbps": 0.7868595280259799,
+          "arithmetic_intensity": 11.977084659452577,
+          "fraction_of_compute_ceiling": 0.09011124882138506,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 9.0% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (766.67us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      },
+      {
+        "name": "cout_high",
+        "config": {
+          "N": 16,
+          "Cin": 8,
+          "Cout": 128,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1
+        },
+        "Hout": 28,
+        "Wout": 28,
+        "forward_dispatch": {
+          "total_flops": 231211008,
+          "blocks_x": 8,
+          "path": "conv2d_forward_im2col_gemm (M41 Candidate A, smem-im2col + transpose + GEMM + permute)"
+        },
+        "forward_ms": {
+          "mean_ms": 13.421803728739421,
+          "median_ms": 13.919919967651367,
+          "min_ms": 5.054944038391113,
+          "max_ms": 17.861248016357422,
+          "stdev_ms": 2.7594950269052116
+        },
+        "roofline_forward": {
+          "achieved_gflops": 17.22652280370631,
+          "achieved_gbps": 0.5111682556726203,
+          "arithmetic_intensity": 33.70029850746268,
+          "fraction_of_compute_ceiling": 0.1647131620167554,
+          "classification": "mixed_or_ambiguous",
+          "note": "Only 16.5% of the 104.58 GFLOP/s roofline ceiling achieved, with elapsed time (13421.80us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+        }
+      }
+    ],
+    "forward_memory": {
+      "shape": "cout_high",
+      "dispatch": {
+        "total_flops": 231211008,
+        "blocks_x": 8,
+        "path": "conv2d_forward_im2col_gemm (M41 Candidate A, smem-im2col + transpose + GEMM + permute)"
+      },
+      "modeled_temp_buffers": {
+        "xcol_bytes": 3612672,
+        "weightT_bytes": 36864,
+        "out_mat_bytes": 6422528,
+        "total_temp_bytes": 10072064,
+        "xcol_vs_input_ratio": 9.0
+      },
+      "allocator_before": {
+        "allocated_bytes": 265838360,
+        "peak_allocated_bytes": 430270784,
+        "allocation_count": 444,
+        "free_count": 80,
+        "reserved_bytes": 265838360,
+        "peak_reserved_bytes": 792636896,
+        "cached_bytes": 0,
+        "cache_hit_count": 2949,
+        "cache_miss_count": 444,
+        "pending_bytes": 0,
+        "pending_count": 0
+      },
+      "allocator_after_3_calls": {
+        "allocated_bytes": 279122200,
+        "peak_allocated_bytes": 430270784,
+        "allocation_count": 453,
+        "free_count": 80,
+        "reserved_bytes": 295616792,
+        "peak_reserved_bytes": 792636896,
+        "cached_bytes": 16494592,
+        "cache_hit_count": 2956,
+        "cache_miss_count": 453,
+        "pending_bytes": 0,
+        "pending_count": 0
+      },
+      "allocator_after_gc_and_empty_cache": {
+        "allocated_bytes": 279122200,
+        "peak_allocated_bytes": 430270784,
+        "allocation_count": 453,
+        "free_count": 84,
+        "reserved_bytes": 279122200,
+        "peak_reserved_bytes": 792636896,
+        "cached_bytes": 0,
+        "cache_hit_count": 2956,
+        "cache_miss_count": 453,
+        "pending_bytes": 0,
+        "pending_count": 0
+      }
+    },
+    "mnist_kernel_ranking": {
+      "sync_per_layer_per_op": {
+        "device": "cuda",
+        "batch_size": 64,
+        "iterations": 30,
+        "warmup_iterations": 5,
+        "phase_mean_seconds": {
+          "transfer": 0.0006461866626826426,
+          "forward": 0.007030430001517137,
+          "loss": 0.0011493066675029695,
+          "backward": 0.013420323325165857,
+          "optimizer": 0.0020193066719609003
+        },
+        "forward_by_layer_mean_seconds": {
+          "Conv2d": 0.0022670833277516067,
+          "ReLU": 0.0011967033225422105,
+          "MaxPool2d": 0.0009231833391822875,
+          "Flatten": 0.00038171667062367003,
+          "Linear": 0.0016325800175157686
+        },
+        "backward_by_op_mean_seconds": {
+          "cross_entropy": 0.00035162001149728893,
+          "+": 0.0004618133418262005,
+          "@": 0.001849756653731068,
+          "relu": 0.0010668766296779116,
+          "reshape": 0.0002138400023492674,
+          "max_pool2d": 0.001045813337744524,
+          "conv2d": 0.006899029978861411
+        }
+      },
+      "batch_size_sweep": [
+        {
+          "batch_size": 32,
+          "prefetch_size": 2,
+          "n_samples": 1024,
+          "steps": 32,
+          "epoch_wall_ms": 645.1260999310762,
+          "samples_per_sec": 1587.286578716009,
+          "mean_cpu_step_wall_ms": 11.189537493919488,
+          "gpu_forward_ms": 2.624106004834175,
+          "gpu_loss_ms": 1.6661809906363487,
+          "gpu_backward_ms": 12.225444063544273,
+          "gpu_optimizer_ms": 0.14812800008803606,
+          "gpu_busy_ms_per_step": 16.663859059102833,
+          "compute_stream_busy_total_ms": 533.2434898912907,
+          "compute_stream_utilization": 0.8265724948165346
+        },
+        {
+          "batch_size": 64,
+          "prefetch_size": 2,
+          "n_samples": 1024,
+          "steps": 16,
+          "epoch_wall_ms": 440.07809995673597,
+          "samples_per_sec": 2326.8597099030135,
+          "mean_cpu_step_wall_ms": 10.573912484687753,
+          "gpu_forward_ms": 4.163854040205479,
+          "gpu_loss_ms": 1.4195299968123436,
+          "gpu_backward_ms": 17.81312596797943,
+          "gpu_optimizer_ms": 0.16705199982970953,
+          "gpu_busy_ms_per_step": 23.563562004826963,
+          "compute_stream_busy_total_ms": 377.0169920772314,
+          "compute_stream_utilization": 0.8567047351692709
+        },
+        {
+          "batch_size": 128,
+          "prefetch_size": 2,
+          "n_samples": 1024,
+          "steps": 8,
+          "epoch_wall_ms": 209.24470003228635,
+          "samples_per_sec": 4893.791813326681,
+          "mean_cpu_step_wall_ms": 13.741287533775903,
+          "gpu_forward_ms": 4.306743949651718,
+          "gpu_loss_ms": 2.2909399569034576,
+          "gpu_backward_ms": 14.922024011611938,
+          "gpu_optimizer_ms": 0.07524400018155575,
+          "gpu_busy_ms_per_step": 21.59495191834867,
+          "compute_stream_busy_total_ms": 172.75961534678936,
+          "compute_stream_utilization": 0.8256343664624846
+        }
+      ],
+      "profiling_overhead": {
+        "plain_mean_seconds": 0.019151566666550934,
+        "instrumented_mean_seconds": 0.019291803318386275,
+        "overhead_fraction": 0.007322463706338483
+      },
+      "kernel_ranking": [
+        {
+          "op": "backward:conv2d",
+          "mean_seconds": 0.006899029978861411,
+          "flops": 56217600,
+          "bytes": 4863552,
+          "arithmetic_intensity": 11.558959377837432,
+          "achieved_gflops": 8.148623817007667,
+          "achieved_gbps": 0.7049617141687884,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.07791390115569943,
+          "percent_of_step": 37.720195214581565
+        },
+        {
+          "op": "forward:Conv2d",
+          "mean_seconds": 0.0022670833277516067,
+          "flops": 24072192,
+          "bytes": 2431776,
+          "arithmetic_intensity": 9.89901701472504,
+          "achieved_gflops": 10.618132869369974,
+          "achieved_gbps": 1.0726451781601378,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.10152636487101648,
+          "percent_of_step": 12.395195549596211
+        },
+        {
+          "op": "backward:@",
+          "mean_seconds": 0.001849756653731068,
+          "flops": 6717440,
+          "bytes": 485376,
+          "arithmetic_intensity": 13.839662447257384,
+          "achieved_gflops": 3.631526334261606,
+          "achieved_gbps": 0.26239992110365873,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.034723210962496205,
+          "percent_of_step": 10.113477154323386
+        },
+        {
+          "op": "forward:Linear",
+          "mean_seconds": 0.0016325800175157686,
+          "flops": 3358720,
+          "bytes": 242688,
+          "arithmetic_intensity": 13.839662447257384,
+          "achieved_gflops": 2.0573080424632595,
+          "achieved_gbps": 0.14865305062920503,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.01967116154420423,
+          "percent_of_step": 8.92607180325413
+        },
+        {
+          "op": "forward:ReLU",
+          "mean_seconds": 0.0011967033225422105,
+          "flops": 0,
+          "bytes": 0,
+          "arithmetic_intensity": 0.0,
+          "achieved_gflops": 0.0,
+          "achieved_gbps": 0.0,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.0,
+          "percent_of_step": 6.542931843830059
+        },
+        {
+          "op": "backward:relu",
+          "mean_seconds": 0.0010668766296779116,
+          "flops": 0,
+          "bytes": 0,
+          "arithmetic_intensity": 0.0,
+          "achieved_gflops": 0.0,
+          "achieved_gbps": 0.0,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.0,
+          "percent_of_step": 5.833109127606252
+        },
+        {
+          "op": "backward:max_pool2d",
+          "mean_seconds": 0.001045813337744524,
+          "flops": 0,
+          "bytes": 4208640,
+          "arithmetic_intensity": 0.0,
+          "achieved_gflops": 0.0,
+          "achieved_gbps": 4.024274550826302,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.26668413146138975,
+          "percent_of_step": 5.717946345878461
+        },
+        {
+          "op": "forward:MaxPool2d",
+          "mean_seconds": 0.0009231833391822875,
+          "flops": 0,
+          "bytes": 2242560,
+          "arithmetic_intensity": 0.0,
+          "achieved_gflops": 0.0,
+          "achieved_gbps": 2.4291599564463056,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.16097768802395807,
+          "percent_of_step": 5.0474712937183295
+        },
+        {
+          "op": "backward:+",
+          "mean_seconds": 0.0004618133418262005,
+          "flops": 0,
+          "bytes": 0,
+          "arithmetic_intensity": 0.0,
+          "achieved_gflops": 0.0,
+          "achieved_gbps": 0.0,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.0,
+          "percent_of_step": 2.5249476317332142
+        },
+        {
+          "op": "forward:Flatten",
+          "mean_seconds": 0.00038171667062367003,
+          "flops": 0,
+          "bytes": 0,
+          "arithmetic_intensity": 0.0,
+          "achieved_gflops": 0.0,
+          "achieved_gbps": 0.0,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.0,
+          "percent_of_step": 2.087021998266664
+        },
+        {
+          "op": "backward:cross_entropy",
+          "mean_seconds": 0.00035162001149728893,
+          "flops": 0,
+          "bytes": 0,
+          "arithmetic_intensity": 0.0,
+          "achieved_gflops": 0.0,
+          "achieved_gbps": 0.0,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.0,
+          "percent_of_step": 1.9224696103176022
+        },
+        {
+          "op": "backward:reshape",
+          "mean_seconds": 0.0002138400023492674,
+          "flops": 0,
+          "bytes": 0,
+          "arithmetic_intensity": 0.0,
+          "achieved_gflops": 0.0,
+          "achieved_gbps": 0.0,
+          "classification": "mixed_or_ambiguous",
+          "fraction_of_ceiling": 0.0,
+          "percent_of_step": 1.1691624268941272
+        }
+      ]
+    },
+    "cross_entropy": [
+      {
+        "op": "cross_entropy_forward",
+        "scale": "small",
+        "shape": {
+          "batch": 64,
+          "classes": 10
+        },
+        "timing": {
+          "mean_s": 8.595199976116419e-06,
+          "median_s": 8.89600021764636e-06,
+          "min_s": 7.935999892652035e-06,
+          "max_s": 9.279999881982804e-06,
+          "stdev_s": 5.085568100275141e-07
+        },
+        "flops": 1920,
+        "bytes": 3072,
+        "arithmetic_intensity": 0.625,
+        "achieved_gflops": 0.2233804920577911,
+        "achieved_gbps": 0.3574087872924658,
+        "classification": "latency_launch_bound",
+        "roofline_ceiling_gflops": 9.431275796140058,
+        "fraction_of_ceiling": 0.02368507685346389,
+        "classification_note": "elapsed 8.60us < 20us launch-overhead heuristic, and only 2.4% of the roofline ceiling."
+      },
+      {
+        "op": "cross_entropy_backward",
+        "scale": "small",
+        "shape": {
+          "batch": 64,
+          "classes": 10
+        },
+        "timing": {
+          "mean_s": 1.1902399966493248e-05,
+          "median_s": 1.196799986064434e-05,
+          "min_s": 1.104000024497509e-05,
+          "max_s": 1.2992000207304955e-05,
+          "stdev_s": 4.5069564500950515e-07
+        },
+        "flops": 3136,
+        "bytes": 5632,
+        "arithmetic_intensity": 0.5568181818181818,
+        "achieved_gflops": 0.26347627443441946,
+        "achieved_gbps": 0.4731818806169165,
+        "classification": "latency_launch_bound",
+        "roofline_ceiling_gflops": 8.402409345652051,
+        "fraction_of_ceiling": 0.03135722905130289,
+        "classification_note": "elapsed 11.90us < 20us launch-overhead heuristic, and only 3.1% of the roofline ceiling."
+      },
+      {
+        "op": "cross_entropy_forward",
+        "scale": "medium",
+        "shape": {
+          "batch": 1024,
+          "classes": 10
+        },
+        "timing": {
+          "mean_s": 1.2883200123906135e-05,
+          "median_s": 1.2032000347971917e-05,
+          "min_s": 1.1744000017642974e-05,
+          "max_s": 2.3360000923275948e-05,
+          "stdev_s": 2.638081043499441e-06
+        },
+        "flops": 30720,
+        "bytes": 49152,
+        "arithmetic_intensity": 0.625,
+        "achieved_gflops": 2.3845007222231844,
+        "achieved_gbps": 3.8152011555570953,
+        "classification": "latency_launch_bound",
+        "roofline_ceiling_gflops": 9.431275796140058,
+        "fraction_of_ceiling": 0.2528290735808076,
+        "classification_note": "elapsed 12.88us < 20us launch-overhead heuristic, and only 25.3% of the roofline ceiling."
+      },
+      {
+        "op": "cross_entropy_backward",
+        "scale": "medium",
+        "shape": {
+          "batch": 1024,
+          "classes": 10
+        },
+        "timing": {
+          "mean_s": 2.0102399867027997e-05,
+          "median_s": 1.9791999831795692e-05,
+          "min_s": 1.9680000841617586e-05,
+          "max_s": 2.1568000316619873e-05,
+          "stdev_s": 5.870843113939116e-07
+        },
+        "flops": 50176,
+        "bytes": 90112,
+        "arithmetic_intensity": 0.5568181818181818,
+        "achieved_gflops": 2.496020392187044,
+        "achieved_gbps": 4.482648867601221,
+        "classification": "mixed_or_ambiguous",
+        "roofline_ceiling_gflops": 8.402409345652051,
+        "fraction_of_ceiling": 0.2970600799732098,
+        "classification_note": "Only 29.7% of the 8.40 GFLOP/s roofline ceiling achieved, with elapsed time (20.10us) above the latency-bound heuristic -- no single cause is unambiguous from this measurement alone."
+      },
+      {
+        "op": "cross_entropy_forward",
+        "scale": "large",
+        "shape": {
+          "batch": 16384,
+          "classes": 10
+        },
+        "timing": {
+          "mean_s": 8.956320025026798e-05,
+          "median_s": 8.944000303745269e-05,
+          "min_s": 8.857599645853042e-05,
+          "max_s": 9.120000153779983e-05,
+          "stdev_s": 6.61393003610787e-07
+        },
+        "flops": 491520,
+        "bytes": 786432,
+        "arithmetic_intensity": 0.625,
+        "achieved_gflops": 5.4879682573482995,
+        "achieved_gbps": 8.78074921175728,
+        "classification": "memory_bandwidth_bound",
+        "roofline_ceiling_gflops": 9.431275796140058,
+        "fraction_of_ceiling": 0.5818903376353772,
+        "classification_note": "AI=0.625 is left of the ridge point (6.931) -- bandwidth, not compute, sets this op's ceiling."
+      },
+      {
+        "op": "cross_entropy_backward",
+        "scale": "large",
+        "shape": {
+          "batch": 16384,
+          "classes": 10
+        },
+        "timing": {
+          "mean_s": 0.0002068112000823021,
+          "median_s": 0.00020737599581480026,
+          "min_s": 0.000201215997338295,
+          "max_s": 0.00021040000021457672,
+          "stdev_s": 2.4797598860284916e-06
+        },
+        "flops": 802816,
+        "bytes": 1441792,
+        "arithmetic_intensity": 0.5568181818181818,
+        "achieved_gflops": 3.881878736163773,
+        "achieved_gbps": 6.9715373220900405,
+        "classification": "memory_bandwidth_bound",
+        "roofline_ceiling_gflops": 8.402409345652051,
+        "fraction_of_ceiling": 0.4619959081346718,
+        "classification_note": "AI=0.557 is left of the ridge point (6.931) -- bandwidth, not compute, sets this op's ceiling."
+      }
+    ],
+    "async_batch_sweep": [
+      {
+        "batch_size": 32,
+        "prefetch_size": 2,
+        "n_samples": 1024,
+        "steps": 32,
+        "epoch_wall_ms": 528.9407999953255,
+        "samples_per_sec": 1935.9444384117269,
+        "mean_cpu_step_wall_ms": 9.162128106254386,
+        "gpu_forward_ms": 2.338016003370285,
+        "gpu_loss_ms": 1.6187709979712963,
+        "gpu_backward_ms": 9.791089966893196,
+        "gpu_optimizer_ms": 0.13096699956804514,
+        "gpu_busy_ms_per_step": 13.878843967802823,
+        "compute_stream_busy_total_ms": 444.1230069696903,
+        "compute_stream_utilization": 0.8396459622203756
+      },
+      {
+        "batch_size": 64,
+        "prefetch_size": 2,
+        "n_samples": 1024,
+        "steps": 16,
+        "epoch_wall_ms": 357.89830004796386,
+        "samples_per_sec": 2861.147984952061,
+        "mean_cpu_step_wall_ms": 10.464718754519708,
+        "gpu_forward_ms": 3.0524380207061768,
+        "gpu_loss_ms": 1.8428760208189487,
+        "gpu_backward_ms": 13.815594106912613,
+        "gpu_optimizer_ms": 0.11781599931418896,
+        "gpu_busy_ms_per_step": 18.828724147751927,
+        "compute_stream_busy_total_ms": 301.25958636403084,
+        "compute_stream_utilization": 0.8417463461649788
+      },
+      {
+        "batch_size": 128,
+        "prefetch_size": 2,
+        "n_samples": 1024,
+        "steps": 8,
+        "epoch_wall_ms": 447.58539996109903,
+        "samples_per_sec": 2287.8315514514074,
+        "mean_cpu_step_wall_ms": 35.37846250401344,
+        "gpu_forward_ms": 6.420663982629776,
+        "gpu_loss_ms": 10.700840026140213,
+        "gpu_backward_ms": 29.259435653686523,
+        "gpu_optimizer_ms": 0.08639999944716692,
+        "gpu_busy_ms_per_step": 46.46733966190368,
+        "compute_stream_busy_total_ms": 371.73871729522943,
+        "compute_stream_utilization": 0.8305425452383799
+      }
+    ],
+    "prefetch_depth_sweep": [
+      {
+        "batch_size": 64,
+        "prefetch_size": 1,
+        "n_samples": 1024,
+        "steps": 16,
+        "epoch_wall_ms": 505.0598999951035,
+        "samples_per_sec": 2027.482284794195,
+        "mean_cpu_step_wall_ms": 15.661906254536007,
+        "gpu_forward_ms": 3.276712015271187,
+        "gpu_loss_ms": 2.4507500007748604,
+        "gpu_backward_ms": 18.54855614900589,
+        "gpu_optimizer_ms": 0.1175700007006526,
+        "gpu_busy_ms_per_step": 24.39358816575259,
+        "compute_stream_busy_total_ms": 390.29741065204144,
+        "compute_stream_utilization": 0.7727744979473233
+      },
+      {
+        "batch_size": 64,
+        "prefetch_size": 2,
+        "n_samples": 1024,
+        "steps": 16,
+        "epoch_wall_ms": 431.7391999065876,
+        "samples_per_sec": 2371.802236677966,
+        "mean_cpu_step_wall_ms": 11.966831254540011,
+        "gpu_forward_ms": 3.9416620060801506,
+        "gpu_loss_ms": 1.8604999780654907,
+        "gpu_backward_ms": 16.909993916749954,
+        "gpu_optimizer_ms": 0.1391419991850853,
+        "gpu_busy_ms_per_step": 22.85129790008068,
+        "compute_stream_busy_total_ms": 365.6207664012909,
+        "compute_stream_utilization": 0.8468556167250917
+      },
+      {
+        "batch_size": 64,
+        "prefetch_size": 3,
+        "n_samples": 1024,
+        "steps": 16,
+        "epoch_wall_ms": 481.3330000033602,
+        "samples_per_sec": 2127.425295986046,
+        "mean_cpu_step_wall_ms": 14.03637501061894,
+        "gpu_forward_ms": 3.280425973236561,
+        "gpu_loss_ms": 2.107149973511696,
+        "gpu_backward_ms": 17.854912042617798,
+        "gpu_optimizer_ms": 0.11819800175726414,
+        "gpu_busy_ms_per_step": 23.36068599112332,
+        "compute_stream_busy_total_ms": 373.7709758579731,
+        "compute_stream_utilization": 0.7765330360797281
+      }
+    ],
+    "allocator_and_pinned": {
+      "epoch": {
+        "batch_size": 64,
+        "prefetch_size": 2,
+        "n_samples": 1024,
+        "steps": 16,
+        "epoch_wall_ms": 487.6462999964133,
+        "samples_per_sec": 2099.8826403635826,
+        "mean_cpu_step_wall_ms": 13.95706875337055,
+        "gpu_forward_ms": 4.723458029329777,
+        "gpu_loss_ms": 2.212507985532284,
+        "gpu_backward_ms": 18.49588191509247,
+        "gpu_optimizer_ms": 0.1593660027720034,
+        "gpu_busy_ms_per_step": 25.591213932726532,
+        "compute_stream_busy_total_ms": 409.4594229236245,
+        "compute_stream_utilization": 0.8396647794244233
+      },
+      "allocator_before": {
+        "allocated_bytes": 273029668,
+        "peak_allocated_bytes": 430270784,
+        "allocation_count": 740,
+        "free_count": 366,
+        "reserved_bytes": 273029668,
+        "peak_reserved_bytes": 792636896,
+        "cached_bytes": 0,
+        "cache_hit_count": 16459,
+        "cache_miss_count": 740,
+        "pending_bytes": 0,
+        "pending_count": 0
+      },
+      "allocator_after": {
+        "allocated_bytes": 273029668,
+        "peak_allocated_bytes": 430270784,
+        "allocation_count": 811,
+        "free_count": 366,
+        "reserved_bytes": 283784400,
+        "peak_reserved_bytes": 792636896,
+        "cached_bytes": 0,
+        "cache_hit_count": 17338,
+        "cache_miss_count": 811,
+        "pending_bytes": 10754732,
+        "pending_count": 71
+      },
+      "allocator_after_gc_and_empty_cache": {
+        "allocated_bytes": 273029668,
+        "peak_allocated_bytes": 430270784,
+        "allocation_count": 811,
+        "free_count": 437,
+        "reserved_bytes": 273029668,
+        "peak_reserved_bytes": 792636896,
+        "cached_bytes": 0,
+        "cache_hit_count": 17338,
+        "cache_miss_count": 811,
+        "pending_bytes": 0,
+        "pending_count": 0
+      },
+      "pinned_before": {
+        "pinned_active_bytes": 0,
+        "pinned_peak_bytes": 804864,
+        "pinned_allocation_count": 428,
+        "pinned_free_count": 428
+      },
+      "pinned_after": {
+        "pinned_active_bytes": 0,
+        "pinned_peak_bytes": 804864,
+        "pinned_allocation_count": 472,
+        "pinned_free_count": 472
+      }
+    },
+    "below256_three_way_reassessment": [
+      {
+        "label": "mnist_conv1 (we=72)",
+        "config": {
+          "N": 64,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 1,
+          "Cout": 8
+        },
+        "weight_elements": 72,
+        "timed_ms": {
+          "production": {
+            "mean_ms": 2.304469339052836,
+            "median_ms": 2.0903360843658447,
+            "min_ms": 2.079551935195923,
+            "max_ms": 6.212128162384033,
+            "stdev_ms": 0.7900337106501835
+          },
+          "warpreduce_wp1": {
+            "mean_ms": 2.3772202730178833,
+            "median_ms": 2.0887200832366943,
+            "min_ms": 2.0859200954437256,
+            "max_ms": 8.156352043151855,
+            "stdev_ms": 1.1889307005936516
+          },
+          "warpreduce_wp2": {
+            "mean_ms": 2.283063467343648,
+            "median_ms": 2.0807520151138306,
+            "min_ms": 2.0770559310913086,
+            "max_ms": 8.148320198059082,
+            "stdev_ms": 1.1077718132456231
+          },
+          "warpreduce_wp4": {
+            "mean_ms": 2.116610113779704,
+            "median_ms": 2.0781919956207275,
+            "min_ms": 2.0761280059814453,
+            "max_ms": 3.224128007888794,
+            "stdev_ms": 0.2091825482851466
+          },
+          "warpreduce_wp8": {
+            "mean_ms": 2.1831594626108806,
+            "median_ms": 2.1060320138931274,
+            "min_ms": 2.0995841026306152,
+            "max_ms": 4.4336957931518555,
+            "stdev_ms": 0.425064478373951
+          },
+          "warpreduce_wp16": {
+            "mean_ms": 2.7701685349146525,
+            "median_ms": 2.7520159482955933,
+            "min_ms": 2.741760015487671,
+            "max_ms": 3.3029439449310303,
+            "stdev_ms": 0.100685617149033
+          },
+          "warpsubgroup_gs8_wp2": {
+            "mean_ms": 6.461607456207275,
+            "median_ms": 6.4636640548706055,
+            "min_ms": 6.4260478019714355,
+            "max_ms": 6.507999897003174,
+            "stdev_ms": 0.027225346216107855
+          },
+          "warpsubgroup_gs8_wp4": {
+            "mean_ms": 6.459842109680176,
+            "median_ms": 6.458655834197998,
+            "min_ms": 6.448383808135986,
+            "max_ms": 6.4732160568237305,
+            "stdev_ms": 0.005780516130944117
+          },
+          "warpsubgroup_gs8_wp8": {
+            "mean_ms": 6.845700279871623,
+            "median_ms": 6.849823951721191,
+            "min_ms": 6.738304138183594,
+            "max_ms": 6.942495822906494,
+            "stdev_ms": 0.06447261484463851
+          },
+          "warpsubgroup_gs16_wp2": {
+            "mean_ms": 3.544312524795532,
+            "median_ms": 3.2900478839874268,
+            "min_ms": 3.2757439613342285,
+            "max_ms": 10.746272087097168,
+            "stdev_ms": 1.360386261676412
+          },
+          "warpsubgroup_gs16_wp4": {
+            "mean_ms": 3.4219712018966675,
+            "median_ms": 3.3415520191192627,
+            "min_ms": 3.3371520042419434,
+            "max_ms": 5.751904010772705,
+            "stdev_ms": 0.44006072609074737
+          },
+          "warpsubgroup_gs16_wp8": {
+            "mean_ms": 3.794095993041992,
+            "median_ms": 3.527024030685425,
+            "min_ms": 3.5203840732574463,
+            "max_ms": 11.528127670288086,
+            "stdev_ms": 1.4607311327364227
+          },
+          "gridsplit_ns1": {
+            "mean_ms": 3.165898648897807,
+            "median_ms": 2.041648030281067,
+            "min_ms": 2.0310399532318115,
+            "max_ms": 8.002431869506836,
+            "stdev_ms": 2.280468863217863
+          },
+          "gridsplit_ns2": {
+            "mean_ms": 3.068941855430603,
+            "median_ms": 2.072751998901367,
+            "min_ms": 2.0527360439300537,
+            "max_ms": 8.170656204223633,
+            "stdev_ms": 2.056419868619108
+          },
+          "gridsplit_ns4": {
+            "mean_ms": 2.113977591196696,
+            "median_ms": 2.1113439798355103,
+            "min_ms": 2.1084160804748535,
+            "max_ms": 2.131648063659668,
+            "stdev_ms": 0.006964423253551012
+          },
+          "gridsplit_ns8": {
+            "mean_ms": 2.4282421271006265,
+            "median_ms": 2.2119839191436768,
+            "min_ms": 2.206752061843872,
+            "max_ms": 8.692255973815918,
+            "stdev_ms": 1.183088171764838
+          }
+        },
+        "production_ms": 2.304469339052836,
+        "production_classification": {
+          "achieved_gflops": 3.1353613075059186,
+          "ceiling_gflops": 60.35054287863843,
+          "fraction_of_ceiling": 0.051952495502997464
+        },
+        "best_variant": "gridsplit_ns4",
+        "best_ms": 2.113977591196696,
+        "best_classification": {
+          "achieved_gflops": 3.4178905349274893,
+          "ceiling_gflops": 60.35054287863843,
+          "fraction_of_ceiling": 0.05663396502995303
+        },
+        "speedup_production_vs_best": 1.090110580476071
+      },
+      {
+        "label": "we_144",
+        "config": {
+          "N": 64,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 1,
+          "Cout": 16
+        },
+        "weight_elements": 144,
+        "timed_ms": {
+          "production": {
+            "mean_ms": 5.111751476923625,
+            "median_ms": 4.188240051269531,
+            "min_ms": 4.167424201965332,
+            "max_ms": 10.625696182250977,
+            "stdev_ms": 1.9214793073059269
+          },
+          "warpreduce_wp1": {
+            "mean_ms": 5.373218139012654,
+            "median_ms": 4.544656038284302,
+            "min_ms": 4.419392108917236,
+            "max_ms": 15.819456100463867,
+            "stdev_ms": 2.8333314791671738
+          },
+          "warpreduce_wp2": {
+            "mean_ms": 6.432440455754598,
+            "median_ms": 4.935248136520386,
+            "min_ms": 4.875199794769287,
+            "max_ms": 16.207199096679688,
+            "stdev_ms": 3.533798404520903
+          },
+          "warpreduce_wp4": {
+            "mean_ms": 6.789542452494303,
+            "median_ms": 4.895616054534912,
+            "min_ms": 4.870751857757568,
+            "max_ms": 16.37651252746582,
+            "stdev_ms": 3.7960245129435357
+          },
+          "warpreduce_wp8": {
+            "mean_ms": 6.93852268854777,
+            "median_ms": 4.852400064468384,
+            "min_ms": 4.810719966888428,
+            "max_ms": 15.643168449401855,
+            "stdev_ms": 3.7183334539315536
+          },
+          "warpreduce_wp16": {
+            "mean_ms": 5.978834136327108,
+            "median_ms": 4.484767913818359,
+            "min_ms": 4.459680080413818,
+            "max_ms": 16.21824073791504,
+            "stdev_ms": 3.1085729555884316
+          },
+          "warpsubgroup_gs8_wp2": {
+            "mean_ms": 6.737197828292847,
+            "median_ms": 6.7366721630096436,
+            "min_ms": 6.685760021209717,
+            "max_ms": 6.898208141326904,
+            "stdev_ms": 0.043344410177646966
+          },
+          "warpsubgroup_gs8_wp4": {
+            "mean_ms": 6.727830410003662,
+            "median_ms": 6.71830415725708,
+            "min_ms": 6.689856052398682,
+            "max_ms": 6.870495796203613,
+            "stdev_ms": 0.03931828743643649
+          },
+          "warpsubgroup_gs8_wp8": {
+            "mean_ms": 7.143366384506225,
+            "median_ms": 7.128687858581543,
+            "min_ms": 7.1064958572387695,
+            "max_ms": 7.321568012237549,
+            "stdev_ms": 0.04933210172224872
+          },
+          "warpsubgroup_gs16_wp2": {
+            "mean_ms": 8.572698640823365,
+            "median_ms": 4.174991846084595,
+            "min_ms": 4.110079765319824,
+            "max_ms": 15.508255958557129,
+            "stdev_ms": 5.28316133500229
+          },
+          "warpsubgroup_gs16_wp4": {
+            "mean_ms": 5.398700825373331,
+            "median_ms": 4.1100640296936035,
+            "min_ms": 4.10700798034668,
+            "max_ms": 15.567584037780762,
+            "stdev_ms": 2.7491469536212807
+          },
+          "warpsubgroup_gs16_wp8": {
+            "mean_ms": 4.7002154668172205,
+            "median_ms": 4.125312089920044,
+            "min_ms": 4.115776062011719,
+            "max_ms": 10.84937572479248,
+            "stdev_ms": 1.6158047167149021
+          },
+          "gridsplit_ns1": {
+            "mean_ms": 4.661180782318115,
+            "median_ms": 4.071984052658081,
+            "min_ms": 4.0471038818359375,
+            "max_ms": 15.214591979980469,
+            "stdev_ms": 2.297956949735855
+          },
+          "gridsplit_ns2": {
+            "mean_ms": 5.300550429026286,
+            "median_ms": 4.110272169113159,
+            "min_ms": 4.095071792602539,
+            "max_ms": 14.130528450012207,
+            "stdev_ms": 2.6835351367945472
+          },
+          "gridsplit_ns4": {
+            "mean_ms": 5.966025654474894,
+            "median_ms": 4.204272031784058,
+            "min_ms": 4.195807933807373,
+            "max_ms": 15.328160285949707,
+            "stdev_ms": 3.5065108904073155
+          },
+          "gridsplit_ns8": {
+            "mean_ms": 5.996330738067627,
+            "median_ms": 4.412592172622681,
+            "min_ms": 4.404672145843506,
+            "max_ms": 15.747520446777344,
+            "stdev_ms": 3.1125294488608035
+          }
+        },
+        "production_ms": 5.111751476923625,
+        "production_classification": {
+          "achieved_gflops": 2.826954335561081,
+          "ceiling_gflops": 63.89997560622062,
+          "fraction_of_ceiling": 0.04424030383019237
+        },
+        "best_variant": "gridsplit_ns1",
+        "best_ms": 4.661180782318115,
+        "best_classification": {
+          "achieved_gflops": 3.100220453756641,
+          "ceiling_gflops": 63.89997560622062,
+          "fraction_of_ceiling": 0.04851677053621342
+        },
+        "speedup_production_vs_best": 1.0966644967547108
+      },
+      {
+        "label": "we_243",
+        "config": {
+          "N": 64,
+          "H": 28,
+          "W": 28,
+          "K": 3,
+          "S": 1,
+          "P": 1,
+          "Cin": 1,
+          "Cout": 27
+        },
+        "weight_elements": 243,
+        "timed_ms": {
+          "production": {
+            "mean_ms": 9.345682128270466,
+            "median_ms": 7.083904027938843,
+            "min_ms": 6.997183799743652,
+            "max_ms": 18.145984649658203,
+            "stdev_ms": 3.6589870859358817
+          },
+          "warpreduce_wp1": {
+            "mean_ms": 8.757245826721192,
+            "median_ms": 7.232480049133301,
+            "min_ms": 7.2053117752075195,
+            "max_ms": 18.482912063598633,
+            "stdev_ms": 3.3167409187238555
+          },
+          "warpreduce_wp2": {
+            "mean_ms": 10.355450693766276,
+            "median_ms": 7.880640029907227,
+            "min_ms": 7.77788782119751,
+            "max_ms": 23.482688903808594,
+            "stdev_ms": 4.699052829911074
+          },
+          "warpreduce_wp4": {
+            "mean_ms": 10.137953090667725,
+            "median_ms": 7.812432050704956,
+            "min_ms": 7.78710412979126,
+            "max_ms": 25.54377555847168,
+            "stdev_ms": 4.6416107387502805
+          },
+          "warpreduce_wp8": {
+            "mean_ms": 9.17316902478536,
+            "median_ms": 7.606175899505615,
+            "min_ms": 7.57366418838501,
+            "max_ms": 18.666271209716797,
+            "stdev_ms": 3.5023521908609196
+          },
+          "warpreduce_wp16": {
+            "mean_ms": 9.351160494486491,
+            "median_ms": 7.218751907348633,
+            "min_ms": 7.197408199310303,
+            "max_ms": 19.369600296020508,
+            "stdev_ms": 4.251100831852352
+          },
+          "warpsubgroup_gs8_wp2": {
+            "mean_ms": 8.29722655614217,
+            "median_ms": 8.16059160232544,
+            "min_ms": 8.135199546813965,
+            "max_ms": 11.615903854370117,
+            "stdev_ms": 0.631216308060619
+          },
+          "warpsubgroup_gs8_wp4": {
+            "mean_ms": 9.368559964497884,
+            "median_ms": 8.137631893157959,
+            "min_ms": 8.126912117004395,
+            "max_ms": 19.026592254638672,
+            "stdev_ms": 2.8515851220786224
+          },
+          "warpsubgroup_gs8_wp8": {
+            "mean_ms": 10.37410437266032,
+            "median_ms": 8.262864112854004,
+            "min_ms": 8.245759963989258,
+            "max_ms": 19.65292739868164,
+            "stdev_ms": 4.130128968139742
+          },
+          "warpsubgroup_gs16_wp2": {
+            "mean_ms": 12.520290120442708,
+            "median_ms": 9.387279987335205,
+            "min_ms": 9.307040214538574,
+            "max_ms": 20.65190315246582,
+            "stdev_ms": 4.9074319411334155
+          },
+          "warpsubgroup_gs16_wp4": {
+            "mean_ms": 10.500867239634196,
+            "median_ms": 9.340864181518555,
+            "min_ms": 9.31606388092041,
+            "max_ms": 21.10915184020996,
+            "stdev_ms": 3.4595852276469174
+          },
+          "warpsubgroup_gs16_wp8": {
+            "mean_ms": 12.451282119750976,
+            "median_ms": 9.579264163970947,
+            "min_ms": 9.539392471313477,
+            "max_ms": 20.87731170654297,
+            "stdev_ms": 4.82780096409736
+          },
+          "gridsplit_ns1": {
+            "mean_ms": 7.893317317962646,
+            "median_ms": 6.885663986206055,
+            "min_ms": 6.804895877838135,
+            "max_ms": 18.323936462402344,
+            "stdev_ms": 2.9613658282777466
+          },
+          "gridsplit_ns2": {
+            "mean_ms": 8.681699180603028,
+            "median_ms": 6.926032066345215,
+            "min_ms": 6.878880023956299,
+            "max_ms": 18.012767791748047,
+            "stdev_ms": 3.2294111889571737
+          },
+          "gridsplit_ns4": {
+            "mean_ms": 9.453633022308349,
+            "median_ms": 7.085504055023193,
+            "min_ms": 7.067903995513916,
+            "max_ms": 18.58198356628418,
+            "stdev_ms": 3.9023430656861393
+          },
+          "gridsplit_ns8": {
+            "mean_ms": 9.209413369496664,
+            "median_ms": 7.436800003051758,
+            "min_ms": 7.431327819824219,
+            "max_ms": 18.69411277770996,
+            "stdev_ms": 3.271586981594454
+          }
+        },
+        "production_ms": 9.345682128270466,
+        "production_classification": {
+          "achieved_gflops": 2.6092836954334593,
+          "ceiling_gflops": 65.46867689489807,
+          "fraction_of_ceiling": 0.039855451785322384
+        },
+        "best_variant": "gridsplit_ns1",
+        "best_ms": 7.893317317962646,
+        "best_classification": {
+          "achieved_gflops": 3.0893900520768853,
+          "ceiling_gflops": 65.46867689489807,
+          "fraction_of_ceiling": 0.04718882675812316
+        },
+        "speedup_production_vs_best": 1.183999293554651
+      }
+    ],
+    "below256_occupancy": {
+      "shared_mem_bytes": 1024,
+      "threads_per_block": 256,
+      "max_active_blocks_per_sm_reduce": 5,
+      "max_active_blocks_per_sm_gridsplit": 5,
+      "sm_count": 3,
+      "max_resident_blocks_total_reduce": 15,
+      "max_resident_blocks_total_gridsplit": 15,
+      "occupancy_fraction_reduce": 0.625,
+      "occupancy_fraction_gridsplit": 0.625,
+      "note": "Both kernels are register-bound (not shared-memory- or thread-count-bound) at this launch configuration -- see the ptxas register counts alongside this. Identical (or near-identical) occupancy between the two confirms grid-splitting does not change per-SM concurrent-block capacity; it only changes total block count and per-block work size."
+    },
+    "amdahl_fractions": {
+      "conv2d forward (of full step)": 0.12395195549596211,
+      "dInput (of full step)": 0.10685560677842146,
+      "dWeight blocks_y==1 (M43 tworeduce, of full step)": 0.11565535742106814,
+      "dWeight below-256 block-reduce (of full step)": 0.13475200043571323,
+      "dBias (of full step)": 0.019938987510612835,
+      "conv2d backward total (of full step)": 0.37720195214581564,
+      "matmul backward (of full step)": 0.10113477154323386,
+      "CrossEntropy backward (of full step)": 0.019224696103176023
+    },
+    "amdahl_projection": {
+      "conv2d forward (of full step)": {
+        "1.25x": 1.0254205771486753,
+        "1.5x": 1.0430980128210399,
+        "2.0x": 1.0660707788689552
+      },
+      "dInput (of full step)": {
+        "1.25x": 1.0218378200582936,
+        "1.5x": 1.036934073193435,
+        "2.0x": 1.056443453104274
+      },
+      "dWeight blocks_y==1 (M43 tworeduce, of full step)": {
+        "1.25x": 1.0236787872036814,
+        "1.5x": 1.0400976206912844,
+        "2.0x": 1.0613769661916947
+      },
+      "dWeight below-256 block-reduce (of full step)": {
+        "1.25x": 1.0276968410341634,
+        "1.5x": 1.0470297860625695,
+        "2.0x": 1.0722434767211602
+      },
+      "dBias (of full step)": {
+        "1.25x": 1.0040037637010084,
+        "1.5x": 1.0066907984189077,
+        "2.0x": 1.0100698854150687
+      },
+      "conv2d backward total (of full step)": {
+        "1.25x": 1.081596026527896,
+        "1.5x": 1.1438166207476093,
+        "2.0x": 1.2324392444547165
+      },
+      "matmul backward (of full step)": {
+        "1.25x": 1.0206445302793303,
+        "1.5x": 1.0348877107326142,
+        "2.0x": 1.0532606369465343
+      },
+      "CrossEntropy backward (of full step)": {
+        "1.25x": 1.0038597798395232,
+        "1.5x": 1.0064495623262992,
+        "2.0x": 1.0097056420611439
+      }
+    }
+  }
+}
