@@ -18,7 +18,7 @@ import pytest
 import forge
 from forge import Tensor, no_grad
 from forge.exceptions import PersistenceError
-from forge.nn import BatchNorm2d, Conv2d, Dropout, Flatten, Linear, MaxPool2d, Module, ReLU, Sequential
+from forge.nn import BatchNorm2d, Conv2d, Dropout, Embedding, Flatten, Linear, MaxPool2d, Module, ReLU, Sequential
 from forge.serialization import load_model, register_module, save_model
 from forge.serialization.archive import METADATA_ENTRY, PARAMETERS_DIR
 
@@ -836,3 +836,53 @@ def test_state_dict_includes_batchnorm_buffers(tmp_path):
     assert set(buffers.keys()) == {"running_mean", "running_var"}
     assert f"{PARAMETERS_DIR}/running_mean.npy" in names
     assert f"{PARAMETERS_DIR}/running_var.npy" in names
+
+
+# -- Embedding (Milestone 54) --------------------------------------------------
+
+
+def test_save_load_embedding_restores_configuration(tmp_path):
+    model = Embedding(50, 8)
+    path = tmp_path / "emb.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+    assert loaded.num_embeddings == 50
+    assert loaded.embedding_dim == 8
+
+
+def test_save_load_embedding_preserves_weight_values(tmp_path):
+    model = Embedding(20, 6)
+    path = tmp_path / "emb.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+    np.testing.assert_allclose(loaded.weight.numpy(), model.weight.numpy())
+
+
+def test_save_load_embedding_prediction_parity(tmp_path):
+    model = Embedding(20, 6)
+    idx = Tensor(np.array([1, 5, 19, 5], dtype=np.int64))
+    with no_grad():
+        pre_save = model(idx).numpy()
+
+    path = tmp_path / "emb.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+    with no_grad():
+        post_load = loaded(idx).numpy()
+
+    np.testing.assert_allclose(pre_save, post_load, atol=1e-6)
+
+
+def test_save_load_embedding_inside_sequential(tmp_path):
+    model = Sequential(Embedding(10, 4))
+    idx = Tensor(np.array([2, 3], dtype=np.int64))
+    with no_grad():
+        pre_save = model(idx).numpy()
+
+    path = tmp_path / "emb_seq.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+    with no_grad():
+        post_load = loaded(idx).numpy()
+
+    np.testing.assert_allclose(pre_save, post_load, atol=1e-6)

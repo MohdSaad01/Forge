@@ -128,6 +128,7 @@ def _register_builtins() -> None:
     from ..nn.container import Sequential
     from ..nn.conv import Conv2d
     from ..nn.dropout import Dropout
+    from ..nn.embedding import Embedding
     from ..nn.flatten import Flatten
     from ..nn.linear import Linear
     from ..nn.module import Module
@@ -223,6 +224,18 @@ def _register_builtins() -> None:
             "eps": m.eps,
             "momentum": m.momentum,
             "affine": m.affine,
+        },
+    )
+    register_module(
+        "Embedding",
+        Embedding,
+        # `weight` is an ordinary Parameter (Section: `forge/nn/embedding.py`)
+        # -- its values round-trip via the existing generic parameter
+        # save/load path, unmodified. Only the construction-time shape is
+        # config, mirroring `Linear`'s `in_features`/`out_features`.
+        get_config=lambda m: {
+            "num_embeddings": m.num_embeddings,
+            "embedding_dim": m.embedding_dim,
         },
     )
 

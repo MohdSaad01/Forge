@@ -2767,3 +2767,49 @@ movement, persistence with CUDA-resident buffers
 (`tests/test_cuda_persistence.py`), and a real end-to-end training run
 through `examples/mnist/model.py::build_model_bn()`
 (`tests/test_mnist_bn_example_cuda_integration.py`).
+
+## CUDA Embedding lookup (Milestone 54)
+
+Unlike `batch_norm2d`, `embedding_lookup`/`embedding_lookup_backward` are
+ordinary `Backend` ABC methods -- implemented on **both** `CPUBackend` and
+`CUDABackend` (CPU: `table[indices]` fancy indexing forward, `np.add.at`
+scatter-add backward), the same shape `cross_entropy` uses, since CPU is a
+genuine first-class consumer here (unlike BatchNorm2d's CUDA-only fused
+path, which exists only because CPU has no equivalent gap to fill).
+
+**Forward** (`k_embedding_lookup_forward`, `kernels.cu`'s **Embedding
+lookup** section): one thread per output element (`n_indices *
+embedding_dim` total, the same "one thread per output element" convention
+Conv2d/MaxPool2d/BatchNorm2d already use), each copying exactly one
+`(row, dim)` element from `table` -- fully coalesced across the
+`embedding_dim`-sized inner index, no shared memory, no per-row loop.
+
+**Backward** (`k_embedding_lookup_backward`): the transpose operation --
+one thread per gradient element, atomically scattering `grad_output[i, d]`
+into `grad_table[indices[i], d]` via the existing `atomic_add_generic<T>`
+helper (defined in the Conv2d/MaxPool2d section, used the same way
+MaxPool2d's backward kernel needs it: more than one output position can
+reference the same table row when a token repeats within one batch/sequence,
+so more than one thread can target the same `grad_table` element).
+`grad_table` is `cudaMemsetAsync`-zeroed by the launcher first, the same
+"zero once, scatter-add into it" pattern `cf_maxpool2d_backward_*` already
+established.
+
+`indices` is always int64 (mirroring `cross_entropy`'s target convention --
+see that method's own comment in `backend.py`) and is excluded from
+`_require_compute_dtype`'s float32/float64 check but still passed through
+`_stream_guard`, since a CUDA-resident index tensor is itself an operand
+this launch reads. Like `cross_entropy`'s `target` and `batch_norm2d`'s
+`running_mean`/`running_var`, `indices` is excluded from the autograd
+`Node`'s `inputs` -- it never receives a gradient (an integer dtype cannot).
+
+Verified on the reference 940MX: CPU/CUDA forward and backward numerical
+parity across 1D and 2D index shapes, repeated-index gradient accumulation,
+`float32`/`float64`, a structural "no gradient reaches indices" check, a
+structural zero-`CPUBackend`-calls check through a real `Embedding ->
+RNNCell -> Linear` forward/backward pass (`tests/test_cuda_embedding.py`),
+CUDA-resident persistence round-tripping (`tests/test_cuda_persistence.py`),
+and a real end-to-end training run through `examples/word_rnn/`
+(`tests/test_word_rnn_example_cuda_integration.py`). See
+`docs/development/m54-product-direction.md` for the full design writeup and
+the measurement that motivated this addition.

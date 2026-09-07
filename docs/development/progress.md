@@ -3167,3 +3167,70 @@ so no further profiling was pursued. Full suite re-run in a single process:
 **1,715 passed** (1,627 pre-M53 + 88 new), zero skips (this session's CUDA
 backend is live), no regressions. Full report:
 `docs/development/m53-batchnorm.md`.
+
+### M54 — Embedding lookup: fresh capability assessment and implementation
+
+A fresh, non-optimization capability assessment (explicitly not assumed to
+be a performance milestone) surveyed model/layer coverage, Tensor/autograd
+primitives, optimizer/training infrastructure, and data/serialization for a
+genuine next gap, rather than continuing M52/M53's normalization thread.
+**Selected: `nn.Embedding` / `Tensor.embedding_lookup()`.** `examples/
+char_rnn` (M50) explicitly deferred an embedding/gather primitive, noting
+its one-hot-plus-`Linear` workaround "would only matter at a vocabulary
+large enough for one-hot's O(vocab_size) per-step cost to bite
+(thousands+)." A direct probe against Forge's real CPU backend measured
+that cost directly rather than estimating it: the workaround is 40x slower
+than a row-gather at a 30-token vocabulary, growing to roughly 300x-3500x
+by a few thousand tokens -- confirming M50's predicted threshold with real
+numbers. Rejected: attention/transformer (still too large a simultaneous
+blocker set), a binary-classification architecture and an autoencoder
+(both already fully expressible from existing primitives, no framework
+pressure), a deeper/stacked RNN (pure Python composition, no primitive
+gap), and optimizer/training-infrastructure changes (no workload need
+found, same conclusion as M49/M52).
+
+Implemented completely: `Backend.embedding_lookup`/
+`embedding_lookup_backward` (`forge/backend/base.py`, an ordinary ABC
+method pair implemented on **both** CPU and CUDA -- unlike `batch_norm2d`,
+CPU is a genuine first-class consumer here, not dead-code symmetry), CPU
+via NumPy fancy indexing forward / `np.add.at` scatter-add backward
+(`forge/backend/cpu.py`), CUDA via two new kernels
+(`k_embedding_lookup_forward`/`k_embedding_lookup_backward`, `kernels.cu`
+-- one thread per output/gradient element, backward reusing the existing
+`atomic_add_generic<T>` helper MaxPool2d backward already established,
+since a repeated token can make more than one thread target the same
+`grad_table` row), `Tensor.embedding_lookup(indices)` (fused primitive,
+mirroring `cross_entropy`'s shape -- `indices` excluded from the autograd
+`Node`'s `inputs`, so it never receives or needs a gradient), and
+`nn.Embedding(num_embeddings, embedding_dim)` (`forge/nn/embedding.py`,
+`N(0,1)`-initialized `Parameter` weight table, explicit index-range/dtype
+validation mirroring `CrossEntropyLoss`'s target validation). No
+persistence-format change was needed -- `weight` is an ordinary `Parameter`
+that round-trips via the existing generic save/load path unmodified, only
+a new registry entry. Added `examples/word_rnn/` (`Embedding -> RNNCell ->
+Linear`, structurally identical to `CharRNN` with the one-hot step
+replaced) as the real consumer: a synthetic, deterministic, offline
+~1,800-word vocabulary (procedurally enumerated CVCV tokens, avoiding any
+copyright/fabrication concern, mirroring `char_rnn/corpus.py`'s own
+convention) with a subject/verb/object sentence grammar giving the RNN
+genuine learnable next-word structure at realistic vocabulary scale.
+
+Validated: CPU forward against direct NumPy indexing; finite-difference
+gradient checks; repeated-index gradient accumulation (proven exact, not
+just non-crashing) on both backends; CPU/CUDA forward+backward parity
+(`float32`/`float64`, 1D and 2D index shapes) hardware-verified on the
+940MX; a structural "no gradient reaches indices" check; a structural
+zero-`CPUBackend`-calls check through a real `Embedding -> RNNCell ->
+Linear` forward/backward pass; serialization/CUDA-persistence round trips
+(prediction parity, CUDA-resident weight restoration); a real end-to-end
+training run through `examples/word_rnn/train.py` at the full ~1,800-word
+vocabulary on both CPU and CUDA (loss drops from the uniform-guess baseline
+`ln(1806) ≈ 7.5` to 4.40 over 5 CPU epochs; CUDA trains in lockstep) with
+save/load prediction-parity verified; no CUDA allocator growth across 200
+repeated forward/backward iterations beyond one-time buffer settling
+(`allocated_bytes` plateaus, `cache_miss_count` stays flat across further
+rounds). Full suite re-run in a single process: **1,753 passed** (1,715
+pre-M54 + 38 new), zero skips (CUDA backend live), no regressions; also
+re-run with the CUDA toolchain stripped from `PATH` to confirm all 928 CUDA
+tests skip cleanly (`825 passed, 928 skipped`, `0 failed`). Full report:
+`docs/development/m54-product-direction.md`.

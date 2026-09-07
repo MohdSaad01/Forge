@@ -18,7 +18,7 @@ import forge
 from forge import Tensor, no_grad
 from forge.backend.cpu import CPUBackend
 from forge.backend.cuda import CUDAStorage, is_cuda_available
-from forge.nn import BatchNorm2d, Conv2d, Dropout, Flatten, Linear, MaxPool2d, Module, ReLU, Sequential
+from forge.nn import BatchNorm2d, Conv2d, Dropout, Embedding, Flatten, Linear, MaxPool2d, Module, ReLU, Sequential
 from forge.serialization import load_model, register_module, save_model
 
 pytestmark = pytest.mark.skipif(not is_cuda_available(), reason="CUDA is not available on this machine")
@@ -322,5 +322,40 @@ def test_cuda_batchnorm_eval_after_load_matches_eval_before_save(tmp_path):
 
     with no_grad():
         post_load = loaded(x).to("cpu").numpy()
+
+    np.testing.assert_allclose(pre_save, post_load, atol=1e-5)
+
+
+# -- Embedding on CUDA (Milestone 54) ------------------------------------------
+
+
+def test_cuda_embedding_weight_restores_onto_cuda(tmp_path):
+    forge.random.seed(0)
+    model = Embedding(30, 6).to("cuda")
+    weight_before = model.weight.to("cpu").numpy().copy()
+
+    path = tmp_path / "emb_cuda.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    assert loaded.weight.device.type == "cuda"
+    assert isinstance(loaded.weight._data, CUDAStorage)
+    np.testing.assert_allclose(loaded.weight.to("cpu").numpy(), weight_before, atol=1e-5)
+
+
+def test_cuda_embedding_prediction_parity_after_reload(tmp_path):
+    forge.random.seed(1)
+    model = Embedding(30, 6).to("cuda")
+    idx = Tensor(np.array([2, 17, 29, 17], dtype=np.int64)).to("cuda")
+
+    with no_grad():
+        pre_save = model(idx).to("cpu").numpy()
+
+    path = tmp_path / "emb_cuda_parity.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    with no_grad():
+        post_load = loaded(idx).to("cpu").numpy()
 
     np.testing.assert_allclose(pre_save, post_load, atol=1e-5)

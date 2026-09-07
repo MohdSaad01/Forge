@@ -12,6 +12,7 @@ from .batchnorm import BatchNorm2d
 from .container import Sequential
 from .conv import Conv2d
 from .dropout import Dropout
+from .embedding import Embedding
 from .flatten import Flatten
 from .linear import Linear
 from .loss import CrossEntropyLoss, Loss, MSELoss
@@ -22,6 +23,6 @@ from .rnn import RNNCell
 
 __all__ = [
     "Module", "Parameter", "Linear", "ReLU", "Tanh", "Conv2d", "MaxPool2d",
-    "Sequential", "Flatten", "Dropout", "RNNCell", "BatchNorm2d",
+    "Sequential", "Flatten", "Dropout", "RNNCell", "BatchNorm2d", "Embedding",
     "Loss", "MSELoss", "CrossEntropyLoss",
 ]

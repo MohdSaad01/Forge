@@ -1802,6 +1802,57 @@ class CUDABackend(Backend):
             return grad_x, None, None
         return grad_x, sum_dy_xhat, sum_dy
 
+    # -- Embedding lookup (Milestone 54) -----------------------------------------
+    #
+    # `indices` is always int64 (mirroring `cross_entropy`'s target
+    # convention -- see that method's own comment above) and is excluded
+    # from `_require_compute_dtype`'s float32/float64 check, but still
+    # included in `_stream_guard` since a CUDA-resident index tensor is
+    # itself an operand this launch reads.
+
+    def embedding_lookup(self, table: CUDAStorage, indices: CUDAStorage) -> CUDAStorage:
+        self._stream_guard((table, indices), "embedding_lookup")
+        dtype = self._require_compute_dtype(table, op="embedding_lookup")
+        if table.ndim != 2:
+            raise CUDAError(
+                f"CUDA 'embedding_lookup' expects a 2D table (vocab_size, embedding_dim), got shape {table.shape}."
+            )
+        if indices.dtype != np.dtype(np.int64):
+            raise CUDAError(f"CUDA 'embedding_lookup' requires int64 indices, got '{indices.dtype}'.")
+
+        _vocab_size, dim = table.shape
+        n_indices = int(np.prod(indices.shape)) if indices.shape else 1
+        out_shape = indices.shape + (dim,)
+
+        out_ptr = self._alloc(n_indices * dim * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_embedding_lookup_forward_{_SUFFIX[dtype]}")
+        code = fn(
+            table.ptr, indices.ptr, out_ptr,
+            ctypes.c_longlong(n_indices), ctypes.c_int(dim), self._stream_handle(),
+        )
+        self._check(code, "embedding_lookup")
+        self._maybe_synchronize("embedding_lookup")
+        return CUDAStorage(out_ptr, out_shape, dtype, self._lib)
+
+    def embedding_lookup_backward(
+        self, grad_output: CUDAStorage, table_shape: "tuple[int, int]", indices: CUDAStorage
+    ) -> CUDAStorage:
+        self._stream_guard((grad_output, indices), "embedding_lookup backward")
+        dtype = self._require_compute_dtype(grad_output, op="embedding_lookup backward")
+        vocab_size, dim = table_shape
+        n_indices = int(np.prod(indices.shape)) if indices.shape else 1
+
+        grad_table_ptr = self._alloc(vocab_size * dim * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_embedding_lookup_backward_{_SUFFIX[dtype]}")
+        code = fn(
+            grad_output.ptr, indices.ptr, grad_table_ptr,
+            ctypes.c_longlong(n_indices), ctypes.c_int(dim), ctypes.c_longlong(vocab_size),
+            self._stream_handle(),
+        )
+        self._check(code, "embedding_lookup backward")
+        self._maybe_synchronize("embedding_lookup backward")
+        return CUDAStorage(grad_table_ptr, (vocab_size, dim), dtype, self._lib)
+
     # -- optimizer (Milestone 10) -----------------------------------------------
 
     def sgd_step(self, data: CUDAStorage, grad: CUDAStorage, lr: float) -> CUDAStorage:

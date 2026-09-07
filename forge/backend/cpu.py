@@ -333,3 +333,24 @@ class CPUBackend(Backend):
         one_hot[np.arange(n), target] = 1.0
         grad = (softmax - one_hot) * (np.asarray(grad_output, dtype=x.dtype) / n)
         return grad.astype(x.dtype, copy=False)
+
+    # -- Embedding lookup (Milestone 54) --------------------------------------
+    #
+    # Plain NumPy fancy indexing: `table[indices]` already handles an
+    # `indices` array of any shape, returning `indices.shape + (embedding_dim,)`
+    # with no loop needed. See `base.py`'s `embedding_lookup` docstring.
+
+    def embedding_lookup(self, table: np.ndarray, indices: np.ndarray) -> np.ndarray:
+        return table[indices]
+
+    def embedding_lookup_backward(
+        self, grad_output: np.ndarray, table_shape: "tuple[int, int]", indices: np.ndarray
+    ) -> np.ndarray:
+        grad_table = np.zeros(table_shape, dtype=grad_output.dtype)
+        # `np.add.at` is the unbuffered scatter-add NumPy provides -- plain
+        # `grad_table[indices] += grad_output` would silently drop repeated
+        # indices (fancy-index assignment only keeps the last write), which
+        # is exactly wrong here: a token appearing more than once in one
+        # batch/sequence must accumulate every occurrence's gradient.
+        np.add.at(grad_table, indices, grad_output)
+        return grad_table

@@ -602,6 +602,46 @@ class Tensor:
 
         return self._differentiable_wrap(result, (self,), backward_fn, "cross_entropy")
 
+    # -- Embedding lookup (Milestone 54) --------------------------------------
+
+    def embedding_lookup(self, indices: "Tensor") -> "Tensor":
+        """Fused embedding-table lookup: `output[*i] = self[indices[*i]]`.
+
+        `self` (the "table") must be 2D `(vocab_size, embedding_dim)`;
+        `indices` must be an int64-dtype Tensor, of any shape, already on
+        `self`'s device, holding values in `[0, vocab_size)` (not validated
+        here -- `nn.Embedding` does the user-facing range check, the same
+        division of responsibility `CrossEntropyLoss` uses for its own
+        target). The result has shape `indices.shape + (embedding_dim,)`.
+
+        This is `forge.nn.Embedding`'s one call site -- see
+        `docs/development/m54-product-direction.md` for why a dedicated
+        fused primitive (mirroring `cross_entropy`/`batch_norm2d` above)
+        was added rather than composing a lookup from a one-hot matmul, and
+        why `indices` is excluded from `inputs` below: an integer dtype
+        cannot require grad (`_GRAD_CAPABLE_DTYPES`), so it never
+        contributes to or needs an entry in the backward graph.
+        """
+        if self.ndim != 2:
+            raise ShapeMismatchError(
+                f"embedding_lookup expects a 2D table (vocab_size, embedding_dim), got shape {self.shape}."
+            )
+        if indices._device != self._device:
+            raise UnsupportedDeviceError(
+                "embedding_lookup requires indices on the same device as the table; got table on "
+                f"'{self._device}' and indices on '{indices._device}'."
+            )
+
+        backend = get_backend(self._device)
+        result = backend.embedding_lookup(self._data, indices._data)
+
+        table_shape, indices_data = self.shape, indices._data
+
+        def backward_fn(grad_output):
+            return (backend.embedding_lookup_backward(grad_output, table_shape, indices_data),)
+
+        return self._differentiable_wrap(result, (self,), backward_fn, "embedding_lookup")
+
     # -- BatchNorm2d (Milestone 53) --------------------------------------------
 
     def batch_norm2d(

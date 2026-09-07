@@ -3763,3 +3763,81 @@ __global__ void k_bn_backward_dx(
 
 BN_BACKWARD_DX_LAUNCHER(float, f32)
 BN_BACKWARD_DX_LAUNCHER(double, f64)
+
+// -- Embedding lookup (Milestone 54) ------------------------------------------
+//
+// Row-select from a `(vocab_size, embedding_dim)` table by an int64 index
+// array of arbitrary shape: one thread per output element (`n_indices *
+// embedding_dim` total, the same "one thread per output/gradient-target
+// element" convention Conv2d/MaxPool2d/BatchNorm2d already use), each
+// copying (forward) or atomically scattering (backward) exactly one
+// `table` row's worth of one element -- no per-row loop, no shared memory,
+// since a row copy is already perfectly coalesced across the `dim`-sized
+// inner index. Backward reuses `atomic_add_generic<T>` (defined above, in
+// the Conv2d/MaxPool2d section) for the same reason MaxPool2d backward
+// needs it: more than one output position can reference the same table
+// row (a repeated token), so more than one thread can target the same
+// `grad_table` element.
+
+template <typename T>
+__global__ void k_embedding_lookup_forward(
+    const T* table, const long long* indices, T* out,
+    long long n_indices, int dim)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = n_indices * dim;
+    if (idx >= total) return;
+    long long i = idx / dim;
+    int d = static_cast<int>(idx % dim);
+    long long row = indices[i];
+    out[idx] = table[row * dim + d];
+}
+
+#define EMBEDDING_LOOKUP_FORWARD_LAUNCHER(TYPE, SUFFIX)                                   \
+    extern "C" __declspec(dllexport) int cf_embedding_lookup_forward_##SUFFIX(            \
+        const TYPE* table, const long long* indices, TYPE* out,                           \
+        long long n_indices, int dim, void* stream) {                                     \
+        cudaStream_t s = (cudaStream_t)stream;                                            \
+        long long total = n_indices * dim;                                                \
+        int blocks, threads;                                                              \
+        launch_config(total, blocks, threads);                                            \
+        k_embedding_lookup_forward<TYPE><<<blocks, threads, 0, s>>>(                      \
+            table, indices, out, n_indices, dim);                                         \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+EMBEDDING_LOOKUP_FORWARD_LAUNCHER(float, f32)
+EMBEDDING_LOOKUP_FORWARD_LAUNCHER(double, f64)
+
+template <typename T>
+__global__ void k_embedding_lookup_backward(
+    const T* grad_out, const long long* indices, T* grad_table,
+    long long n_indices, int dim)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = n_indices * dim;
+    if (idx >= total) return;
+    long long i = idx / dim;
+    int d = static_cast<int>(idx % dim);
+    long long row = indices[i];
+    atomic_add_generic<T>(&grad_table[row * dim + d], grad_out[idx]);
+}
+
+#define EMBEDDING_LOOKUP_BACKWARD_LAUNCHER(TYPE, SUFFIX)                                  \
+    extern "C" __declspec(dllexport) int cf_embedding_lookup_backward_##SUFFIX(           \
+        const TYPE* grad_out, const long long* indices, TYPE* grad_table,                 \
+        long long n_indices, int dim, long long vocab_size, void* stream) {               \
+        cudaStream_t s = (cudaStream_t)stream;                                            \
+        cudaError_t memset_err = cudaMemsetAsync(                                         \
+            grad_table, 0, sizeof(TYPE) * static_cast<size_t>(vocab_size) * dim, s);      \
+        if (memset_err != cudaSuccess) return static_cast<int>(memset_err);               \
+        long long total = n_indices * dim;                                                \
+        int blocks, threads;                                                              \
+        launch_config(total, blocks, threads);                                            \
+        k_embedding_lookup_backward<TYPE><<<blocks, threads, 0, s>>>(                     \
+            grad_out, indices, grad_table, n_indices, dim);                               \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+EMBEDDING_LOOKUP_BACKWARD_LAUNCHER(float, f32)
+EMBEDDING_LOOKUP_BACKWARD_LAUNCHER(double, f64)

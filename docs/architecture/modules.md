@@ -255,6 +255,48 @@ Unrolling over a sequence (calling the *same* `RNNCell` instance once per timest
 
 **No buffer/running-state concept was needed.** Unlike e.g. batch normalization, `RNNCell` carries no persistent non-parameter state between calls (the hidden state is an ordinary `Tensor` the *caller* threads through the unroll loop, not module state) -- so it needed no change to `Module`'s Parameter-only `.to()`/persistence machinery, only a registry entry (`forge/serialization/registry.py`) mirroring `Linear`'s.
 
+## Embedding (Milestone 54)
+
+`forge/nn/embedding.py`. `Embedding(num_embeddings, embedding_dim)` owns one
+`Parameter` (`weight`, shape `(num_embeddings, embedding_dim)`, `N(0, 1)`
+-init -- see the module docstring for why no fan-in-scaled bound applies
+here, unlike `Linear`/`Conv2d`). `forward(indices)` validates `indices`
+(integer dtype, in-range, same device as `weight`) then dispatches to the
+new fused `Tensor.embedding_lookup()` primitive (`forge/tensor/tensor.py`)
+-- the same "validate at the Module layer, trust the fused Tensor
+primitive" split `CrossEntropyLoss`/`Tensor.cross_entropy()` established.
+
+**Why this exists**: closes a gap `examples/char_rnn` (Milestone 50)
+explicitly deferred -- a one-hot-vector-plus-`Linear` input encoding is
+mathematically equivalent to an embedding lookup but computes it as a full
+`(batch, vocab_size) @ (vocab_size, embedding_dim)` matmul, whose cost scales
+with vocabulary size even though only one table row per sample is ever
+"active." Measured directly against Forge's own CPU backend (not
+estimated): 40x slower at a 30-token vocabulary, growing to roughly
+300x-3500x by a few thousand tokens -- see `docs/development/
+m54-product-direction.md` for the full evidence and `examples/word_rnn/` for
+the real ~1,800-word-vocabulary consumer this was built against.
+
+**No new buffer/persistence mechanism was needed.** `weight` is an ordinary
+`Parameter` -- it moves via `Module.to()`'s existing per-Parameter walk and
+round-trips via the existing generic parameter save/load path unmodified;
+only a registry entry (`forge/serialization/registry.py`) was added,
+mirroring `Linear`'s.
+
+**Backend primitive** (`Backend.embedding_lookup`/`embedding_lookup_backward`,
+`forge/backend/base.py`): a fused primitive (like `cross_entropy`, not a
+general N-D `gather`) implemented on both CPU (`table[indices]` fancy
+indexing forward; `np.add.at` scatter-add backward, so a repeated index
+correctly accumulates every occurrence's gradient rather than only the
+last) and CUDA (`kernels.cu`'s **Embedding lookup** section: one thread per
+output element for forward, one atomic-scatter thread per gradient element
+for backward, reusing the existing `atomic_add_generic<T>` helper the
+MaxPool2d backward kernel already established -- see
+`docs/architecture/cuda-backend.md`'s **CUDA Embedding lookup** section).
+`indices` is never differentiated (an integer dtype cannot be -- the same
+`_GRAD_CAPABLE_DTYPES` exclusion `cross_entropy`'s `target` already
+relies on).
+
 ## Known limitations
 - No module serialization gap remains for the module types this milestone covers (see **Sequential/Flatten/Dropout** limitations above for the one Sequential-specific accommodation).
 - No buffer concept (see **No buffers to move** above) -- `Module.to()` moves `Parameter`s only.

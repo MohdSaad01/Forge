@@ -240,3 +240,36 @@ class Backend(ABC):
         "recompute from a saved input" convention `relu`/`exp`/`log`
         backward already use elsewhere in this interface.
         """
+
+    # -- Embedding lookup (Milestone 54) -----------------------------------
+    #
+    # A fused primitive, like `cross_entropy` above, rather than a general
+    # N-D `gather` -- the one shape a real consumer (`nn.Embedding`) needs:
+    # select rows of a 2D `(vocab_size, embedding_dim)` table by an
+    # integer-index Tensor of arbitrary shape. See
+    # `docs/development/m54-product-direction.md` for the evidence this was
+    # built against (a measured 40x-3500x compute cost gap between this and
+    # the pre-M54 one-hot-plus-Linear workaround, growing with vocabulary
+    # size, confirming M50's own predicted "thousands+" threshold).
+
+    @abstractmethod
+    def embedding_lookup(self, table: Any, indices: Any) -> Any:
+        """`output[*idx] = table[indices[*idx]]` -- `output.shape == indices.shape + (embedding_dim,)`.
+
+        `table` is `(vocab_size, embedding_dim)`; `indices` holds int64
+        values in `[0, vocab_size)` and may have any shape (a single batch
+        of tokens, or a `(batch, seq_len)` block of sequences looked up in
+        one call).
+        """
+
+    @abstractmethod
+    def embedding_lookup_backward(self, grad_output: Any, table_shape: "tuple[int, int]", indices: Any) -> Any:
+        """Gradient w.r.t. `table`: scatter-add `grad_output` into a zeroed `table_shape` array.
+
+        Every occurrence of a repeated index accumulates (a token appearing
+        more than once in `indices` sums its gradient contributions, the
+        same "multiple consumers of one leaf" accumulation autograd already
+        guarantees elsewhere) -- never overwrites. `indices` is never
+        differentiated (an integer dtype cannot be, matching `cross_entropy`
+        's non-differentiable `target`).
+        """
