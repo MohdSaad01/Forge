@@ -2813,3 +2813,87 @@ and a real end-to-end training run through `examples/word_rnn/`
 (`tests/test_word_rnn_example_cuda_integration.py`). See
 `docs/development/m54-product-direction.md` for the full design writeup and
 the measurement that motivated this addition.
+
+## CUDA fused RNNCell, and the default-stream synchronize cost (Milestone 55)
+
+Post-M54 profiling of the real `examples/char_rnn`/`examples/word_rnn`
+training loops found CUDA training these workloads 1.5x-7.3x *slower* than
+CPU on the reference 940MX -- not a kernel-quality problem, but a
+launch-count/synchronization one, at exactly the shapes those two examples
+actually use (batch<=32, hidden_size<=128). Two distinct root causes were
+found and fixed; see `docs/development/m55-post-m54-assessment.md` for the
+full measurement methodology.
+
+### Fused RNNCell (like `batch_norm2d`, CUDA-only)
+
+`nn.RNNCell.forward()` composes `tanh(i2h(x) + h2h(h))` from four ordinary
+Tensor ops (two `Linear`s, an `add`, a `.tanh()`), needing roughly four
+forward and eight backward CUDA kernel launches per call. A real
+sequence-model training step calls this once per timestep (M50's
+hand-written unrolled loop), so `Tensor.rnn_cell()`/`CUDABackend.rnn_cell`/
+`rnn_cell_backward` fuse it into one forward kernel (`k_rnn_cell_forward`,
+one thread per `(batch, hidden)` output element, both dot products computed
+directly rather than via two separate matmul launches) and six backward
+kernels (`k_rnn_cell_backward_dz` computes `dz = grad_h_out * (1 -
+h_out^2)` once; `_dx`/`_dh` each transpose-multiply `dz` against `W_ih`/
+`W_hh`; `_dwih`/`_dbih`/`_dwhh` each reduce over `batch` directly with a
+plain per-thread loop, since `batch` is small at every real Forge RNN shape
+today -- unlike Conv2d's `dWeight`, this never needed the cooperative
+-reduction machinery M21/M33/M45-M48 built for a large `N*H*W` reduction).
+CPU keeps composing from `Linear`/`+`/`.tanh()` unchanged, mirroring
+`batch_norm2d`'s CUDA-only-fused / CPU-composed split exactly. Verified:
+CPU/CUDA forward and every one of the five backward gradients
+(`grad_x`/`grad_w_ih`/`grad_b_ih`/`grad_w_hh`/`grad_h`) match to
+`float32`/`float64` tolerance, weight-sharing gradient accumulation across
+a multi-timestep unrolled sequence, a structural dispatch check, and a
+200-iteration memory-stability check (`tests/test_cuda_rnn_cell.py`).
+
+Measured in isolation (interleaved A/B, 940MX): a fused forward+backward
+call is 1.2x-1.7x faster than the composed path at `word_rnn`'s real shape
+(batch=32, input=32, hidden=128) -- real, but a **modest** contributor to
+the full training step, because the composed path's dominant cost was not
+actually kernel launch count. See the next section.
+
+### The real dominant cost: per-launch synchronization on the default stream
+
+Profiling one full `word_rnn` training epoch with `cProfile` found **56% of
+total wall-clock time spent inside `CUDABackend._synchronize`** --
+`_maybe_synchronize()`'s explicit `cudaDeviceSynchronize()` call after
+*every* kernel launch on the default stream (the documented Milestone 8-26
+contract at the top of this file: "every kernel launch is still followed by
+an explicit `cudaDeviceSynchronize()`... on the CUDA default stream"). A
+20-timestep unrolled sequence graph issues on the order of two dozen small
+kernel launches per timestep across embedding lookup, `RNNCell`, the output
+`Linear`, and `cross_entropy` -- each one paying that same fixed
+host-blocking synchronize cost (measured at ~170us on this hardware),
+regardless of how cheap the kernel's own arithmetic is.
+
+Forge already has the fix built for exactly this, from Milestone 27: an
+explicit, non-default `forge.cuda.Stream()` skips the per-launch synchronize
+entirely (`docs/architecture/cuda-streams.md`'s async execution mode).
+`Trainer`'s own `prefetch=True` mode already wraps its batch loop in exactly
+such a stream (`_compute_stream_scope()`) for this reason -- but the
+hand-written sequence-training loops in `examples/char_rnn`/`examples/
+word_rnn` never adopted it, since `Trainer` itself does not support
+multi-timestep training (see those modules' own docstrings). Both examples'
+`train_one_epoch()` now accept an optional `compute_stream` parameter
+(`forge.cuda.Stream()`, created once in `main()` and reused for every
+epoch, the same lifetime `Trainer`'s own compute stream has) and run the
+whole batch loop inside `with cuda.stream(compute_stream):` when given one.
+A single, targeted host synchronize still happens naturally where the loop
+already reads a value back to Python (`float(mean_loss.to("cpu").numpy())`)
+-- `Tensor._data`'s existing pending-transfer contract, unchanged.
+
+Measured end to end on the reference 940MX (5 epochs, fused RNNCell in both
+cases): `word_rnn` default-stream 24.9s -> explicit-stream 13.5s (1.84x);
+`char_rnn` default-stream 5.0s -> explicit-stream 2.5s (2.00x). Combined
+with the fused-RNNCell change above, `word_rnn` CUDA training moved from
+1.7x *slower* than CPU to about 1.13x *faster* than CPU; `char_rnn` (a much
+smaller vocabulary/model, so CPU was already near-instant) moved from 7.3x
+slower to 3.6x slower -- CUDA is not the right device for a model this
+tiny regardless, but the gap it needs to close is far smaller now. Verified
+via `tests/test_char_rnn_example_cuda_integration.py`/`tests/
+test_word_rnn_example_cuda_integration.py`'s new `compute_stream` tests:
+loss values match the default-stream path to `1e-4` and full training still
+converges. See `docs/development/m55-post-m54-assessment.md` for the
+complete profiling breakdown and interleaved-measurement methodology.

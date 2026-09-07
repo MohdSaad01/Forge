@@ -47,11 +47,13 @@ from __future__ import annotations
 
 import argparse
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
 
 import forge
+import forge.cuda as cuda
 from forge import Tensor, no_grad
 from forge.data import DataLoader
 from forge.nn import CrossEntropyLoss
@@ -76,31 +78,55 @@ def _one_hot(ids: np.ndarray, vocab_size: int) -> np.ndarray:
 
 
 def train_one_epoch(
-    model: CharRNN, loader: DataLoader, optimizer: Adam, loss_fn: CrossEntropyLoss, device: str
+    model: CharRNN,
+    loader: DataLoader,
+    optimizer: Adam,
+    loss_fn: CrossEntropyLoss,
+    device: str,
+    compute_stream: "cuda.Stream | None" = None,
 ) -> float:
-    """One pass over `loader`; returns the mean per-character loss for the epoch."""
+    """One pass over `loader`; returns the mean per-character loss for the epoch.
+
+    `compute_stream` (Milestone 55, `device='cuda'` only): running the whole
+    batch loop on an explicit, non-default `forge.cuda.Stream` skips the
+    default stream's per-kernel-launch `cudaDeviceSynchronize()` (see
+    `docs/architecture/cuda-streams.md`) -- profiling this exact loop found
+    that blocking sync call alone consumes over half of one epoch's
+    wall-clock time on the reference 940MX (`docs/development/
+    m55-post-m54-assessment.md`), since a 20-timestep unrolled sequence
+    graph issues dozens of small kernel launches per batch. `Trainer`'s own
+    `prefetch=True` mode already does exactly this for its batch loop
+    (`_compute_stream_scope()`) -- this mirrors that, since `Trainer` itself
+    does not support multi-timestep sequence training (see the module
+    docstring above). `float(mean_loss.to('cpu').numpy())` below still
+    correctly synchronizes just that one transfer before reading it (see
+    `Tensor._data`'s pending-transfer contract) even though every compute
+    kernel before it ran without a blocking host sync.
+    """
     total_loss = 0.0
     total_chars = 0
-    for input_ids, target_ids in loader:
-        input_np = input_ids.numpy()
-        target_np = target_ids.numpy()
-        batch_size, seq_len = input_np.shape
+    stream_scope = cuda.stream(compute_stream) if compute_stream is not None else nullcontext()
+    with stream_scope:
+        for input_ids, target_ids in loader:
+            input_np = input_ids.numpy()
+            target_np = target_ids.numpy()
+            batch_size, seq_len = input_np.shape
 
-        optimizer.zero_grad()
-        h = model.init_hidden(batch_size, device=device)
-        step_loss = None
-        for t in range(seq_len):
-            x_t = Tensor(_one_hot(input_np[:, t], model.vocab_size), device=device)
-            logits_t, h = model.step(x_t, h)
-            loss_t = loss_fn(logits_t, target_np[:, t])
-            step_loss = loss_t if step_loss is None else step_loss + loss_t
+            optimizer.zero_grad()
+            h = model.init_hidden(batch_size, device=device)
+            step_loss = None
+            for t in range(seq_len):
+                x_t = Tensor(_one_hot(input_np[:, t], model.vocab_size), device=device)
+                logits_t, h = model.step(x_t, h)
+                loss_t = loss_fn(logits_t, target_np[:, t])
+                step_loss = loss_t if step_loss is None else step_loss + loss_t
 
-        mean_loss = step_loss * Tensor(1.0 / seq_len, dtype=logits_t.dtype, device=device)
-        mean_loss.backward()
-        optimizer.step()
+            mean_loss = step_loss * Tensor(1.0 / seq_len, dtype=logits_t.dtype, device=device)
+            mean_loss.backward()
+            optimizer.step()
 
-        total_loss += float(mean_loss.to("cpu").numpy()) * batch_size * seq_len
-        total_chars += batch_size * seq_len
+            total_loss += float(mean_loss.to("cpu").numpy()) * batch_size * seq_len
+            total_chars += batch_size * seq_len
 
     return total_loss / total_chars
 
@@ -162,11 +188,12 @@ def main(argv=None) -> None:
     model = build_model(vocab.size, hidden_size=args.hidden_size, device=args.device)
     optimizer = Adam(model.parameters(), lr=args.lr)
     loss_fn = CrossEntropyLoss()
+    compute_stream = cuda.Stream() if args.device == "cuda" else None
 
     start = time.perf_counter()
     losses = []
     for epoch in range(1, args.epochs + 1):
-        loss = train_one_epoch(model, loader, optimizer, loss_fn, args.device)
+        loss = train_one_epoch(model, loader, optimizer, loss_fn, args.device, compute_stream)
         losses.append(loss)
         print(f"epoch {epoch:3d}/{args.epochs}: mean char loss = {loss:.4f}")
     duration = time.perf_counter() - start

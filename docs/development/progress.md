@@ -3234,3 +3234,68 @@ pre-M54 + 38 new), zero skips (CUDA backend live), no regressions; also
 re-run with the CUDA toolchain stripped from `PATH` to confirm all 928 CUDA
 tests skip cleanly (`825 passed, 928 skipped`, `0 failed`). Full report:
 `docs/development/m54-product-direction.md`.
+
+### M55 — Fresh post-M54 assessment: CUDA sequence-training was slower than CPU (engineering fix)
+
+A fresh capability/engineering assessment (explicitly not assumed to
+require another Tensor primitive, Embedding optimization, or RNN
+extension) surveyed post-M54 Forge's real workloads for the highest-value
+next investment. Direct measurement of the two real sequence-model
+examples found a genuine, material problem no prior milestone had
+measured: **CUDA trains `examples/char_rnn`/`examples/word_rnn` 1.5x-7.3x
+*slower* than CPU** on the reference 940MX (`word_rnn`: CPU 15.3s vs. CUDA
+23.5s over 5 epochs; `char_rnn`: CPU 0.7s vs. CUDA 5.1s) -- the opposite of
+every prior CUDA milestone's assumption that CUDA is the faster device.
+
+Root-caused via `cProfile` on the real `word_rnn` training loop: **56% of
+one epoch's wall-clock time was spent inside `CUDABackend._synchronize`**
+-- the default CUDA stream's per-kernel-launch `cudaDeviceSynchronize()`
+(a documented Milestone 8-26 contract), paid by every one of the ~20-30
+small kernel launches a single unrolled-sequence training step issues, at
+shapes (batch<=32, hidden_size<=128) too small for that fixed per-launch
+cost to be hidden by actual arithmetic. A secondary, smaller contributor
+was `nn.RNNCell.forward()`'s composed `Linear`/`+`/`.tanh()` path itself
+needing ~4 forward + ~8 backward launches per call.
+
+**Two fixes, both verified on real hardware:**
+
+1. **Fused CUDA `RNNCell`** (mirroring `batch_norm2d`'s CUDA-only-fused /
+   CPU-composed split): `Tensor.rnn_cell()`, `CUDABackend.rnn_cell`/
+   `rnn_cell_backward`, one forward kernel and six backward kernels
+   (`kernels.cu`'s new **Fused RNNCell** section) replacing the composed
+   path's ~12 launches with 7. `nn.RNNCell.forward()` dispatches to it on
+   CUDA only; CPU is unchanged. Measured 1.2x-1.7x faster than the composed
+   path in isolation (interleaved A/B) -- real, but modest end to end.
+2. **Explicit compute stream in the example training loops** (the dominant
+   fix): `examples/char_rnn/train.py`/`examples/word_rnn/train.py`'s
+   `train_one_epoch()` now accept an optional `compute_stream`
+   (`forge.cuda.Stream()`, created once in `main()`) and run the batch loop
+   inside `with forge.cuda.stream(compute_stream):`, mirroring `Trainer`'s
+   own `prefetch=True` `_compute_stream_scope()` (Milestone 30) -- neither
+   example uses `Trainer` (multi-timestep training does not fit its
+   one-forward-call-per-step shape), so neither had ever adopted this
+   already-existing Milestone 27 machinery.
+
+Combined, measured end to end (5 epochs, reference 940MX): `word_rnn`
+default-stream 24.9s -> explicit-stream 13.5s (1.84x); `char_rnn`
+default-stream 5.0s -> explicit-stream 2.5s (2.00x). Net result: `word_rnn`
+CUDA training moved from 1.7x *slower* than CPU to ~1.13x *faster*;
+`char_rnn` (tiny vocabulary, CPU already near-instant) moved from 7.3x
+slower to 3.6x slower -- CUDA remains the wrong device for a model that
+small, but the gap it needs to close is far smaller. Two technically
+interesting alternatives were explicitly measured and rejected for
+insufficient value: fusing dx/dh or dW_ih/db_ih into fewer kernels (real
+but marginal on top of the stream fix, not worth the added kernel
+complexity), and pursuing sparse-gradient Embedding backward (no measured
+slowdown at any tested vocabulary size, per M54).
+
+Verified: `Tensor.rnn_cell()`/backward CPU-vs-CUDA parity for every one of
+the five gradients (`float32`/`float64`), weight-sharing gradient
+accumulation across a multi-timestep unrolled sequence, device/shape
+validation, a structural dispatch check, a 200-iteration memory-stability
+check (`tests/test_cuda_rnn_cell.py`, 14 tests); `compute_stream`-vs-default
+-stream loss parity and full-training-convergence for both examples (`tests/
+test_char_rnn_example_cuda_integration.py`/`tests/
+test_word_rnn_example_cuda_integration.py`, 4 new tests). Full suite:
+**1,771 passed** (1,753 pre-M55 + 18 new), zero regressions. Full report:
+`docs/development/m55-post-m54-assessment.md`.

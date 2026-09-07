@@ -25,11 +25,13 @@ from __future__ import annotations
 
 import argparse
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
 
 import forge
+import forge.cuda as cuda
 from forge import Tensor, no_grad
 from forge.data import DataLoader
 from forge.nn import CrossEntropyLoss
@@ -47,31 +49,47 @@ except ImportError:  # running as a plain script (`python examples/word_rnn/trai
 
 
 def train_one_epoch(
-    model: WordRNN, loader: DataLoader, optimizer: Adam, loss_fn: CrossEntropyLoss, device: str
+    model: WordRNN,
+    loader: DataLoader,
+    optimizer: Adam,
+    loss_fn: CrossEntropyLoss,
+    device: str,
+    compute_stream: "cuda.Stream | None" = None,
 ) -> float:
-    """One pass over `loader`; returns the mean per-token loss for the epoch."""
+    """One pass over `loader`; returns the mean per-token loss for the epoch.
+
+    `compute_stream` (Milestone 55, `device='cuda'` only): see
+    `examples/char_rnn/train.py::train_one_epoch`'s identical parameter for
+    the full rationale -- running this loop's ~20-timestep unrolled sequence
+    graph on an explicit, non-default stream skips the default stream's
+    per-kernel-launch blocking synchronize, which profiling found consumes
+    over half of one epoch's wall-clock time on the reference 940MX (see
+    `docs/development/m55-post-m54-assessment.md`).
+    """
     total_loss = 0.0
     total_tokens = 0
-    for input_ids, target_ids in loader:
-        input_np = input_ids.numpy()
-        target_np = target_ids.numpy()
-        batch_size, seq_len = input_np.shape
+    stream_scope = cuda.stream(compute_stream) if compute_stream is not None else nullcontext()
+    with stream_scope:
+        for input_ids, target_ids in loader:
+            input_np = input_ids.numpy()
+            target_np = target_ids.numpy()
+            batch_size, seq_len = input_np.shape
 
-        optimizer.zero_grad()
-        h = model.init_hidden(batch_size, device=device)
-        step_loss = None
-        for t in range(seq_len):
-            x_t = Tensor(input_np[:, t].astype(np.int64), device=device)
-            logits_t, h = model.step(x_t, h)
-            loss_t = loss_fn(logits_t, target_np[:, t])
-            step_loss = loss_t if step_loss is None else step_loss + loss_t
+            optimizer.zero_grad()
+            h = model.init_hidden(batch_size, device=device)
+            step_loss = None
+            for t in range(seq_len):
+                x_t = Tensor(input_np[:, t].astype(np.int64), device=device)
+                logits_t, h = model.step(x_t, h)
+                loss_t = loss_fn(logits_t, target_np[:, t])
+                step_loss = loss_t if step_loss is None else step_loss + loss_t
 
-        mean_loss = step_loss * Tensor(1.0 / seq_len, dtype=logits_t.dtype, device=device)
-        mean_loss.backward()
-        optimizer.step()
+            mean_loss = step_loss * Tensor(1.0 / seq_len, dtype=logits_t.dtype, device=device)
+            mean_loss.backward()
+            optimizer.step()
 
-        total_loss += float(mean_loss.to("cpu").numpy()) * batch_size * seq_len
-        total_tokens += batch_size * seq_len
+            total_loss += float(mean_loss.to("cpu").numpy()) * batch_size * seq_len
+            total_tokens += batch_size * seq_len
 
     return total_loss / total_tokens
 
@@ -135,11 +153,12 @@ def main(argv=None) -> None:
     )
     optimizer = Adam(model.parameters(), lr=args.lr)
     loss_fn = CrossEntropyLoss()
+    compute_stream = cuda.Stream() if args.device == "cuda" else None
 
     start = time.perf_counter()
     losses = []
     for epoch in range(1, args.epochs + 1):
-        loss = train_one_epoch(model, loader, optimizer, loss_fn, args.device)
+        loss = train_one_epoch(model, loader, optimizer, loss_fn, args.device, compute_stream)
         losses.append(loss)
         print(f"epoch {epoch:3d}/{args.epochs}: mean word loss = {loss:.4f}")
     duration = time.perf_counter() - start

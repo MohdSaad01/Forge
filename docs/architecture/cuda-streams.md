@@ -497,6 +497,35 @@ overlap, since one such kernel already occupies the whole device -- both
 outcomes are honestly reported (see Section 29 of the milestone brief: "do
 not expect dramatic overlap on every kernel/GPU").
 
+## 17a. Real-workload validation: hand-written sequence-training loops (Milestone 55)
+
+Sections 15/17 above measured this mechanism with synthetic benchmarks
+(`benchmarks/stream_bench.py`) and `Trainer`'s own opt-in `prefetch=True`
+path. Milestone 55 found a real, unrelated consumer that needed the same
+fix by a different route: `examples/char_rnn`/`examples/word_rnn`'s
+hand-written multi-timestep training loops (Section 15's "`Trainer` does
+not use streams internally by default" applies here too, since neither
+example uses `Trainer` at all -- see those modules' own docstrings for why)
+ran entirely on the default stream, so every one of the ~20-40 small kernel
+launches a single unrolled-sequence training step issues paid the default
+stream's per-launch `cudaDeviceSynchronize()` (Section 2). Profiling with
+`cProfile` found this cost alone consumed 56% of one real `word_rnn`
+training epoch's wall-clock time on the reference 940MX.
+
+Both examples' `train_one_epoch()` now accept an optional `compute_stream`
+parameter and wrap their batch loop in `with forge.cuda.stream(compute_stream):`
+when one is given -- structurally identical to `Trainer`'s own
+`_compute_stream_scope()` (Section 15), just applied by the example script
+itself rather than by `Trainer`. Measured end to end: `word_rnn` 5-epoch
+CUDA training time dropped from 24.9s to 13.5s (1.84x); `char_rnn` from
+5.0s to 2.5s (2.00x) -- consistent with, and a larger real-workload
+confirmation of, Section 17's synthetic "per-op synchronization removed"
+result (41.62ms vs. 87.05ms baseline, also close to 2x). See
+`docs/development/m55-post-m54-assessment.md` and `docs/architecture/
+cuda-backend.md`'s **CUDA fused RNNCell** section for the complete
+measurement and the (smaller, complementary) fused-kernel change made
+alongside it.
+
 ## 18. Current limitations
 
 - No public CUDA event API, stream priorities, stream pools, CUDA Graphs,

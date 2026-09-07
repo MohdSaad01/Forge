@@ -718,6 +718,73 @@ class Tensor:
         inputs = (self,) if weight is None else (self, weight, bias)
         return self._differentiable_wrap(result, inputs, backward_fn, "batch_norm2d")
 
+    # -- RNNCell (Milestone 55) --------------------------------------------------
+
+    def rnn_cell(self, w_ih: "Tensor", b_ih: "Tensor", w_hh: "Tensor", h: "Tensor") -> "Tensor":
+        """CUDA-only fused RNNCell forward: `tanh(self @ w_ih + b_ih + h @ w_hh)`.
+
+        `nn.RNNCell`'s CUDA call site (`self` is the cell's input `x`) --
+        see `docs/development/m55-post-m54-assessment.md` for why a fused
+        primitive was added: composing this from `Linear`/`+`/`.tanh()`
+        costs roughly four forward and eight backward CUDA kernel launches
+        per call, and a real sequence-model training step calls it once per
+        timestep (M50/M54's hand-written unrolled loop) -- at Forge's actual
+        RNN shapes that is deep in the launch-overhead-bound regime the M31
+        `CrossEntropyLoss` fusion and M53 `BatchNorm2d` fusion already found
+        and fixed for their own hot paths. CPU keeps composing from general
+        ops unchanged (`nn.RNNCell.forward()`'s non-CUDA branch), mirroring
+        `batch_norm2d`'s CUDA-only split exactly.
+
+        Shapes: `self` (`x`) is `(batch, input_size)`, `w_ih` is
+        `(input_size, hidden_size)`, `b_ih` is `(hidden_size,)`, `w_hh` is
+        `(hidden_size, hidden_size)`, `h` is `(batch, hidden_size)` -- the
+        same `(in_features, out_features)` weight layout `nn.Linear` already
+        uses, so `RNNCell.i2h.weight`/`.h2h.weight` pass through directly,
+        with no transpose.
+        """
+        if self._device.type != "cuda":
+            raise UnsupportedDeviceError(
+                "Tensor.rnn_cell() is a CUDA-only fused primitive; nn.RNNCell composes the "
+                "equivalent computation from Linear/+/tanh on other devices. Got a tensor on "
+                f"device '{self._device}'."
+            )
+        if self.ndim != 2:
+            raise ShapeMismatchError(f"rnn_cell expects x of shape (batch, input_size), got shape {self.shape}.")
+        batch, input_size = self.shape
+
+        def _check(t: "Tensor", label: str, shape: "tuple[int, ...]") -> None:
+            if t._device != self._device:
+                raise UnsupportedDeviceError(
+                    f"rnn_cell requires {label} on the same device as x; got x on "
+                    f"'{self._device}' and {label} on '{t._device}'."
+                )
+            if t.shape != shape:
+                raise ShapeMismatchError(f"rnn_cell expects {label} of shape {shape}, got shape {t.shape}.")
+
+        if w_ih._device != self._device:
+            raise UnsupportedDeviceError(
+                f"rnn_cell requires w_ih on the same device as x; got x on "
+                f"'{self._device}' and w_ih on '{w_ih._device}'."
+            )
+        if w_ih.ndim != 2 or w_ih.shape[0] != input_size:
+            raise ShapeMismatchError(
+                f"rnn_cell expects w_ih of shape (input_size={input_size}, hidden_size), got shape {w_ih.shape}."
+            )
+        hidden_size = w_ih.shape[1]
+        _check(b_ih, "b_ih", (hidden_size,))
+        _check(w_hh, "w_hh", (hidden_size, hidden_size))
+        _check(h, "h", (batch, hidden_size))
+
+        backend = get_backend(self._device)
+        result = backend.rnn_cell(self._data, w_ih._data, b_ih._data, w_hh._data, h._data)
+
+        x_data, w_ih_data, w_hh_data, h_data, h_out_data = self._data, w_ih._data, w_hh._data, h._data, result
+
+        def backward_fn(grad_output):
+            return backend.rnn_cell_backward(grad_output, x_data, w_ih_data, w_hh_data, h_data, h_out_data)
+
+        return self._differentiable_wrap(result, (self, w_ih, b_ih, w_hh, h), backward_fn, "rnn_cell")
+
     # -- Device transfer -----------------------------------------------------
 
     def to(self, device: "str | Device", non_blocking: bool = False) -> "Tensor":

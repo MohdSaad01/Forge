@@ -72,6 +72,16 @@ class RNNCell(Module):
             raise ShapeMismatchError(
                 f"RNNCell got mismatched batch sizes: x has {x.shape[0]}, h has {h.shape[0]}."
             )
+        if x.device.type == "cuda":
+            # Milestone 55: a real sequence-model training step calls this
+            # once per timestep (M50/M54's hand-written unrolled loop) --
+            # composing from `Linear`/`+`/`.tanh()` costs ~4 forward + ~8
+            # backward CUDA kernel launches per call, deep in the
+            # launch-overhead-bound regime at Forge's actual RNN shapes (see
+            # `docs/development/m55-post-m54-assessment.md`). Dispatches to
+            # one fused forward+backward primitive instead, mirroring
+            # `nn.BatchNorm2d`'s CUDA-only-fused / CPU-composed split.
+            return x.rnn_cell(self.i2h.weight, self.i2h.bias, self.h2h.weight, h)
         return (self.i2h(x) + self.h2h(h)).tanh()
 
     def init_hidden(self, batch_size: int, dtype: Any = None, device: str = "cpu") -> Tensor:

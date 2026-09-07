@@ -3841,3 +3841,285 @@ __global__ void k_embedding_lookup_backward(
 
 EMBEDDING_LOOKUP_BACKWARD_LAUNCHER(float, f32)
 EMBEDDING_LOOKUP_BACKWARD_LAUNCHER(double, f64)
+
+// -- Fused RNNCell forward/backward (Milestone 55) ----------------------------
+//
+// `nn.RNNCell` computes `h' = tanh(x @ W_ih + b_ih + h @ W_hh)` as four
+// composed Tensor ops (two `Linear`s, an `add`, a `tanh`) -- on CPU this is
+// fine (each op is a vectorized NumPy call over the whole batch), but on
+// CUDA, a real char-RNN/word-RNN training step unrolls this composition once
+// per timestep (M50/M54's hand-written sequence loop), and at Forge's actual
+// RNN shapes (batch<=32, hidden_size<=128) each of those launches is deep in
+// the launch-overhead-bound regime the M31 CrossEntropyLoss fusion and M53
+// BatchNorm2d fusion already found and fixed for their own hot paths (see
+// `docs/development/m55-post-m54-assessment.md` for the measurement: CUDA
+// trains char-RNN/word-RNN 1.5x-7.3x *slower* than CPU on the reference
+// 940MX, entirely from this per-timestep launch count, not compute). This
+// section fuses the whole cell into one forward kernel and a small, fixed
+// number of backward kernels, following the exact same "one dedicated fused
+// CUDA-only primitive, CPU keeps composing from general ops" split M53
+// established for BatchNorm2d.
+//
+// Shapes: `x` (batch, input_size), `w_ih` (input_size, hidden_size), `b_ih`
+// (hidden_size,), `w_hh` (hidden_size, hidden_size, no bias -- `nn.RNNCell`
+// never gives `h2h` one), `h` (batch, hidden_size) -- `weight` layout matches
+// `nn.Linear`'s own `(in_features, out_features)` convention exactly (`y = x
+// @ weight`), so `Tensor.rnn_cell()` can be handed `RNNCell.i2h.weight`/
+// `.h2h.weight` directly, no transpose.
+//
+// Forward is one kernel, one thread per `(b, j)` output element: each thread
+// walks both dot products (`input_size` + `hidden_size` terms, both small)
+// directly rather than launching two separate matmul kernels plus a
+// bias-broadcast-add plus a tanh -- batch*hidden_size threads total is tiny
+// (<=4096 at every current Forge shape), so this is bound by launch count,
+// not occupancy. Backward cannot fuse quite as far (the weight-gradient
+// reductions read different operands in a different access pattern than the
+// input/hidden gradients), but still collapses from the ~8 launches the
+// composed version needs down to a fixed 6: one elementwise `dz` pass, then
+// one kernel each for `dx`, `dh`, `dW_ih`, `db_ih`, `dW_hh`. `batch` is small
+// at every real Forge shape, so a plain per-thread loop over it (no
+// block-level reduction) is the right tool here -- unlike Conv2d's `dWeight`,
+// which reduces over `N*H*W` and needed exactly that cooperative-reduction
+// investment (M21/M33/M45/M46/M47/M48).
+
+template <typename T>
+__global__ void k_rnn_cell_forward(
+    const T* x, const T* w_ih, const T* b_ih, const T* w_hh, const T* h,
+    T* h_out, int batch, int input_size, int hidden_size)
+{
+    long long total = static_cast<long long>(batch) * hidden_size;
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (idx >= total) return;
+    int b = static_cast<int>(idx / hidden_size);
+    int j = static_cast<int>(idx % hidden_size);
+
+    T acc = b_ih[j];
+    const T* x_row = x + static_cast<long long>(b) * input_size;
+    for (int i = 0; i < input_size; ++i) {
+        acc += x_row[i] * w_ih[static_cast<long long>(i) * hidden_size + j];
+    }
+    const T* h_row = h + static_cast<long long>(b) * hidden_size;
+    for (int k = 0; k < hidden_size; ++k) {
+        acc += h_row[k] * w_hh[static_cast<long long>(k) * hidden_size + j];
+    }
+    h_out[idx] = cf_tanhv(acc);
+}
+
+#define RNN_CELL_FORWARD_LAUNCHER(TYPE, SUFFIX)                                          \
+    extern "C" __declspec(dllexport) int cf_rnn_cell_forward_##SUFFIX(                   \
+        const TYPE* x, const TYPE* w_ih, const TYPE* b_ih, const TYPE* w_hh,             \
+        const TYPE* h, TYPE* h_out, int batch, int input_size, int hidden_size,          \
+        void* stream) {                                                                  \
+        long long total = static_cast<long long>(batch) * hidden_size;                   \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_rnn_cell_forward<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(          \
+            x, w_ih, b_ih, w_hh, h, h_out, batch, input_size, hidden_size);              \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+RNN_CELL_FORWARD_LAUNCHER(float, f32)
+RNN_CELL_FORWARD_LAUNCHER(double, f64)
+
+// `dz[b,j] = grad_h_out[b,j] * (1 - h_out[b,j]^2)` -- `tanh`'s own backward
+// rule (`Tensor.tanh()`'s docstring), computed once and reused by every
+// kernel below instead of recomputed per weight/input gradient.
+
+template <typename T>
+__global__ void k_rnn_cell_backward_dz(
+    const T* grad_h_out, const T* h_out, T* dz, long long n)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (idx >= n) return;
+    T ho = h_out[idx];
+    dz[idx] = grad_h_out[idx] * (static_cast<T>(1.0) - ho * ho);
+}
+
+#define RNN_CELL_BACKWARD_DZ_LAUNCHER(TYPE, SUFFIX)                                      \
+    extern "C" __declspec(dllexport) int cf_rnn_cell_backward_dz_##SUFFIX(               \
+        const TYPE* grad_h_out, const TYPE* h_out, TYPE* dz, long long n, void* stream) { \
+        int blocks, threads;                                                             \
+        launch_config(n, blocks, threads);                                               \
+        k_rnn_cell_backward_dz<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(      \
+            grad_h_out, h_out, dz, n);                                                   \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+RNN_CELL_BACKWARD_DZ_LAUNCHER(float, f32)
+RNN_CELL_BACKWARD_DZ_LAUNCHER(double, f64)
+
+// `dx = dz @ W_ih^T`: one thread per `(b, i)` output element, summing over
+// `hidden_size` (the same "transpose the matmul the other way" shape
+// `Linear`'s composed backward already computes -- here it is just its own
+// kernel instead of a shared generic-matmul launch, to keep this a single
+// launch alongside the other five below).
+
+template <typename T>
+__global__ void k_rnn_cell_backward_dx(
+    const T* dz, const T* w_ih, T* dx, int batch, int input_size, int hidden_size)
+{
+    long long total = static_cast<long long>(batch) * input_size;
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (idx >= total) return;
+    int b = static_cast<int>(idx / input_size);
+    int i = static_cast<int>(idx % input_size);
+
+    T acc = static_cast<T>(0);
+    const T* dz_row = dz + static_cast<long long>(b) * hidden_size;
+    for (int j = 0; j < hidden_size; ++j) {
+        acc += dz_row[j] * w_ih[static_cast<long long>(i) * hidden_size + j];
+    }
+    dx[idx] = acc;
+}
+
+#define RNN_CELL_BACKWARD_DX_LAUNCHER(TYPE, SUFFIX)                                      \
+    extern "C" __declspec(dllexport) int cf_rnn_cell_backward_dx_##SUFFIX(               \
+        const TYPE* dz, const TYPE* w_ih, TYPE* dx, int batch, int input_size,          \
+        int hidden_size, void* stream) {                                                 \
+        long long total = static_cast<long long>(batch) * input_size;                    \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_rnn_cell_backward_dx<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(      \
+            dz, w_ih, dx, batch, input_size, hidden_size);                              \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+RNN_CELL_BACKWARD_DX_LAUNCHER(float, f32)
+RNN_CELL_BACKWARD_DX_LAUNCHER(double, f64)
+
+// `dh = dz @ W_hh^T`: one thread per `(b, k)` output element, summing over
+// `hidden_size`. Structurally identical to `dx` above but against `W_hh`
+// and producing a `(batch, hidden_size)`-shaped result -- kept as its own
+// kernel rather than branching inside `k_rnn_cell_backward_dx` on an
+// `input_size`-vs-`hidden_size` output width, for clarity.
+
+template <typename T>
+__global__ void k_rnn_cell_backward_dh(
+    const T* dz, const T* w_hh, T* dh, int batch, int hidden_size)
+{
+    long long total = static_cast<long long>(batch) * hidden_size;
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (idx >= total) return;
+    int b = static_cast<int>(idx / hidden_size);
+    int k = static_cast<int>(idx % hidden_size);
+
+    T acc = static_cast<T>(0);
+    const T* dz_row = dz + static_cast<long long>(b) * hidden_size;
+    for (int j = 0; j < hidden_size; ++j) {
+        acc += dz_row[j] * w_hh[static_cast<long long>(k) * hidden_size + j];
+    }
+    dh[idx] = acc;
+}
+
+#define RNN_CELL_BACKWARD_DH_LAUNCHER(TYPE, SUFFIX)                                      \
+    extern "C" __declspec(dllexport) int cf_rnn_cell_backward_dh_##SUFFIX(               \
+        const TYPE* dz, const TYPE* w_hh, TYPE* dh, int batch, int hidden_size,         \
+        void* stream) {                                                                  \
+        long long total = static_cast<long long>(batch) * hidden_size;                   \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_rnn_cell_backward_dh<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(      \
+            dz, w_hh, dh, batch, hidden_size);                                          \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+RNN_CELL_BACKWARD_DH_LAUNCHER(float, f32)
+RNN_CELL_BACKWARD_DH_LAUNCHER(double, f64)
+
+// `dW_ih[i,j] = sum_b x[b,i] * dz[b,j]`, `db_ih[j] = sum_b dz[b,j]`,
+// `dW_hh[k,j] = sum_b h[b,k] * dz[b,j]` -- one thread per weight element (or
+// per bias element), each looping over `batch` directly with no block-level
+// reduction: unlike Conv2d's `dWeight` (which reduces over `N*H*W`, large
+// enough to need the cooperative-reduction machinery M21/M33/M45-M48 built),
+// `batch` is small (<=32 at every real Forge RNN shape today), so a
+// straight-line per-thread loop is already the right tool -- unnecessary to
+// duplicate the additional complexity that case actually needed.
+
+template <typename T>
+__global__ void k_rnn_cell_backward_dwih(
+    const T* x, const T* dz, T* dw_ih, int batch, int input_size, int hidden_size)
+{
+    long long total = static_cast<long long>(input_size) * hidden_size;
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (idx >= total) return;
+    int i = static_cast<int>(idx / hidden_size);
+    int j = static_cast<int>(idx % hidden_size);
+
+    T acc = static_cast<T>(0);
+    for (int b = 0; b < batch; ++b) {
+        acc += x[static_cast<long long>(b) * input_size + i] * dz[static_cast<long long>(b) * hidden_size + j];
+    }
+    dw_ih[idx] = acc;
+}
+
+#define RNN_CELL_BACKWARD_DWIH_LAUNCHER(TYPE, SUFFIX)                                    \
+    extern "C" __declspec(dllexport) int cf_rnn_cell_backward_dwih_##SUFFIX(             \
+        const TYPE* x, const TYPE* dz, TYPE* dw_ih, int batch, int input_size,          \
+        int hidden_size, void* stream) {                                                 \
+        long long total = static_cast<long long>(input_size) * hidden_size;              \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_rnn_cell_backward_dwih<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(    \
+            x, dz, dw_ih, batch, input_size, hidden_size);                              \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+RNN_CELL_BACKWARD_DWIH_LAUNCHER(float, f32)
+RNN_CELL_BACKWARD_DWIH_LAUNCHER(double, f64)
+
+template <typename T>
+__global__ void k_rnn_cell_backward_dbih(const T* dz, T* db_ih, int batch, int hidden_size)
+{
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= hidden_size) return;
+    T acc = static_cast<T>(0);
+    for (int b = 0; b < batch; ++b) {
+        acc += dz[static_cast<long long>(b) * hidden_size + j];
+    }
+    db_ih[j] = acc;
+}
+
+#define RNN_CELL_BACKWARD_DBIH_LAUNCHER(TYPE, SUFFIX)                                    \
+    extern "C" __declspec(dllexport) int cf_rnn_cell_backward_dbih_##SUFFIX(             \
+        const TYPE* dz, TYPE* db_ih, int batch, int hidden_size, void* stream) {         \
+        int blocks, threads;                                                             \
+        launch_config(hidden_size, blocks, threads);                                     \
+        k_rnn_cell_backward_dbih<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(    \
+            dz, db_ih, batch, hidden_size);                                             \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+RNN_CELL_BACKWARD_DBIH_LAUNCHER(float, f32)
+RNN_CELL_BACKWARD_DBIH_LAUNCHER(double, f64)
+
+template <typename T>
+__global__ void k_rnn_cell_backward_dwhh(
+    const T* h, const T* dz, T* dw_hh, int batch, int hidden_size)
+{
+    long long total = static_cast<long long>(hidden_size) * hidden_size;
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (idx >= total) return;
+    int k = static_cast<int>(idx / hidden_size);
+    int j = static_cast<int>(idx % hidden_size);
+
+    T acc = static_cast<T>(0);
+    for (int b = 0; b < batch; ++b) {
+        acc += h[static_cast<long long>(b) * hidden_size + k] * dz[static_cast<long long>(b) * hidden_size + j];
+    }
+    dw_hh[idx] = acc;
+}
+
+#define RNN_CELL_BACKWARD_DWHH_LAUNCHER(TYPE, SUFFIX)                                    \
+    extern "C" __declspec(dllexport) int cf_rnn_cell_backward_dwhh_##SUFFIX(             \
+        const TYPE* h, const TYPE* dz, TYPE* dw_hh, int batch, int hidden_size,         \
+        void* stream) {                                                                  \
+        long long total = static_cast<long long>(hidden_size) * hidden_size;             \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_rnn_cell_backward_dwhh<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(    \
+            h, dz, dw_hh, batch, hidden_size);                                          \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+RNN_CELL_BACKWARD_DWHH_LAUNCHER(float, f32)
+RNN_CELL_BACKWARD_DWHH_LAUNCHER(double, f64)

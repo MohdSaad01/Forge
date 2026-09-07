@@ -505,6 +505,54 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         ]
         ce_bwd_fn.restype = ctypes.c_int
 
+        # -- Milestone 55: fused RNNCell forward/backward --
+        rnn_fwd_fn = getattr(lib, f"cf_rnn_cell_forward_{suffix}")
+        rnn_fwd_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+        ]
+        rnn_fwd_fn.restype = ctypes.c_int
+
+        rnn_bwd_dz_fn = getattr(lib, f"cf_rnn_cell_backward_dz_{suffix}")
+        rnn_bwd_dz_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p,
+        ]
+        rnn_bwd_dz_fn.restype = ctypes.c_int
+
+        rnn_bwd_dx_fn = getattr(lib, f"cf_rnn_cell_backward_dx_{suffix}")
+        rnn_bwd_dx_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+        ]
+        rnn_bwd_dx_fn.restype = ctypes.c_int
+
+        rnn_bwd_dh_fn = getattr(lib, f"cf_rnn_cell_backward_dh_{suffix}")
+        rnn_bwd_dh_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+        ]
+        rnn_bwd_dh_fn.restype = ctypes.c_int
+
+        rnn_bwd_dwih_fn = getattr(lib, f"cf_rnn_cell_backward_dwih_{suffix}")
+        rnn_bwd_dwih_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+        ]
+        rnn_bwd_dwih_fn.restype = ctypes.c_int
+
+        rnn_bwd_dbih_fn = getattr(lib, f"cf_rnn_cell_backward_dbih_{suffix}")
+        rnn_bwd_dbih_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+        ]
+        rnn_bwd_dbih_fn.restype = ctypes.c_int
+
+        rnn_bwd_dwhh_fn = getattr(lib, f"cf_rnn_cell_backward_dwhh_{suffix}")
+        rnn_bwd_dwhh_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+        ]
+        rnn_bwd_dwhh_fn.restype = ctypes.c_int
+
 
 def _load_library() -> "ctypes.CDLL":
     global _lib_cache
@@ -1852,6 +1900,106 @@ class CUDABackend(Backend):
         self._check(code, "embedding_lookup backward")
         self._maybe_synchronize("embedding_lookup backward")
         return CUDAStorage(grad_table_ptr, (vocab_size, dim), dtype, self._lib)
+
+    # -- Fused RNNCell (Milestone 55) --------------------------------------------
+    #
+    # See `kernels.cu`'s identically-named section for the full rationale
+    # (real char-RNN/word-RNN training is launch-count-bound, not
+    # compute-bound, at Forge's actual shapes). `nn.RNNCell.forward()` is the
+    # one CUDA call site; CPU keeps composing from `Linear`/`+`/`.tanh()`
+    # unchanged, mirroring `batch_norm2d`'s CUDA-only split.
+
+    def rnn_cell(
+        self, x: CUDAStorage, w_ih: CUDAStorage, b_ih: CUDAStorage, w_hh: CUDAStorage, h: CUDAStorage,
+    ) -> CUDAStorage:
+        self._stream_guard((x, w_ih, b_ih, w_hh, h), "rnn_cell")
+        dtype = self._require_compute_dtype(x, w_ih, b_ih, w_hh, h, op="rnn_cell")
+        batch, input_size = x.shape
+        hidden_size = b_ih.shape[0]
+
+        out_ptr = self._alloc(batch * hidden_size * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_rnn_cell_forward_{_SUFFIX[dtype]}")
+        code = fn(
+            x.ptr, w_ih.ptr, b_ih.ptr, w_hh.ptr, h.ptr, out_ptr,
+            ctypes.c_int(batch), ctypes.c_int(input_size), ctypes.c_int(hidden_size),
+            self._stream_handle(),
+        )
+        self._check(code, "rnn_cell")
+        self._maybe_synchronize("rnn_cell")
+        return CUDAStorage(out_ptr, (batch, hidden_size), dtype, self._lib)
+
+    def rnn_cell_backward(
+        self,
+        grad_output: CUDAStorage,
+        x: CUDAStorage,
+        w_ih: CUDAStorage,
+        w_hh: CUDAStorage,
+        h: CUDAStorage,
+        h_out: CUDAStorage,
+    ) -> "tuple[CUDAStorage, CUDAStorage, CUDAStorage, CUDAStorage, CUDAStorage]":
+        """Returns `(grad_x, grad_w_ih, grad_b_ih, grad_w_hh, grad_h)`, in `Tensor.rnn_cell`'s input order."""
+        self._stream_guard((grad_output, x, w_ih, w_hh, h, h_out), "rnn_cell_backward")
+        dtype = self._require_compute_dtype(grad_output, x, w_ih, w_hh, h, h_out, op="rnn_cell_backward")
+        batch, input_size = x.shape
+        hidden_size = h.shape[1]
+        suffix = _SUFFIX[dtype]
+
+        dz_ptr = self._alloc(batch * hidden_size * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_rnn_cell_backward_dz_{suffix}")
+        code = fn(grad_output.ptr, h_out.ptr, dz_ptr, ctypes.c_longlong(batch * hidden_size), self._stream_handle())
+        self._check(code, "rnn_cell_backward (dz)")
+        self._maybe_synchronize("rnn_cell_backward (dz)")
+        dz = CUDAStorage(dz_ptr, (batch, hidden_size), dtype, self._lib)
+
+        dx_ptr = self._alloc(batch * input_size * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_rnn_cell_backward_dx_{suffix}")
+        code = fn(
+            dz.ptr, w_ih.ptr, dx_ptr,
+            ctypes.c_int(batch), ctypes.c_int(input_size), ctypes.c_int(hidden_size),
+            self._stream_handle(),
+        )
+        self._check(code, "rnn_cell_backward (dx)")
+        self._maybe_synchronize("rnn_cell_backward (dx)")
+
+        dh_ptr = self._alloc(batch * hidden_size * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_rnn_cell_backward_dh_{suffix}")
+        code = fn(
+            dz.ptr, w_hh.ptr, dh_ptr, ctypes.c_int(batch), ctypes.c_int(hidden_size), self._stream_handle(),
+        )
+        self._check(code, "rnn_cell_backward (dh)")
+        self._maybe_synchronize("rnn_cell_backward (dh)")
+
+        dwih_ptr = self._alloc(input_size * hidden_size * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_rnn_cell_backward_dwih_{suffix}")
+        code = fn(
+            x.ptr, dz.ptr, dwih_ptr,
+            ctypes.c_int(batch), ctypes.c_int(input_size), ctypes.c_int(hidden_size),
+            self._stream_handle(),
+        )
+        self._check(code, "rnn_cell_backward (dW_ih)")
+        self._maybe_synchronize("rnn_cell_backward (dW_ih)")
+
+        dbih_ptr = self._alloc(hidden_size * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_rnn_cell_backward_dbih_{suffix}")
+        code = fn(dz.ptr, dbih_ptr, ctypes.c_int(batch), ctypes.c_int(hidden_size), self._stream_handle())
+        self._check(code, "rnn_cell_backward (db_ih)")
+        self._maybe_synchronize("rnn_cell_backward (db_ih)")
+
+        dwhh_ptr = self._alloc(hidden_size * hidden_size * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_rnn_cell_backward_dwhh_{suffix}")
+        code = fn(
+            h.ptr, dz.ptr, dwhh_ptr, ctypes.c_int(batch), ctypes.c_int(hidden_size), self._stream_handle(),
+        )
+        self._check(code, "rnn_cell_backward (dW_hh)")
+        self._maybe_synchronize("rnn_cell_backward (dW_hh)")
+
+        return (
+            CUDAStorage(dx_ptr, (batch, input_size), dtype, self._lib),
+            CUDAStorage(dwih_ptr, (input_size, hidden_size), dtype, self._lib),
+            CUDAStorage(dbih_ptr, (hidden_size,), dtype, self._lib),
+            CUDAStorage(dwhh_ptr, (hidden_size, hidden_size), dtype, self._lib),
+            CUDAStorage(dh_ptr, (batch, hidden_size), dtype, self._lib),
+        )
 
     # -- optimizer (Milestone 10) -----------------------------------------------
 

@@ -80,3 +80,46 @@ def test_cpu_and_cuda_first_epoch_loss_match():
     cpu_loss = run("cpu")
     cuda_loss = run("cuda")
     np.testing.assert_allclose(cuda_loss, cpu_loss, rtol=1e-3, atol=1e-3)
+
+
+def test_training_with_explicit_compute_stream_matches_default_stream():
+    """Milestone 55: see `tests/test_char_rnn_example_cuda_integration.py`'s
+    identical test for the full rationale -- `compute_stream=forge.cuda.
+    Stream()` must produce loss values matching the default stream."""
+    import forge.cuda as cuda
+
+    dataset, vocab = build_dataset(_TINY_CORPUS, _TINY_VOCAB, seq_len=8)
+
+    def run(compute_stream) -> float:
+        forge.random.seed(2)
+        loader = DataLoader(dataset, batch_size=4, shuffle=True, generator=np.random.default_rng(2))
+        model = build_model(vocab.size, embedding_dim=6, hidden_size=16, device="cuda")
+        optimizer = Adam(model.parameters(), lr=1e-2)
+        return train_one_epoch(model, loader, optimizer, CrossEntropyLoss(), "cuda", compute_stream)
+
+    default_loss = run(None)
+    stream_loss = run(cuda.Stream())
+    np.testing.assert_allclose(stream_loss, default_loss, rtol=1e-4, atol=1e-5)
+
+
+def test_full_pipeline_trains_and_learns_on_cuda_with_compute_stream():
+    """The explicit-stream path must still train correctly end to end --
+    mirrors `test_full_pipeline_trains_and_learns_on_cuda` above with a
+    `compute_stream` supplied."""
+    import forge.cuda as cuda
+
+    forge.random.seed(0)
+    dataset, vocab = build_dataset(_TINY_CORPUS, _TINY_VOCAB, seq_len=8)
+    loader = DataLoader(dataset, batch_size=4, shuffle=True, generator=np.random.default_rng(0))
+    model = build_model(vocab.size, embedding_dim=8, hidden_size=24, device="cuda")
+    optimizer = Adam(model.parameters(), lr=5e-2)
+    loss_fn = CrossEntropyLoss()
+    compute_stream = cuda.Stream()
+
+    losses = [
+        train_one_epoch(model, loader, optimizer, loss_fn, "cuda", compute_stream) for _ in range(15)
+    ]
+
+    uniform_baseline = np.log(vocab.size)
+    assert losses[-1] < uniform_baseline * 0.5
+    assert losses[-1] < losses[0]
