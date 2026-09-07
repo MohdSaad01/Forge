@@ -19,7 +19,7 @@ import pytest
 import forge
 from forge import Tensor
 from forge.exceptions import PersistenceError
-from forge.nn import Dropout, Linear, ReLU, Sequential
+from forge.nn import BatchNorm2d, Conv2d, Dropout, Linear, ReLU, Sequential
 from forge.nn.loss import MSELoss
 from forge.optim import SGD, Adam
 from forge.serialization import Checkpoint, load_checkpoint, register_optimizer, save_checkpoint, save_model
@@ -597,3 +597,40 @@ def test_save_checkpoint_requires_optimizer(tmp_path):
 def test_load_nonexistent_checkpoint_raises():
     with pytest.raises(PersistenceError):
         load_checkpoint("does_not_exist.ckpt")
+
+
+# -- BatchNorm2d buffers alongside optimizer state (Milestone 53) ------------
+
+
+def test_checkpoint_preserves_batchnorm_buffers_and_optimizer_state_together(tmp_path):
+    model = Sequential(Conv2d(1, 4, kernel_size=3), BatchNorm2d(4))
+    optimizer = Adam(model.parameters(), lr=1e-3)
+
+    x = Tensor(np.random.default_rng(0).standard_normal((6, 1, 8, 8)).astype(np.float32), requires_grad=True)
+    for _ in range(3):
+        y = model(x)
+        loss = (y * y).sum()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    bn = model._modules["1"]
+    running_mean_before = bn.running_mean.numpy().copy()
+    running_var_before = bn.running_var.numpy().copy()
+
+    path = tmp_path / "bn_checkpoint.ckpt"
+    save_checkpoint(str(path), model, optimizer)
+    checkpoint = load_checkpoint(str(path))
+
+    restored_bn = checkpoint.model._modules["1"]
+    np.testing.assert_allclose(restored_bn.running_mean.numpy(), running_mean_before, atol=1e-6)
+    np.testing.assert_allclose(restored_bn.running_var.numpy(), running_var_before, atol=1e-6)
+
+    # Optimizer state restored too, and both together let training continue
+    # producing the same next step as the un-checkpointed original would.
+    original_by_name = dict(model.named_parameters())
+    for name, param in checkpoint.model.named_parameters():
+        original_state = optimizer.state[original_by_name[name]]
+        restored_state = checkpoint.optimizer.state[param]
+        assert restored_state.step == original_state.step
+        np.testing.assert_allclose(restored_state.m, original_state.m, atol=1e-6)

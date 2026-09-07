@@ -93,7 +93,7 @@ from .model import _build_load_node, _build_save_node
 from .optimizer_registry import spec_for_class as _optimizer_spec_for_class
 from .optimizer_registry import spec_for_name as _optimizer_spec_for_name
 
-CHECKPOINT_FORMAT_VERSION = 1
+CHECKPOINT_FORMAT_VERSION = 2
 
 _MODEL_DIR = "model/parameters"
 _OPTIMIZER_STATE_DIR = "optimizer/state"

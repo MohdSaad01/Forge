@@ -389,6 +389,44 @@ __global__ void k_tanh(const T* a, T* out, long long n) {
 UNARY_LAUNCHER(cf_tanh, k_tanh, float, f32)
 UNARY_LAUNCHER(cf_tanh, k_tanh, double, f64)
 
+// -- sqrt / div (Milestone 53) -------------------------------------------------
+//
+// Required by `nn.BatchNorm2d`'s CPU-composed forward (`std = sqrt(var +
+// eps)`, `xhat = diff / std`) -- see `docs/development/m53-batchnorm.md`.
+// Added as ordinary general elementwise ops (like `tanh`), not restricted to
+// BatchNorm's own use. `div` only ever needs exact-matching shapes on CUDA
+// (no consumer needs a broadcasting division on this backend yet -- CUDA's
+// own `nn.BatchNorm2d` path uses the dedicated fused kernel below instead of
+// composed Tensor ops), so no `cf_div_bcast_*` variant is added, matching
+// `add`/`sub`/`mul`'s already-established "CPU is more general than CUDA"
+// precedent for elementwise broadcasting.
+
+// `cf_sqrtv` dispatches to the right precision's `sqrtf`/`sqrt` -- also
+// reused, unchanged, by `k_adam_step`'s bias-corrected second-moment sqrt
+// (below) and by the BatchNorm2d kernels later in this file, rather than
+// redefined per use site.
+
+__device__ inline float cf_sqrtv(float x) { return sqrtf(x); }
+__device__ inline double cf_sqrtv(double x) { return sqrt(x); }
+
+template <typename T>
+__global__ void k_sqrt(const T* a, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = cf_sqrtv(a[i]);
+}
+
+UNARY_LAUNCHER(cf_sqrt, k_sqrt, float, f32)
+UNARY_LAUNCHER(cf_sqrt, k_sqrt, double, f64)
+
+template <typename T>
+__global__ void k_div(const T* a, const T* b, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = a[i] / b[i];
+}
+
+ELEMENTWISE_LAUNCHER(cf_div, k_div, float, f32)
+ELEMENTWISE_LAUNCHER(cf_div, k_div, double, f64)
+
 // -- backward-only kernels (Milestone 10) -------------------------------------
 //
 // Real CUDA kernels backing CUDA autograd's backward rules
@@ -460,6 +498,22 @@ __global__ void k_tanh_backward(const T* grad_output, const T* result, T* out, l
 
 ELEMENTWISE_LAUNCHER(cf_tanh_backward, k_tanh_backward, float, f32)
 ELEMENTWISE_LAUNCHER(cf_tanh_backward, k_tanh_backward, double, f64)
+
+// sqrt backward (Milestone 53): `d(sqrt(x))/dx = 1/(2*sqrt(x)) = 0.5/result`
+// (`result` is sqrt's own saved forward output) -- the same "derivative from
+// the saved output" shape as `k_tanh_backward`/`k_exp_backward` above. `div`
+// needs no dedicated backward kernel: `CUDABackend.div_backward` composes it
+// from `div`/`mul`/`neg` (already-tested forward kernels), the same style
+// `mul_backward` already uses.
+
+template <typename T>
+__global__ void k_sqrt_backward(const T* grad_output, const T* result, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = grad_output[i] * static_cast<T>(0.5) / result[i];
+}
+
+ELEMENTWISE_LAUNCHER(cf_sqrt_backward, k_sqrt_backward, float, f32)
+ELEMENTWISE_LAUNCHER(cf_sqrt_backward, k_sqrt_backward, double, f64)
 
 template <typename T>
 __global__ void k_scale(const T* scalar, const T* vec, T* out, long long n) {
@@ -549,12 +603,9 @@ SGD_STEP_LAUNCHER(double, f64)
 // (`1 - beta1**step` / `1 - beta2**step`) is one scalar `pow()` -- identical
 // for every element in a given call -- so it is computed once on the host in
 // Python (`CUDABackend.adam_step`) and passed in as `bias_correction1`/
-// `bias_correction2` rather than recomputed per-thread. `cf_sqrtv` dispatches
-// to the type-specific `sqrtf`/`sqrt`, the same overload-resolution pattern
-// `cf_expv`/`cf_logv` (below) use.
-
-__device__ inline float cf_sqrtv(float x) { return sqrtf(x); }
-__device__ inline double cf_sqrtv(double x) { return sqrt(x); }
+// `bias_correction2` rather than recomputed per-thread. `cf_sqrtv`
+// (type-dispatching `sqrtf`/`sqrt`, the same pattern `cf_expv`/`cf_logv`
+// use) is defined earlier in this file, in the Milestone 53 sqrt section.
 
 template <typename T>
 __global__ void k_adam_step(
@@ -3439,3 +3490,276 @@ __global__ void k_conv2d_forward_halffused_gemm(
 
 CONV2D_FORWARD_HALFFUSED_GEMM_LAUNCHER(float, f32)
 CONV2D_FORWARD_HALFFUSED_GEMM_LAUNCHER(double, f64)
+
+// -- BatchNorm2d (Milestone 53) -----------------------------------------------
+//
+// CUDA has no general N-D reduction (`CUDABackend.sum()` supports only a
+// full reduction or axis=1 on a strictly-2D tensor) or general broadcast
+// (scoped to `Linear`'s two shapes) to compose BatchNorm2d's per-channel
+// `(N, C, H, W)` math from, the way the CPU backend's `nn.BatchNorm2d`
+// forward does (`forge/nn/batchnorm.py`, composed from `sum`/`sqrt`/`div`/
+// `reshape`). This section adds one dedicated, narrowly-scoped kernel group
+// instead -- a forward pair (per-channel mean/var reduction, then a fused
+// normalize+affine elementwise pass) and a backward pair (per-channel
+// `sum(dy)`/`sum(dy*xhat)` reduction, then a fused elementwise `dx` pass) --
+// reusing the exact one-block-per-channel shared-memory tree-reduce shape
+// `k_conv2d_backward_bias_reduce` (this file, Milestone 15/34) already
+// established for "reduce a (N, C, H, W)-shaped tensor down to one value per
+// channel", rather than inventing a second reduction idiom. See
+// `docs/development/m53-batchnorm.md` for the exact backward derivation.
+//
+// The forward reduction accumulates `sum(x)` and `sum(x*x)` per channel in
+// one pass (`mean = sum/count`, `var = sum(x*x)/count - mean^2`) rather than
+// a two-pass mean-then-variance reduction -- standard, and adequate at
+// Forge's target scale (`docs/development/development-environment.md`); the
+// `var > 0` clamp guards only the rare float-cancellation case where a
+// channel's true variance is at/near zero, never actual negative variance.
+// Both reductions accumulate in the tensor's own compute dtype (never a
+// separate always-double accumulator), matching every other CUDA reduction
+// in this file (`k_sum`, `k_conv2d_backward_bias_reduce`).
+
+template <typename T>
+__global__ void k_bn_mean_var_reduce(const T* x, T* mean, T* var, int N, int C, int H, int W) {
+    extern __shared__ unsigned char smem_raw[];
+    T* s_sum = reinterpret_cast<T*>(smem_raw);
+    T* s_sumsq = s_sum + blockDim.x;
+
+    int c = blockIdx.x;  // one block per channel
+    long long HW = static_cast<long long>(H) * W;
+    long long CHW = static_cast<long long>(C) * HW;
+    long long reduce_total = static_cast<long long>(N) * HW;
+
+    T sum = static_cast<T>(0);
+    T sumsq = static_cast<T>(0);
+    for (long long r = threadIdx.x; r < reduce_total; r += blockDim.x) {
+        long long n = r / HW;
+        long long hw = r % HW;
+        long long idx = n * CHW + static_cast<long long>(c) * HW + hw;
+        T v = x[idx];
+        sum += v;
+        sumsq += v * v;
+    }
+    s_sum[threadIdx.x] = sum;
+    s_sumsq[threadIdx.x] = sumsq;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            s_sum[threadIdx.x] += s_sum[threadIdx.x + s];
+            s_sumsq[threadIdx.x] += s_sumsq[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        T count = static_cast<T>(reduce_total);
+        T m = s_sum[0] / count;
+        T e_x2 = s_sumsq[0] / count;
+        T v = e_x2 - m * m;
+        mean[c] = m;
+        var[c] = v > static_cast<T>(0) ? v : static_cast<T>(0);
+    }
+}
+
+#define BN_MEAN_VAR_REDUCE_LAUNCHER(TYPE, SUFFIX)                                         \
+    extern "C" __declspec(dllexport) int cf_bn_mean_var_reduce_##SUFFIX(                  \
+        const TYPE* x, TYPE* mean, TYPE* var, int N, int C, int H, int W, void* stream) { \
+        int blocks = C < 1 ? 1 : C;                                                       \
+        k_bn_mean_var_reduce<TYPE>                                                        \
+            <<<blocks, CONV2D_REDUCE_THREADS, 2 * CONV2D_REDUCE_THREADS * sizeof(TYPE), (cudaStream_t)stream>>>( \
+                x, mean, var, N, C, H, W);                                                \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+BN_MEAN_VAR_REDUCE_LAUNCHER(float, f32)
+BN_MEAN_VAR_REDUCE_LAUNCHER(double, f64)
+
+// One thread per channel: `C` is always small (Forge's target workloads use
+// single/low double-digit channel counts), so this never needs a
+// shared-memory reduction of its own.
+
+template <typename T>
+__global__ void k_bn_update_running_stats(
+    const T* mean, const T* var, T* running_mean, T* running_var,
+    int C, double momentum, double unbiased_scale)
+{
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= C) return;
+    T mom = static_cast<T>(momentum);
+    T one_minus = static_cast<T>(1.0) - mom;
+    running_mean[c] = one_minus * running_mean[c] + mom * mean[c];
+    T unbiased_var = var[c] * static_cast<T>(unbiased_scale);
+    running_var[c] = one_minus * running_var[c] + mom * unbiased_var;
+}
+
+#define BN_UPDATE_RUNNING_STATS_LAUNCHER(TYPE, SUFFIX)                                    \
+    extern "C" __declspec(dllexport) int cf_bn_update_running_stats_##SUFFIX(             \
+        const TYPE* mean, const TYPE* var, TYPE* running_mean, TYPE* running_var,         \
+        int C, double momentum, double unbiased_scale, void* stream) {                    \
+        int blocks, threads;                                                              \
+        launch_config(C, blocks, threads);                                                \
+        k_bn_update_running_stats<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(    \
+            mean, var, running_mean, running_var, C, momentum, unbiased_scale);           \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+BN_UPDATE_RUNNING_STATS_LAUNCHER(float, f32)
+BN_UPDATE_RUNNING_STATS_LAUNCHER(double, f64)
+
+// Fused normalize + affine, one thread per (n, c, h, w) output element.
+// `weight`/`bias` may be null pointers (`has_affine=0`, dereferenced only
+// inside that branch) -- `nn.BatchNorm2d(affine=False)`'s case. `mean`/`var`
+// are whichever statistics the caller resolved (batch stats while training,
+// `running_mean`/`running_var` in eval mode) -- this kernel does not care
+// which; that choice is made once in Python (`CUDABackend.batch_norm2d`).
+
+template <typename T>
+__global__ void k_bn_normalize(
+    const T* x, const T* mean, const T* var, const T* weight, const T* bias,
+    T* out, int N, int C, int H, int W, double eps, int has_affine)
+{
+    long long HW = static_cast<long long>(H) * W;
+    long long total = static_cast<long long>(N) * C * HW;
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (idx >= total) return;
+    long long c = (idx / HW) % C;
+
+    T invstd = static_cast<T>(1.0) / cf_sqrtv(var[c] + static_cast<T>(eps));
+    T xhat = (x[idx] - mean[c]) * invstd;
+    out[idx] = has_affine ? (xhat * weight[c] + bias[c]) : xhat;
+}
+
+#define BN_NORMALIZE_LAUNCHER(TYPE, SUFFIX)                                               \
+    extern "C" __declspec(dllexport) int cf_bn_normalize_##SUFFIX(                        \
+        const TYPE* x, const TYPE* mean, const TYPE* var, const TYPE* weight,             \
+        const TYPE* bias, TYPE* out, int N, int C, int H, int W, double eps,              \
+        int has_affine, void* stream) {                                                   \
+        long long total = static_cast<long long>(N) * C * H * W;                          \
+        int blocks, threads;                                                              \
+        launch_config(total, blocks, threads);                                            \
+        k_bn_normalize<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(               \
+            x, mean, var, weight, bias, out, N, C, H, W, eps, has_affine);                \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+BN_NORMALIZE_LAUNCHER(float, f32)
+BN_NORMALIZE_LAUNCHER(double, f64)
+
+// -- BatchNorm2d backward ------------------------------------------------------
+//
+// Standard batchnorm backward, in two passes exactly mirroring the forward
+// pair above: a per-channel reduction of `sum(dy)` and `sum(dy*xhat)`
+// (`xhat` recomputed from the saved `x`/`mean`/`var`, the same
+// "recompute from a saved input" convention `k_conv2d_backward_input`/
+// `k_maxpool2d_backward` already use elsewhere in this file), then a fused
+// elementwise pass computing `dx`. `sum_dy`/`sum_dy_xhat` are themselves
+// exactly `d(bias)`/`d(weight)` (`dbeta`/`dgamma`) -- `CUDABackend.
+// batch_norm2d_backward` returns them directly with no further kernel.
+
+template <typename T>
+__global__ void k_bn_backward_reduce(
+    const T* dy, const T* x, const T* mean, const T* var,
+    T* sum_dy, T* sum_dy_xhat, int N, int C, int H, int W, double eps)
+{
+    extern __shared__ unsigned char smem_raw[];
+    T* s_dy = reinterpret_cast<T*>(smem_raw);
+    T* s_dyxhat = s_dy + blockDim.x;
+
+    int c = blockIdx.x;
+    long long HW = static_cast<long long>(H) * W;
+    long long CHW = static_cast<long long>(C) * HW;
+    long long reduce_total = static_cast<long long>(N) * HW;
+
+    T m = mean[c];
+    T invstd = static_cast<T>(1.0) / cf_sqrtv(var[c] + static_cast<T>(eps));
+
+    T acc_dy = static_cast<T>(0);
+    T acc_dyxhat = static_cast<T>(0);
+    for (long long r = threadIdx.x; r < reduce_total; r += blockDim.x) {
+        long long n = r / HW;
+        long long hw = r % HW;
+        long long idx = n * CHW + static_cast<long long>(c) * HW + hw;
+        T xhat = (x[idx] - m) * invstd;
+        T g = dy[idx];
+        acc_dy += g;
+        acc_dyxhat += g * xhat;
+    }
+    s_dy[threadIdx.x] = acc_dy;
+    s_dyxhat[threadIdx.x] = acc_dyxhat;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            s_dy[threadIdx.x] += s_dy[threadIdx.x + s];
+            s_dyxhat[threadIdx.x] += s_dyxhat[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        sum_dy[c] = s_dy[0];
+        sum_dy_xhat[c] = s_dyxhat[0];
+    }
+}
+
+#define BN_BACKWARD_REDUCE_LAUNCHER(TYPE, SUFFIX)                                         \
+    extern "C" __declspec(dllexport) int cf_bn_backward_reduce_##SUFFIX(                  \
+        const TYPE* dy, const TYPE* x, const TYPE* mean, const TYPE* var,                 \
+        TYPE* sum_dy, TYPE* sum_dy_xhat, int N, int C, int H, int W, double eps,          \
+        void* stream) {                                                                   \
+        int blocks = C < 1 ? 1 : C;                                                       \
+        k_bn_backward_reduce<TYPE>                                                        \
+            <<<blocks, CONV2D_REDUCE_THREADS, 2 * CONV2D_REDUCE_THREADS * sizeof(TYPE), (cudaStream_t)stream>>>( \
+                dy, x, mean, var, sum_dy, sum_dy_xhat, N, C, H, W, eps);                  \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+BN_BACKWARD_REDUCE_LAUNCHER(float, f32)
+BN_BACKWARD_REDUCE_LAUNCHER(double, f64)
+
+// `dx = invstd/m * (m*dxhat - sum(dxhat) - xhat*sum(dxhat*xhat))` in training
+// mode (`dxhat = dy*weight`, `sum(dxhat) = weight*sum_dy`,
+// `sum(dxhat*xhat) = weight*sum_dy_xhat` -- both already reduced above, so
+// this kernel only needs to multiply by `weight[c]` once); eval mode has no
+// batch-statistic cross terms (`mean`/`var` are constants there), so it
+// collapses to the plain elementwise `dy*weight*invstd`. `weight` may be a
+// null pointer (`has_affine=0`, treated as `1`).
+
+template <typename T>
+__global__ void k_bn_backward_dx(
+    const T* dy, const T* x, const T* mean, const T* var, const T* weight,
+    const T* sum_dy, const T* sum_dy_xhat, T* dx,
+    int N, int C, int H, int W, double eps, int has_affine, int training, long long count)
+{
+    long long HW = static_cast<long long>(H) * W;
+    long long total = static_cast<long long>(N) * C * HW;
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (idx >= total) return;
+    long long c = (idx / HW) % C;
+
+    T invstd = static_cast<T>(1.0) / cf_sqrtv(var[c] + static_cast<T>(eps));
+    T w = has_affine ? weight[c] : static_cast<T>(1.0);
+    T g = dy[idx] * w;
+
+    if (training) {
+        T xhat = (x[idx] - mean[c]) * invstd;
+        T m = static_cast<T>(count);
+        dx[idx] = (invstd / m) * (m * g - sum_dy[c] * w - xhat * sum_dy_xhat[c] * w);
+    } else {
+        dx[idx] = g * invstd;
+    }
+}
+
+#define BN_BACKWARD_DX_LAUNCHER(TYPE, SUFFIX)                                             \
+    extern "C" __declspec(dllexport) int cf_bn_backward_dx_##SUFFIX(                      \
+        const TYPE* dy, const TYPE* x, const TYPE* mean, const TYPE* var,                 \
+        const TYPE* weight, const TYPE* sum_dy, const TYPE* sum_dy_xhat, TYPE* dx,        \
+        int N, int C, int H, int W, double eps, int has_affine, int training,             \
+        long long count, void* stream) {                                                  \
+        long long total = static_cast<long long>(N) * C * H * W;                          \
+        int blocks, threads;                                                              \
+        launch_config(total, blocks, threads);                                            \
+        k_bn_backward_dx<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(              \
+            dy, x, mean, var, weight, sum_dy, sum_dy_xhat, dx,                            \
+            N, C, H, W, eps, has_affine, training, count);                               \
+        return static_cast<int>(cudaGetLastError());                                      \
+    }
+
+BN_BACKWARD_DX_LAUNCHER(float, f32)
+BN_BACKWARD_DX_LAUNCHER(double, f64)

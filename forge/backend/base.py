@@ -57,6 +57,12 @@ class Backend(ABC):
     @abstractmethod
     def tanh(self, a: np.ndarray) -> np.ndarray: ...
 
+    @abstractmethod
+    def sqrt(self, a: np.ndarray) -> np.ndarray: ...
+
+    @abstractmethod
+    def div(self, a: np.ndarray, b: np.ndarray) -> np.ndarray: ...
+
     # -- backward (Milestone 10) ------------------------------------------
     #
     # Operation-specific gradient math, one implementation per backend, so
@@ -100,6 +106,14 @@ class Backend(ABC):
     @abstractmethod
     def tanh_backward(self, grad_output: Any, result: Any) -> Any:
         """`d(tanh(x))/dx = 1 - tanh(x)^2`, i.e. `grad_output * (1 - result**2)` (`result` is tanh's own saved output)."""
+
+    @abstractmethod
+    def sqrt_backward(self, grad_output: Any, result: Any) -> Any:
+        """`d(sqrt(x))/dx = 1/(2*sqrt(x))`, i.e. `grad_output * 0.5 / result` (`result` is sqrt's own saved output)."""
+
+    @abstractmethod
+    def div_backward(self, grad_output: Any, a: Any, b: Any) -> "tuple[Any, Any]":
+        """`d(a/b)/da = 1/b`, `d(a/b)/db = -a/b**2`."""
 
     # -- optimizer (Milestone 10) ------------------------------------------
 

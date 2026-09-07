@@ -3071,3 +3071,99 @@ condition M50's defect required. No performance regression detected
 (`benchmarks/allocator_bench.py`'s cached-path timings before/after are
 within this hardware's known microbenchmark noise floor). Full report:
 `docs/development/m51-allocator-reentrancy.md`.
+
+### M52 — Product direction & third-workload assessment (assessment-only)
+
+Surveyed current Forge (Tensor/nn/Module/optimizer/data/serialization/CUDA/
+CLI) against the M49/M50/M51 baseline and evaluated five candidate next
+directions (normalization-based CNN, small attention/transformer block,
+autoencoder, extended char-RNN, CLI/optimizer ergonomics). **Selected: a
+normalization-based CNN (`BatchNorm2d` added to the existing MNIST CNN) as
+the leading candidate**, and validated it directly against the real Forge
+API (a throwaway CPU probe script, not committed) rather than estimating
+blockers. Found the genuine gap is not another op or example but a missing
+*architectural concept*: `Module` has no buffer mechanism (non-differentiable,
+device-moved, persisted, mode-aware state) -- independently flagged as a
+deliberate omission three separate times already (M16's `docs/architecture/
+modules.md` "No buffers to move"/"BatchNorm/LayerNorm remain out of scope",
+and M50's own model-selection section naming BatchNorm2d as the rejected
+alternative). The probe confirmed CPU already handles BatchNorm's per
+-channel reduction (`x.sum(axis=(0,2,3), keepdims=True)`) and `(1,C,1,1)`
+-vs-`(N,C,H,W)` broadcasting generally, with only `Tensor.sqrt()` and
+division (`__truediv__`) genuinely missing on CPU; CUDA additionally lacks
+any per-channel N-D reduction or general broadcast beyond `Linear`'s two
+hard-coded shapes (`CUDABackend.sum()` supports only `axis=None`/`axis=1` on
+a strictly 2D tensor), so the CUDA path needs one dedicated, narrowly-scoped
+fused BatchNorm kernel (forward+backward) rather than general N-D
+reduction/broadcast primitives -- the same "dedicated kernel per real
+consumer" precedent as M14's `axis=1` reduction and M50's `tanh`. Rejected:
+attention/transformer (too large a simultaneous blocker set for one
+milestone), autoencoder and extended-char-RNN (recombine existing,
+already-proven capability, no new framework pressure), generic CLI
+`train`/`evaluate`/`predict` commands and SGD momentum/LR-scheduler (still
+no driving workload, and the CLI story directly conflicts with Forge's own
+documented "no config/YAML system" non-goal). **Outcome A, deferred to M53**:
+per the brief's explicit "M52 is not required to modify production code"
+allowance, no production code was changed this milestone -- the gap was
+already provable by direct inspection and the throwaway probe, and the
+CUDA kernel work is real engineering that deserves its own milestone budget.
+Full suite re-run to confirm no behavioral change: **1,627 passed**, single
+process (no longer needing M50's CPU/CUDA split workaround, thanks to M51's
+allocator fix). Full report: `docs/development/m52-product-direction.md`.
+
+### M53 — Module buffers and BatchNorm2d
+
+Implemented M52's recommended capability in full (Outcome A): a
+non-differentiable, persistent, device-moved, mode-aware **buffer**
+mechanism on `Module` (`_buffers` dict, explicit `register_buffer(name,
+tensor)` registration -- deliberately not `Parameter`/`Module`'s
+`isinstance`-auto-registration, since a bare `Tensor` isn't an unambiguous
+signal of intent; `named_buffers()`/`buffers()` mirroring the parameter
+API; `Module.to()` extended to move buffers via the already-generic
+`Tensor._move_storage_()`; `train()`/`eval()` needed no change since
+neither touches `_buffers`), two new general elementwise `Tensor` ops
+(`.sqrt()`, `__truediv__`/`__rtruediv__`, CPU+CUDA, following the exact
+`tanh`-at-M50 pattern), and `nn.BatchNorm2d` itself. CPU's forward composes
+entirely from general Tensor primitives (`sum`/`sqrt`/`div`/`reshape`) --
+confirmed by M52's own probe that CPU already supported the needed
+reduction axes and broadcast shape -- so CPU BatchNorm2d has **no
+BatchNorm-specific backward rule anywhere**; every gradient falls out of
+ordinary autograd composition, verified against finite differences.
+CUDA has no general multi-axis reduction or matching broadcast to compose
+this from, so it instead uses one dedicated fused kernel group (forward:
+per-channel mean/var reduction + running-stats update + fused
+normalize/affine; backward: per-channel `sum(dy)`/`sum(dy*xhat)` reduction
++ fused `dx`), reusing M15/M34's existing one-block-per-channel
+shared-memory reduction idiom rather than inventing a new one, exposed as
+one new CUDA-only `Tensor.batch_norm2d()` method (not a `Backend`-ABC
+member both devices implement, since CPU never needs it). Serialization
+(`forge/serialization/model.py`) gained a `"buffers"` branch mirroring
+`"parameters"`; `FORMAT_VERSION`/`CHECKPOINT_FORMAT_VERSION` bumped `1 -> 2`
+accordingly (a deliberate, documented breaking change per
+`docs/architecture/decisions/ADR-003-persistence-format.md`'s existing
+policy). Added `examples/mnist/model.py::build_model_bn()` -- exactly M52's
+proposed `Conv2d -> BatchNorm2d -> ReLU -> ...` architecture -- as the real
+training/eval/persistence validation workload, on both CPU and the 940MX.
+
+Validated: CPU forward against an independent NumPy reference; CPU/CUDA
+forward+backward parity (`<1e-4` relative tolerance, hardware-verified);
+finite-difference gradient checks (input/weight/bias, affine and
+non-affine); training-mode batch-statistics use and running-statistics
+update (momentum + unbiased-variance-scaling checked against a hand
+-computed expected value); eval-mode running-statistics use, frozen-ness,
+and batch-independence; zero gradient ever reaching buffers (both
+backends); serialization/checkpoint round trips (buffers present in the
+archive, values exact, `eval()`-after-load matching pre-save output,
+BatchNorm state alongside real Adam optimizer state); CPU<->CUDA device
+movement; a real training run reaching >=80% accuracy through
+`build_model_bn()` on both CPU and CUDA, with train/eval-mode outputs on
+the same input proven to actually differ; no CUDA allocator growth across
+100 repeated forward/backward iterations (`allocated_bytes` returns to its
+pre-loop baseline after `gc.collect()`, all further allocations served from
+the existing M25 cache). One performance sanity measurement (not an
+optimization pass, per the milestone's explicit Performance Rule): adding
+BatchNorm2d to the MNIST CNN cost 1.18x wall-clock on the 940MX -- adequate,
+so no further profiling was pursued. Full suite re-run in a single process:
+**1,715 passed** (1,627 pre-M53 + 88 new), zero skips (this session's CUDA
+backend is live), no regressions. Full report:
+`docs/development/m53-batchnorm.md`.

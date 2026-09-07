@@ -97,6 +97,12 @@ class CPUBackend(Backend):
     def tanh(self, a: np.ndarray) -> np.ndarray:
         return np.tanh(a)
 
+    def sqrt(self, a: np.ndarray) -> np.ndarray:
+        return np.sqrt(a)
+
+    def div(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        return np.divide(a, b)
+
     # -- backward (Milestone 10) -------------------------------------------
 
     def add_backward(self, grad_output: np.ndarray, a: np.ndarray, b: np.ndarray):
@@ -151,6 +157,15 @@ class CPUBackend(Backend):
 
     def tanh_backward(self, grad_output: np.ndarray, result: np.ndarray) -> np.ndarray:
         return grad_output * (1 - result * result)
+
+    def sqrt_backward(self, grad_output: np.ndarray, result: np.ndarray) -> np.ndarray:
+        return grad_output * 0.5 / result
+
+    def div_backward(self, grad_output: np.ndarray, a: np.ndarray, b: np.ndarray):
+        return (
+            _reduce_grad_to_shape(grad_output / b, a.shape),
+            _reduce_grad_to_shape(-grad_output * a / (b * b), b.shape),
+        )
 
     # -- optimizer (Milestone 10) ------------------------------------------
 

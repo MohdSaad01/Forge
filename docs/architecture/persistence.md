@@ -42,16 +42,35 @@ module type / configuration      (forge.serialization.registry)
 child modules (recursive, by attribute name)
     v
 parameter state (name, shape, dtype, requires_grad, values)
+    v
+buffer state (name, shape, dtype, values -- Milestone 53)
 ```
 Concretely, for each module in the tree (self, then every `_modules` child,
 recursively): its registered type name, its architecture **configuration**
-(constructor keyword arguments -- not weights), its `.training` flag, and
-its own `_parameters`' shapes/dtypes/`requires_grad`/values. Parameter
-*names* are the dotted path used elsewhere in Forge (`fc1.weight`), matching
-`Module.named_parameters()`.
+(constructor keyword arguments -- not weights), its `.training` flag, its
+own `_parameters`' shapes/dtypes/`requires_grad`/values, and (as of
+Milestone 53) its own `_buffers`' shapes/dtypes/values. Parameter and buffer
+*names* are the dotted path used elsewhere in Forge (`fc1.weight`,
+`bn1.running_mean`), matching `Module.named_parameters()`/`named_buffers()`.
 
 **Not saved:** `.grad` on any parameter, any autograd graph (`grad_fn`),
 and optimizer state -- see **Autograd state** and **Optimizer state** below.
+
+## Buffer state (Milestone 53)
+Buffers (`Module.register_buffer()`, `docs/architecture/modules.md`) round
+-trip the same way parameters do -- a values array plus shape/dtype metadata
+per dotted name -- just with no `requires_grad` field (a buffer is never
+differentiable, enforced at registration). A buffer registered as `None`
+(an unset optional buffer) is recorded as `null` in the metadata with no
+array, so loading can tell "no buffer data" apart from "buffer data
+present" without guessing. `FORMAT_VERSION` was bumped `1 -> 2` for this
+change (a new required `"buffers"` key per module node) -- per this
+document's own **Versioning** policy, a version bump is a deliberate,
+documented breaking change: a Forge build from before Milestone 53 cannot
+load a Milestone-53-or-later archive and vice versa, exactly like every
+other `FORMAT_VERSION` bump. `CHECKPOINT_FORMAT_VERSION` was bumped
+`1 -> 2` in lockstep, since a checkpoint's embedded model node has the same
+new shape.
 
 ## Architecture reconstruction: the module registry
 Forge does not serialize Python callables, class paths, or constructor
@@ -365,11 +384,12 @@ model files remain fully readable.
 
 ### Versioning
 `"forge_checkpoint_format_version"` (`forge.serialization.checkpoint.CHECKPOINT_FORMAT_VERSION`,
-currently `1`) is checked independently of `save_model()`'s
-`"forge_format_version"` -- a missing, wrong, or malformed value raises
-`PersistenceError` naming both the found and supported values, with no
-forward/backward-compatibility shim, exactly matching `load_model()`'s own
-versioning policy.
+currently `2` -- bumped `1 -> 2` in Milestone 53 alongside `FORMAT_VERSION`,
+since a checkpoint's embedded model node gained the same new `"buffers"`
+key) is checked independently of `save_model()`'s `"forge_format_version"`
+-- a missing, wrong, or malformed value raises `PersistenceError` naming
+both the found and supported values, with no forward/backward-compatibility
+shim, exactly matching `load_model()`'s own versioning policy.
 
 ### Security
 Same trust model as model persistence (**Security / trust model** below):
@@ -413,12 +433,16 @@ Chosen over a bespoke binary format or a full-object `pickle` dump because:
 
 ## Versioning
 `metadata.json`'s `"forge_format_version"` field is checked against this
-build's `forge.serialization.model.FORMAT_VERSION` (`1`). A mismatch of
-any kind -- older, newer, missing, or malformed -- raises
-`PersistenceError` naming both the found and supported values. There is no
-forward- or backward-compatibility shim in this milestone: a version
-change is a breaking change to the format until a later milestone
-implements migration, and Forge does not claim otherwise.
+build's `forge.serialization.model.FORMAT_VERSION` (`2`, as of Milestone 53
+-- see below). A mismatch of any kind -- older, newer, missing, or
+malformed -- raises `PersistenceError` naming both the found and supported
+values. There is no forward- or backward-compatibility shim in this
+milestone: a version change is a breaking change to the format until a
+later milestone implements migration, and Forge does not claim otherwise.
+
+**Milestone 53 bumped `FORMAT_VERSION` `1 -> 2`** for the new required
+`"buffers"` key per module node (**Buffer state**, above) -- the first
+bump since the format's introduction.
 
 **Milestone 13 did not bump `FORMAT_VERSION`.** CUDA persistence needed no
 new metadata field or archive layout -- only the `"device"` field's set of

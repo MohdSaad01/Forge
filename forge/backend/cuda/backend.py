@@ -257,6 +257,61 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         ]
         tanh_backward_fn.restype = ctypes.c_int
 
+        # -- Milestone 53: sqrt / div --
+        sqrt_fn = getattr(lib, f"cf_sqrt_{suffix}")
+        sqrt_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
+        sqrt_fn.restype = ctypes.c_int
+
+        sqrt_backward_fn = getattr(lib, f"cf_sqrt_backward_{suffix}")
+        sqrt_backward_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p,
+        ]
+        sqrt_backward_fn.restype = ctypes.c_int
+
+        div_fn = getattr(lib, f"cf_div_{suffix}")
+        div_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
+        div_fn.restype = ctypes.c_int
+
+        # -- Milestone 53: BatchNorm2d --
+        bn_reduce_fn = getattr(lib, f"cf_bn_mean_var_reduce_{suffix}")
+        bn_reduce_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+        ]
+        bn_reduce_fn.restype = ctypes.c_int
+
+        bn_update_running_fn = getattr(lib, f"cf_bn_update_running_stats_{suffix}")
+        bn_update_running_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_void_p,
+        ]
+        bn_update_running_fn.restype = ctypes.c_int
+
+        bn_normalize_fn = getattr(lib, f"cf_bn_normalize_{suffix}")
+        bn_normalize_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_double, ctypes.c_int, ctypes.c_void_p,
+        ]
+        bn_normalize_fn.restype = ctypes.c_int
+
+        bn_backward_reduce_fn = getattr(lib, f"cf_bn_backward_reduce_{suffix}")
+        bn_backward_reduce_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_double, ctypes.c_void_p,
+        ]
+        bn_backward_reduce_fn.restype = ctypes.c_int
+
+        bn_backward_dx_fn = getattr(lib, f"cf_bn_backward_dx_{suffix}")
+        bn_backward_dx_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_double, ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_void_p,
+        ]
+        bn_backward_dx_fn.restype = ctypes.c_int
+
         for name in (f"cf_max_axis1_{suffix}", f"cf_sum_axis1_{suffix}"):
             fn = getattr(lib, name)
             fn.argtypes = [
@@ -1105,6 +1160,27 @@ class CUDABackend(Backend):
         self._maybe_synchronize("tanh")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
+    # -- sqrt / div (Milestone 53) -------------------------------------------------
+
+    def sqrt(self, a: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(a, op="sqrt")
+        n = a.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_sqrt_{_SUFFIX[dtype]}")
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
+        self._check(code, "sqrt")
+        self._maybe_synchronize("sqrt")
+        return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
+    def div(self, a: Any, b: Any) -> CUDAStorage:
+        if a.shape != b.shape:
+            raise CUDAError(
+                "CUDA 'div' supports only exact-shape operands in this milestone (no consumer "
+                f"needs a broadcasting division on CUDA yet); got shapes {a.shape} and {b.shape}. "
+                "Broadcast on CPU first, or reshape explicitly, before moving to CUDA."
+            )
+        return self._elementwise(a, b, "div")
+
     # -- backward helpers (Milestone 10) ---------------------------------------
     #
     # Private, CUDA-only composition helpers used by the `*_backward` methods
@@ -1303,6 +1379,25 @@ class CUDABackend(Backend):
         self._check(code, "tanh backward")
         self._maybe_synchronize("tanh backward")
         return CUDAStorage(out_ptr, result.shape, dtype, self._lib)
+
+    def sqrt_backward(self, grad_output: CUDAStorage, result: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(grad_output, result, op="sqrt_backward")
+        n = result.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_sqrt_backward_{_SUFFIX[dtype]}")
+        code = fn(grad_output.ptr, result.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
+        self._check(code, "sqrt backward")
+        self._maybe_synchronize("sqrt backward")
+        return CUDAStorage(out_ptr, result.shape, dtype, self._lib)
+
+    def div_backward(self, grad_output: CUDAStorage, a: CUDAStorage, b: CUDAStorage):
+        """`d(a/b)/da = 1/b`, `d(a/b)/db = -a/b**2` -- composed from `div`/`mul`/`_neg`
+        (already-tested forward kernels), the same style `mul_backward` uses, rather
+        than a dedicated backward kernel. Exact-shape only, matching `div`'s own scope.
+        """
+        grad_a = self.div(grad_output, b)
+        grad_b = self._neg(self.div(self.mul(grad_output, a), self.mul(b, b)))
+        return grad_a, grad_b
 
     # -- CrossEntropyLoss support (Milestone 14) ---------------------------------
 
@@ -1579,6 +1674,133 @@ class CUDABackend(Backend):
         self._check(code, "dropout_mask")
         self._maybe_synchronize("dropout_mask")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
+    # -- BatchNorm2d (Milestone 53) -----------------------------------------------
+    #
+    # CUDA-only: `Tensor.batch_norm2d()` (`forge/tensor/tensor.py`) is the one
+    # call site, reached only from `nn.BatchNorm2d.forward()` when its input
+    # is CUDA-resident -- the CPU path composes the same math from ordinary
+    # Tensor primitives instead (`sum`/`sqrt`/`div`/`reshape`), since CUDA has
+    # no general multi-axis reduction or `(1,C,1,1)`-vs-`(N,C,H,W)` broadcast
+    # to compose it from (see `kernels.cu`'s "BatchNorm2d" section and
+    # `docs/development/m53-batchnorm.md`). Not part of the `Backend` ABC --
+    # like `_scale`/`_transpose`/`_reduce_rows` above, this is a CUDA-specific
+    # primitive, not a capability every backend must implement.
+
+    def batch_norm2d(
+        self,
+        x: CUDAStorage,
+        weight: "CUDAStorage | None",
+        bias: "CUDAStorage | None",
+        running_mean: CUDAStorage,
+        running_var: CUDAStorage,
+        training: bool,
+        momentum: float,
+        eps: float,
+    ) -> "tuple[CUDAStorage, CUDAStorage, CUDAStorage]":
+        """Fused forward. Returns `(output, mean_used, var_used)` for backward to reuse.
+
+        `mean_used`/`var_used` are the batch statistics (training) or exactly
+        `running_mean`/`running_var` (eval) -- whichever the normalize kernel
+        actually used, saved as forward's own recomputation-free backward
+        input, the same "save what backward needs" convention `conv2d`/
+        `max_pool2d`'s CPU/CUDA implementations already use. `running_mean`/
+        `running_var` are mutated in place when `training` (the same
+        in-place-update convention `sgd_step`/`adam_step` already use for
+        optimizer state) -- never returned as a fresh tensor, since they stay
+        the same buffer `Module` owns.
+        """
+        has_affine = weight is not None
+        storages = (x, running_mean, running_var) + ((weight, bias) if has_affine else ())
+        self._stream_guard(storages, "batch_norm2d")
+        dtype = self._require_compute_dtype(*storages, op="batch_norm2d")
+        if x.ndim != 4:
+            raise CUDAError(f"CUDA 'batch_norm2d' expects a 4D (N, C, H, W) input, got shape {x.shape}.")
+        N, C, H, W = x.shape
+        suffix = _SUFFIX[dtype]
+
+        if training:
+            mean_ptr = self._alloc(C * dtype.itemsize)
+            var_ptr = self._alloc(C * dtype.itemsize)
+            mean = CUDAStorage(mean_ptr, (C,), dtype, self._lib)
+            var = CUDAStorage(var_ptr, (C,), dtype, self._lib)
+            fn = getattr(self._lib, f"cf_bn_mean_var_reduce_{suffix}")
+            code = fn(x.ptr, mean.ptr, var.ptr, N, C, H, W, self._stream_handle())
+            self._check(code, "batch_norm2d (mean/var reduce)")
+            self._maybe_synchronize("batch_norm2d (mean/var reduce)")
+
+            count = N * H * W
+            unbiased_scale = count / (count - 1) if count > 1 else 1.0
+            fn = getattr(self._lib, f"cf_bn_update_running_stats_{suffix}")
+            code = fn(
+                mean.ptr, var.ptr, running_mean.ptr, running_var.ptr, C,
+                ctypes.c_double(momentum), ctypes.c_double(unbiased_scale), self._stream_handle(),
+            )
+            self._check(code, "batch_norm2d (running stats update)")
+            self._maybe_synchronize("batch_norm2d (running stats update)")
+        else:
+            mean, var = running_mean, running_var
+
+        out_ptr = self._alloc(x.nbytes)
+        weight_ptr = weight.ptr if has_affine else None
+        bias_ptr = bias.ptr if has_affine else None
+        fn = getattr(self._lib, f"cf_bn_normalize_{suffix}")
+        code = fn(
+            x.ptr, mean.ptr, var.ptr, weight_ptr, bias_ptr, out_ptr,
+            N, C, H, W, ctypes.c_double(eps), ctypes.c_int(1 if has_affine else 0),
+            self._stream_handle(),
+        )
+        self._check(code, "batch_norm2d (normalize)")
+        self._maybe_synchronize("batch_norm2d (normalize)")
+        return CUDAStorage(out_ptr, x.shape, dtype, self._lib), mean, var
+
+    def batch_norm2d_backward(
+        self,
+        grad_output: CUDAStorage,
+        x: CUDAStorage,
+        weight: "CUDAStorage | None",
+        mean: CUDAStorage,
+        var: CUDAStorage,
+        training: bool,
+        eps: float,
+    ) -> "tuple[CUDAStorage, CUDAStorage | None, CUDAStorage | None]":
+        """Returns `(grad_x, grad_weight, grad_bias)`; the latter two are `None` iff `weight` is."""
+        has_affine = weight is not None
+        storages = (grad_output, x, mean, var) + ((weight,) if has_affine else ())
+        self._stream_guard(storages, "batch_norm2d_backward")
+        dtype = self._require_compute_dtype(*storages, op="batch_norm2d_backward")
+        N, C, H, W = x.shape
+        suffix = _SUFFIX[dtype]
+
+        sum_dy_ptr = self._alloc(C * dtype.itemsize)
+        sum_dy_xhat_ptr = self._alloc(C * dtype.itemsize)
+        sum_dy = CUDAStorage(sum_dy_ptr, (C,), dtype, self._lib)
+        sum_dy_xhat = CUDAStorage(sum_dy_xhat_ptr, (C,), dtype, self._lib)
+        fn = getattr(self._lib, f"cf_bn_backward_reduce_{suffix}")
+        code = fn(
+            grad_output.ptr, x.ptr, mean.ptr, var.ptr, sum_dy.ptr, sum_dy_xhat.ptr,
+            N, C, H, W, ctypes.c_double(eps), self._stream_handle(),
+        )
+        self._check(code, "batch_norm2d backward (reduce)")
+        self._maybe_synchronize("batch_norm2d backward (reduce)")
+
+        grad_x_ptr = self._alloc(x.nbytes)
+        weight_ptr = weight.ptr if has_affine else None
+        count = N * H * W
+        fn = getattr(self._lib, f"cf_bn_backward_dx_{suffix}")
+        code = fn(
+            grad_output.ptr, x.ptr, mean.ptr, var.ptr, weight_ptr,
+            sum_dy.ptr, sum_dy_xhat.ptr, grad_x_ptr,
+            N, C, H, W, ctypes.c_double(eps), ctypes.c_int(1 if has_affine else 0),
+            ctypes.c_int(1 if training else 0), ctypes.c_longlong(count), self._stream_handle(),
+        )
+        self._check(code, "batch_norm2d backward (dx)")
+        self._maybe_synchronize("batch_norm2d backward (dx)")
+        grad_x = CUDAStorage(grad_x_ptr, x.shape, dtype, self._lib)
+
+        if not has_affine:
+            return grad_x, None, None
+        return grad_x, sum_dy_xhat, sum_dy
 
     # -- optimizer (Milestone 10) -----------------------------------------------
 

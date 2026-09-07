@@ -278,6 +278,13 @@ class Tensor:
     def __rmul__(self, other: Any) -> "Tensor":
         return self.__mul__(other)
 
+    def __truediv__(self, other: Any) -> "Tensor":
+        """`self / other`, elementwise. Milestone 53: added for `nn.BatchNorm2d`'s `(x - mean) / std`."""
+        return self._binary_op(other, "div", "/")
+
+    def __rtruediv__(self, other: Any) -> "Tensor":
+        return self._coerce(other)._binary_op(self, "div", "/")
+
     # -- Matrix multiplication -------------------------------------------
 
     def __matmul__(self, other: Any) -> "Tensor":
@@ -400,6 +407,22 @@ class Tensor:
             return (backend.tanh_backward(grad_output, result),)
 
         return self._differentiable_wrap(result, (self,), backward_fn, "tanh")
+
+    def sqrt(self) -> "Tensor":
+        """`sqrt(x)`, elementwise. Milestone 53: added for `nn.BatchNorm2d`'s `sqrt(var + eps)`.
+
+        `d(sqrt(x))/dx = 1/(2*sqrt(x))`, so the backward rule is
+        `grad_output * 0.5 / result` (`result` is sqrt's own saved forward
+        output) -- the same "derivative expressible from the saved output"
+        convention `exp`/`tanh` already use.
+        """
+        backend = get_backend(self._device)
+        result = backend.sqrt(self._data)
+
+        def backward_fn(grad_output):
+            return (backend.sqrt_backward(grad_output, result),)
+
+        return self._differentiable_wrap(result, (self,), backward_fn, "sqrt")
 
     # -- Conv2d / MaxPool2d (Milestone 15) --------------------------------------
 
@@ -578,6 +601,82 @@ class Tensor:
             return (backend.cross_entropy_backward(grad_output, logits_data, target_data),)
 
         return self._differentiable_wrap(result, (self,), backward_fn, "cross_entropy")
+
+    # -- BatchNorm2d (Milestone 53) --------------------------------------------
+
+    def batch_norm2d(
+        self,
+        weight: "Tensor | None",
+        bias: "Tensor | None",
+        running_mean: "Tensor",
+        running_var: "Tensor",
+        training: bool,
+        momentum: float,
+        eps: float,
+    ) -> "Tensor":
+        """CUDA-only fused BatchNorm2d forward -- `nn.BatchNorm2d`'s CUDA call site.
+
+        Deliberately CUDA-only: CUDA has no general multi-axis reduction or
+        `(1,C,1,1)`-vs-`(N,C,H,W)` broadcast to compose this from the way
+        `nn.BatchNorm2d`'s CPU forward does (`sum`/`sqrt`/`div`/`reshape`) --
+        see `docs/development/m53-batchnorm.md`. Raises
+        `UnsupportedDeviceError` for a non-CUDA tensor rather than silently
+        falling back to a slower composed path; `nn.BatchNorm2d.forward()` is
+        the one call site and never reaches here for a CPU input.
+
+        `running_mean`/`running_var` never appear in `inputs` below, so they
+        never receive a gradient (mirroring `cross_entropy`'s
+        non-differentiable integer `target`) -- their *values* are still
+        updated in place as a side effect of this forward call (inside
+        `Backend.batch_norm2d`, only when `training`), the same
+        in-place-mutation convention `SGD`/`Adam` already use for optimizer
+        state, just triggered by a forward pass instead of an optimizer step.
+        """
+        if self._device.type != "cuda":
+            raise UnsupportedDeviceError(
+                "Tensor.batch_norm2d() is a CUDA-only fused primitive; nn.BatchNorm2d composes "
+                "the equivalent computation from general Tensor ops (sum/sqrt/div/reshape) on "
+                f"other devices. Got a tensor on device '{self._device}'."
+            )
+        if self.ndim != 4:
+            raise ShapeMismatchError(f"batch_norm2d expects a 4D (N, C, H, W) input, got shape {self.shape}.")
+        C = self.shape[1]
+
+        def _check(t: "Tensor", label: str) -> None:
+            if t._device != self._device:
+                raise UnsupportedDeviceError(
+                    f"batch_norm2d requires {label} on the same device as input; got input on "
+                    f"'{self._device}' and {label} on '{t._device}'."
+                )
+            if t.shape != (C,):
+                raise ShapeMismatchError(f"batch_norm2d expects {label} of shape ({C},), got shape {t.shape}.")
+
+        _check(running_mean, "running_mean")
+        _check(running_var, "running_var")
+        if (weight is None) != (bias is None):
+            raise ShapeMismatchError("batch_norm2d requires weight and bias to both be given or both be None.")
+        if weight is not None:
+            _check(weight, "weight")
+            _check(bias, "bias")
+
+        backend = get_backend(self._device)
+        weight_data = weight._data if weight is not None else None
+        bias_data = bias._data if bias is not None else None
+        result, mean_used, var_used = backend.batch_norm2d(
+            self._data, weight_data, bias_data, running_mean._data, running_var._data,
+            training, momentum, eps,
+        )
+
+        x_data = self._data
+
+        def backward_fn(grad_output):
+            grad_x, grad_w, grad_b = backend.batch_norm2d_backward(
+                grad_output, x_data, weight_data, mean_used, var_used, training, eps,
+            )
+            return (grad_x, grad_w, grad_b) if weight is not None else (grad_x,)
+
+        inputs = (self,) if weight is None else (self, weight, bias)
+        return self._differentiable_wrap(result, inputs, backward_fn, "batch_norm2d")
 
     # -- Device transfer -----------------------------------------------------
 

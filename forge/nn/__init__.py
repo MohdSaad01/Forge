@@ -8,6 +8,7 @@ Tensor operations. See `docs/architecture/modules.md` and
 """
 
 from .activation import ReLU, Tanh
+from .batchnorm import BatchNorm2d
 from .container import Sequential
 from .conv import Conv2d
 from .dropout import Dropout
@@ -21,6 +22,6 @@ from .rnn import RNNCell
 
 __all__ = [
     "Module", "Parameter", "Linear", "ReLU", "Tanh", "Conv2d", "MaxPool2d",
-    "Sequential", "Flatten", "Dropout", "RNNCell",
+    "Sequential", "Flatten", "Dropout", "RNNCell", "BatchNorm2d",
     "Loss", "MSELoss", "CrossEntropyLoss",
 ]

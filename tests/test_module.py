@@ -1,5 +1,7 @@
+import numpy as np
 import pytest
 
+from forge import Tensor
 from forge.backend.cuda import is_cuda_available
 from forge.exceptions import ModuleError, UnsupportedDeviceError
 from forge.nn import Linear, Module, Parameter
@@ -205,3 +207,118 @@ def test_module_to_cuda_behaves_per_hardware_availability():
 
         with pytest.raises(CUDAError):
             m.to("cuda")
+
+
+# -- buffers (Milestone 53) ----------------------------------------------------
+
+
+class WithBuffer(Module):
+    """A module owning one Parameter and one registered buffer, mirroring
+    the shape `nn.BatchNorm2d`'s `weight`/`running_mean` pair actually uses."""
+
+    def __init__(self):
+        super().__init__()
+        self.weight = Parameter([1.0, 2.0, 3.0])
+        self.register_buffer("running_mean", Tensor(np.zeros(3)))
+
+    def forward(self, x):
+        return x + self.weight + self.running_mean
+
+
+class NestedWithBuffer(Module):
+    def __init__(self):
+        super().__init__()
+        self.inner = WithBuffer()
+
+    def forward(self, x):
+        return self.inner(x)
+
+
+def test_register_buffer_is_retrievable_via_attribute_access():
+    m = WithBuffer()
+    assert m.running_mean.numpy().tolist() == [0.0, 0.0, 0.0]
+
+
+def test_named_buffers_yields_dotted_name_and_tensor():
+    m = WithBuffer()
+    names = dict(m.named_buffers())
+    assert "running_mean" in names
+    assert names["running_mean"] is m.running_mean
+
+
+def test_buffers_are_excluded_from_named_parameters():
+    m = WithBuffer()
+    assert "running_mean" not in dict(m.named_parameters())
+
+
+def test_buffer_is_a_plain_tensor_not_a_parameter():
+    m = WithBuffer()
+    assert isinstance(m.running_mean, Tensor)
+    assert not isinstance(m.running_mean, Parameter)
+    assert m.running_mean.requires_grad is False
+
+
+def test_register_buffer_rejects_a_parameter():
+    m = WithBuffer()
+    with pytest.raises(ModuleError):
+        m.register_buffer("bad", Parameter([1.0]))
+
+
+def test_register_buffer_rejects_requires_grad_tensor():
+    m = WithBuffer()
+    with pytest.raises(ModuleError):
+        m.register_buffer("bad", Tensor([1.0], requires_grad=True))
+
+
+def test_register_buffer_accepts_none_placeholder():
+    m = WithBuffer()
+    m.register_buffer("optional_stat", None)
+    assert "optional_stat" not in dict(m.named_buffers())
+
+
+def test_named_buffers_finds_nested_module_buffers():
+    m = NestedWithBuffer()
+    names = dict(m.named_buffers())
+    assert "inner.running_mean" in names
+
+
+def test_buffer_survives_train_eval_transitions_unchanged():
+    m = WithBuffer()
+    m.running_mean._data = np.array([1.0, 2.0, 3.0])
+    m.train()
+    m.eval()
+    m.train(False)
+    np.testing.assert_array_equal(m.running_mean.numpy(), [1.0, 2.0, 3.0])
+
+
+def test_buffer_does_not_accumulate_gradients():
+    m = WithBuffer()
+    x = Tensor([1.0, 1.0, 1.0])
+    out = m(x).sum()
+    out.backward()
+    assert m.weight.grad is not None
+    assert m.running_mean.grad is None
+
+
+def test_reassigning_buffer_name_with_plain_tensor_updates_in_place():
+    m = WithBuffer()
+    m.running_mean = Tensor([5.0, 6.0, 7.0])
+    assert dict(m.named_buffers())["running_mean"] is m.running_mean
+    np.testing.assert_array_equal(m.running_mean.numpy(), [5.0, 6.0, 7.0])
+
+
+def test_reassigning_buffer_name_with_non_tensor_raises():
+    m = WithBuffer()
+    with pytest.raises(ModuleError):
+        m.running_mean = "not a tensor"
+
+
+def test_module_to_moves_buffer_storage(monkeypatch):
+    """CPU-tier: verifies `.to('cpu')` (a no-op move) doesn't break buffer
+    identity/values -- see tests/test_module_cuda.py for the real device-move
+    verification."""
+    m = WithBuffer()
+    before_id = id(m.running_mean)
+    m.to("cpu")
+    assert id(m.running_mean) == before_id
+    np.testing.assert_array_equal(m.running_mean.numpy(), [0.0, 0.0, 0.0])

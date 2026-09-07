@@ -335,3 +335,45 @@ def test_trainer_configured_for_cpu_rejects_a_cuda_model():
 
     with pytest.raises(UnsupportedDeviceError):
         trainer.fit(loader, epochs=1)
+
+
+# -- buffers (Milestone 53) ----------------------------------------------------
+
+
+class WithBuffer(Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = Parameter([1.0, 2.0, 3.0])
+        self.register_buffer("running_mean", Tensor(np.zeros(3)))
+
+    def forward(self, x):
+        return x + self.weight + self.running_mean
+
+
+def test_to_cuda_moves_buffer_storage():
+    m = WithBuffer()
+    m.to("cuda")
+    assert m.running_mean.device.type == "cuda"
+    assert isinstance(m.running_mean._data, CUDAStorage)
+
+
+def test_to_cuda_preserves_buffer_identity_and_values():
+    m = WithBuffer()
+    before_id = id(m.running_mean)
+    m.running_mean._data = np.array([1.0, 2.0, 3.0])
+    m.to("cuda")
+    assert id(m.running_mean) == before_id
+    np.testing.assert_allclose(m.running_mean.to("cpu").numpy(), [1.0, 2.0, 3.0], **TOL)
+
+
+def test_to_cpu_moves_a_cuda_buffer_back():
+    m = WithBuffer().to("cuda")
+    m.to("cpu")
+    assert m.running_mean.device.type == "cpu"
+    assert isinstance(m.running_mean._data, np.ndarray)
+
+
+def test_buffer_never_requires_grad_after_device_move():
+    m = WithBuffer().to("cuda")
+    assert m.running_mean.requires_grad is False
+    assert m.running_mean.grad is None

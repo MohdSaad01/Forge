@@ -36,10 +36,11 @@ from ..backend.device import SUPPORTED_DEVICE_TYPES
 from ..exceptions import PersistenceError
 from ..nn.module import Module
 from ..nn.parameter import Parameter
+from ..tensor.tensor import Tensor
 from .archive import PARAMETERS_DIR, read_archive, write_archive
 from .registry import spec_for_class, spec_for_name
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 
 def save_model(model: Module, path: str) -> None:
@@ -197,6 +198,23 @@ def _build_save_node(module: Module, prefix: str, arrays: "dict[str, np.ndarray]
             "requires_grad": param.requires_grad,
         }
 
+    # Milestone 53: buffers (e.g. `nn.BatchNorm2d`'s `running_mean`/
+    # `running_var`) -- saved the same way as parameters (a values array plus
+    # shape/dtype metadata), just from `_buffers` instead of `_parameters`,
+    # and with no `requires_grad` field (always False -- see
+    # `Module.register_buffer`). A buffer registered as `None` (unset) is
+    # recorded as `None` in the metadata with no array, so `_build_load_node`
+    # can tell "no buffer data to restore" apart from "buffer data present".
+    buffers: "dict[str, dict | None]" = {}
+    for name, buf in module._buffers.items():
+        dotted = name if not prefix else f"{prefix}.{name}"
+        if buf is None:
+            buffers[name] = None
+            continue
+        host_array = get_backend(buf.device).to_numpy(buf._data)
+        arrays[dotted] = np.array(host_array, copy=True)
+        buffers[name] = {"shape": list(buf.shape), "dtype": str(buf.dtype)}
+
     children: "dict[str, dict]" = {}
     for name, child in module._modules.items():
         child_prefix = name if not prefix else f"{prefix}.{name}"
@@ -207,6 +225,7 @@ def _build_save_node(module: Module, prefix: str, arrays: "dict[str, np.ndarray]
         "config": config,
         "training": module.training,
         "parameters": parameters,
+        "buffers": buffers,
         "children": children,
     }
 
@@ -218,7 +237,7 @@ def _build_load_node(
     node: dict, prefix: str, arrays: "dict[str, np.ndarray]", path: str, target_device: str
 ) -> Module:
     label = prefix or "<root>"
-    for key in ("type", "config", "training", "parameters", "children"):
+    for key in ("type", "config", "training", "parameters", "buffers", "children"):
         if key not in node:
             raise PersistenceError(
                 f"Cannot load model from '{path}': malformed metadata, module '{label}' is missing '{key}'."
@@ -292,6 +311,55 @@ def _build_load_node(
             name,
             Parameter(array, dtype=expected_dtype, device=target_device, requires_grad=requires_grad),
         )
+
+    # Milestone 53: buffers, mirroring the parameter-restoration loop above
+    # exactly except there is no `requires_grad` field (a buffer never
+    # requires grad -- `Module.register_buffer` enforces that at
+    # registration time) and a `None` entry means "no buffer data" rather
+    # than "missing/malformed" (an optional buffer no consumer ever set).
+    buffer_meta = node["buffers"]
+    if not isinstance(buffer_meta, dict):
+        raise PersistenceError(
+            f"Cannot load model from '{path}': malformed metadata, 'buffers' for module "
+            f"'{label}' is not an object."
+        )
+    expected_buffer_names = set(buffer_meta.keys())
+    actual_buffer_names = set(module._buffers.keys())
+    if expected_buffer_names != actual_buffer_names:
+        raise PersistenceError(
+            f"Cannot load model from '{path}': inconsistent model state for module '{label}' "
+            f"(type '{type_name}'): file declares buffers {sorted(expected_buffer_names)}, "
+            f"but the reconstructed module has {sorted(actual_buffer_names)}."
+        )
+
+    for name, meta in buffer_meta.items():
+        if meta is None:
+            setattr(module, name, None)
+            continue
+        if not isinstance(meta, dict):
+            raise PersistenceError(
+                f"Cannot load model from '{path}': malformed metadata, buffer '{name}' for "
+                f"module '{label}' is not an object or null."
+            )
+        dotted = name if not prefix else f"{prefix}.{name}"
+        array = arrays.get(dotted)
+        if array is None:
+            raise PersistenceError(
+                f"Cannot load model from '{path}': missing buffer data for '{dotted}'."
+            )
+        expected_shape = tuple(meta.get("shape", []))
+        if tuple(array.shape) != expected_shape:
+            raise PersistenceError(
+                f"Cannot load model from '{path}': buffer '{dotted}' has shape "
+                f"{tuple(array.shape)} in the file but metadata declares {expected_shape}."
+            )
+        expected_dtype = meta.get("dtype")
+        if str(array.dtype) != expected_dtype:
+            raise PersistenceError(
+                f"Cannot load model from '{path}': buffer '{dotted}' has dtype "
+                f"'{array.dtype}' in the file but metadata declares '{expected_dtype}'."
+            )
+        setattr(module, name, Tensor(array, dtype=expected_dtype, device=target_device, requires_grad=False))
 
     child_meta = node["children"]
     if not isinstance(child_meta, dict):

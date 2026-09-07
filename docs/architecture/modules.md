@@ -136,13 +136,34 @@ twice in a row, or calling it when a `Parameter` is shared by two attribute
 paths (`docs/architecture/modules.md`'s existing "intentional weight
 sharing" case), is always safe and idempotent.
 
-### No buffers to move
-Forge has no "buffer" concept (non-trainable module state, e.g. batch-norm
-running statistics) as of this milestone -- only `Parameter`s exist as
-per-module tensor state, and `to()` moves exactly those. A future milestone
-introducing buffers would need to extend `to()`'s walk accordingly; nothing
-about the current design assumes buffers don't exist, but nothing handles
-them yet either.
+### Buffers (Milestone 53)
+Forge now has a "buffer" concept: non-trainable, non-differentiable
+per-module tensor state that still moves with `.to()`, persists through
+`save_model`/`save_checkpoint`, and survives `train()`/`eval()` transitions
+untouched -- `nn.BatchNorm2d`'s `running_mean`/`running_var` are the first
+consumer. See `docs/development/m53-batchnorm.md` for the full design;
+summary:
+
+- `Module._buffers: dict[str, Tensor | None]`, alongside `_parameters`/
+  `_modules`. `register_buffer(name, tensor)` is the registration API --
+  **explicit**, unlike `Parameter`/`Module`'s `isinstance`-based
+  auto-registration in `__setattr__`, because a bare `Tensor` is not an
+  unambiguous signal of intent (a module may legitimately want a plain,
+  unregistered `Tensor` attribute that should not move/persist/traverse).
+  Reassigning an already-registered buffer's name with a plain `Tensor` (or
+  `None`) still routes back into `_buffers` via `__setattr__`, so
+  `self.<name>` keeps resolving correctly after e.g.
+  `self.running_mean = new_tensor`.
+- `named_buffers()`/`buffers()` mirror `named_parameters()`/`parameters()`
+  exactly (dotted names, first-discovered de-duplication, recursive over
+  child modules). Buffers are never yielded by `named_parameters()`.
+- A buffer never requires grad (`register_buffer` raises `ModuleError`
+  otherwise) and never appears in an autograd `Node`'s `inputs` -- the same
+  "excluded from the graph entirely" convention `Tensor.cross_entropy()`'s
+  integer `target` already established. `Module.to()` extends its existing
+  Parameter-moving walk to also call `Tensor._move_storage_()` on every
+  buffer (already defined generically on `Tensor`, not `Parameter`-specific,
+  so no new device-movement mechanism was needed).
 
 ### Device consistency and mismatch
 `Module.to()` never touches non-`Parameter` inputs -- calling a CUDA-moved
@@ -219,7 +240,7 @@ A new `Backend` method, `dropout_mask(a, p, rng) -> mask`, added alongside `conv
 - `Sequential` has no `__getitem__`/`__len__`/`__iter__` convenience accessors -- only the `Module` traversal API (`named_children()`, `children()`, etc.) is available, per the milestone's "do not silently expand scope" constraint.
 - `Sequential`'s persistence needs one small registry-level accommodation beyond the generic tree walk: `forge/serialization/model.py`'s `_build_load_node` requires a freshly `from_config()`-constructed module to already have a child under every name the file is about to attach (a fixed-shape invariant that holds for free when config alone determines structure, e.g. `Linear`'s `in_features`/`out_features`). `Sequential`'s child *count* is data, not config, so its registered `from_config` builds that many placeholder `Module()` children up front (`n_children` is the one extra config field `get_config` reports); the existing attach loop then overwrites each placeholder with its real child, unmodified. See `forge/serialization/registry.py`'s `"Sequential"` registration comment. No change to the generic save/load algorithm or file format was needed.
 - `Flatten`'s `start_dim`/`end_dim` are resolved against the input's `ndim` on every `forward()` call rather than fixed at construction -- correct for the fixed-rank `(N, C, H, W)` inputs every Forge layer that feeds one actually produces, but means a shape error only ever surfaces at `forward()` time, not construction time.
-- No layer whose forward behavior differs by `.training` existed before Milestone 16; `Dropout` is now the first. BatchNorm/LayerNorm remain out of scope (see the milestone's explicit non-goals).
+- No layer whose forward behavior differs by `.training` existed before Milestone 16; `Dropout` is now the first. BatchNorm/LayerNorm remain out of scope (see the milestone's explicit non-goals) -- **update (Milestone 53):** `nn.BatchNorm2d` is now the second, and the buffer concept this section's "No buffers to move" (above) once described as absent now exists; see that section and `docs/development/m53-batchnorm.md`.
 - `forge.random` remains a single global generator, not a per-module or thread-local RNG; `Dropout(generator=...)` is the escape hatch for an independent stream.
 
 ## Tanh, RNNCell (Milestone 50)

@@ -124,6 +124,7 @@ def spec_for_name(type_name: str) -> ModuleSpec:
 
 def _register_builtins() -> None:
     from ..nn.activation import ReLU
+    from ..nn.batchnorm import BatchNorm2d
     from ..nn.container import Sequential
     from ..nn.conv import Conv2d
     from ..nn.dropout import Dropout
@@ -207,6 +208,22 @@ def _register_builtins() -> None:
         # `_build_load_node` (`forge/serialization/model.py`) save/restore
         # every module's `.training` flag regardless of type.
         get_config=lambda m: {"p": m.p},
+    )
+    register_module(
+        "BatchNorm2d",
+        BatchNorm2d,
+        # `running_mean`/`running_var` are not part of `config` -- like every
+        # other module's buffers/parameters, their *values* round-trip via
+        # `_build_save_node`/`_build_load_node`'s generic buffer handling
+        # (Milestone 53); `get_config` only carries the construction-time
+        # architecture (matching `Conv2d`'s `bias: bool` pattern for an
+        # optional Parameter pair).
+        get_config=lambda m: {
+            "num_features": m.num_features,
+            "eps": m.eps,
+            "momentum": m.momentum,
+            "affine": m.affine,
+        },
     )
 
 

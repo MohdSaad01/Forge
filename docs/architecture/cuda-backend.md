@@ -2702,3 +2702,68 @@ correctness against CPU (`tests/test_cuda_backend.py`,
 `tests/test_cuda_autograd.py::test_tanh_backward_matches_cpu`), and
 end-to-end through the real `nn.RNNCell` API including a multi-timestep
 unroll (`tests/test_rnn_cuda.py`).
+
+## CUDA sqrt / div, and BatchNorm2d (Milestone 53)
+
+`sqrt`/`div` (`k_sqrt`/`k_sqrt_backward`/`k_div`, `kernels.cu`) are ordinary
+elementwise additions following the exact `tanh` pattern above --
+`UNARY_LAUNCHER`/`ELEMENTWISE_LAUNCHER` instantiations at `f32`/`f64`,
+`sqrt_backward` computed from the saved output (`grad_output * 0.5 /
+result`), `div_backward` composed from `div`/`mul`/`_neg` (no dedicated
+kernel, the same style `mul_backward` already uses). `div` supports only
+exact-matching shapes on CUDA -- no consumer needs a broadcasting division on
+this backend (`nn.BatchNorm2d`'s own CUDA path uses the dedicated fused
+kernel below instead of composed ops), so no `cf_div_bcast_*` variant exists,
+matching `add`/`sub`/`mul`'s already-established "CPU is more general than
+CUDA" broadcasting gap.
+
+**BatchNorm2d is CUDA's first dedicated normalization kernel group.** CUDA
+has no general multi-axis reduction (`sum()` supports only a full reduction
+or `axis=1` on a strictly-2D tensor) or general broadcast (scoped to
+`Linear`'s two shapes) to compose `nn.BatchNorm2d`'s per-channel `(N, C, H,
+W)` math from, the way the CPU backend's `nn.BatchNorm2d.forward()` does
+(`sum`/`sqrt`/`div`/`reshape` -- see `forge/nn/batchnorm.py` and
+`docs/development/m53-batchnorm.md`). Rather than build a general N-D
+reduction/broadcast engine (out of scope, per every prior milestone's
+"scope to the real consumer" precedent -- M14's `axis=1`, M9's row-broadcast),
+this adds one narrowly-scoped kernel group, exposed as a single CUDA-only
+`Tensor` method (`Tensor.batch_norm2d()`) rather than through the `Backend`
+ABC every other backend method implements on both devices -- deliberately
+not part of `CPUBackend`, since the CPU path never needs it.
+
+**Forward** (`CUDABackend.batch_norm2d`): while training, a per-channel
+reduction kernel (`k_bn_mean_var_reduce`, one block per channel, the same
+one-block-per-channel shared-memory tree-reduce shape as M15/M34's
+`k_conv2d_backward_bias_reduce`) computes `sum(x)`/`sum(x*x)` per channel in
+a single pass, then `mean = sum/count`, `var = sum(x*x)/count - mean^2`
+(clamped at 0 against rare float-cancellation). A tiny one-thread-per-channel
+kernel (`k_bn_update_running_stats`) then updates `running_mean`/
+`running_var` in place -- the same in-place-mutation convention
+`sgd_step`/`adam_step` already use for optimizer state, just triggered by a
+forward pass. A fused normalize+affine kernel (`k_bn_normalize`) then
+computes the output in one pass over every `(n, c, h, w)` element. In eval
+mode, the reduction and running-stats-update kernels are skipped entirely --
+`running_mean`/`running_var` are used directly as `mean`/`var`.
+
+**Backward** (`CUDABackend.batch_norm2d_backward`): a second per-channel
+reduction (`k_bn_backward_reduce`) computes `sum(dy)`/`sum(dy*xhat)` per
+channel (`xhat` recomputed from the saved `x`/`mean`/`var`, the "recompute
+from a saved input" convention `conv2d_backward`/`max_pool2d_backward`
+already use) -- these are exactly `dbeta`/`dgamma`, returned directly with no
+further kernel. A fused elementwise kernel (`k_bn_backward_dx`) then computes
+`dx` from the standard batchnorm backward formula in training mode, or the
+simpler `dy * weight * invstd` (no batch-statistic cross terms) in eval mode.
+
+Both `Tensor.batch_norm2d()` (forward) and its backward closure never
+include `running_mean`/`running_var` in the autograd `Node`'s `inputs`, so
+they never receive a gradient -- the same "excluded from the graph entirely"
+convention `cross_entropy`'s integer `target` established at M31.
+
+Verified on the reference 940MX: CPU/CUDA forward and backward numerical
+parity (`tests/test_batchnorm_cuda.py`), training-mode running-statistics
+parity, eval-mode parity (including the "running stats never change" and
+"cross-batch-independent output" properties), non-affine mode, device
+movement, persistence with CUDA-resident buffers
+(`tests/test_cuda_persistence.py`), and a real end-to-end training run
+through `examples/mnist/model.py::build_model_bn()`
+(`tests/test_mnist_bn_example_cuda_integration.py`).

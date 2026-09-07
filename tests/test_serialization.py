@@ -18,7 +18,7 @@ import pytest
 import forge
 from forge import Tensor, no_grad
 from forge.exceptions import PersistenceError
-from forge.nn import Conv2d, Dropout, Flatten, Linear, MaxPool2d, Module, ReLU, Sequential
+from forge.nn import BatchNorm2d, Conv2d, Dropout, Flatten, Linear, MaxPool2d, Module, ReLU, Sequential
 from forge.serialization import load_model, register_module, save_model
 from forge.serialization.archive import METADATA_ENTRY, PARAMETERS_DIR
 
@@ -744,3 +744,95 @@ def test_end_to_end_train_save_load_predict_equivalence(tmp_path):
         post_load_prediction = loaded(x_query).numpy()
 
     assert np.allclose(pre_save_prediction, post_load_prediction, atol=1e-6)
+
+
+# -- BatchNorm2d buffers (Milestone 53) ---------------------------------------
+
+
+def test_save_load_batchnorm2d_restores_configuration(tmp_path):
+    model = BatchNorm2d(4, eps=1e-4, momentum=0.2, affine=True)
+    path = tmp_path / "bn.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+    assert loaded.num_features == 4
+    assert loaded.eps == pytest.approx(1e-4)
+    assert loaded.momentum == pytest.approx(0.2)
+    assert loaded.affine is True
+
+
+def test_save_load_batchnorm2d_preserves_running_stats(tmp_path):
+    model = BatchNorm2d(3)
+    # Warm up the running stats with a real forward pass so they diverge
+    # from their (0, 1) initialization -- a save/load that silently
+    # re-initialized them would still pass a test comparing against defaults.
+    model(Tensor(np.random.default_rng(0).standard_normal((4, 3, 5, 5)).astype(np.float32)))
+    running_mean_before = model.running_mean.numpy().copy()
+    running_var_before = model.running_var.numpy().copy()
+
+    path = tmp_path / "bn.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    np.testing.assert_allclose(loaded.running_mean.numpy(), running_mean_before, atol=1e-6)
+    np.testing.assert_allclose(loaded.running_var.numpy(), running_var_before, atol=1e-6)
+
+
+def test_save_load_batchnorm2d_preserves_affine_parameters(tmp_path):
+    model = BatchNorm2d(3)
+    model.weight._data = np.array([1.5, 0.2, -0.7], dtype=np.float32)
+    model.bias._data = np.array([0.1, -0.3, 2.0], dtype=np.float32)
+
+    path = tmp_path / "bn.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    np.testing.assert_allclose(loaded.weight.numpy(), model.weight.numpy())
+    np.testing.assert_allclose(loaded.bias.numpy(), model.bias.numpy())
+
+
+def test_save_load_batchnorm2d_non_affine_round_trips(tmp_path):
+    model = BatchNorm2d(3, affine=False)
+    path = tmp_path / "bn.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+    assert loaded.weight is None
+    assert loaded.bias is None
+
+
+def test_eval_after_load_matches_eval_before_save():
+    """Section 9's explicit requirement: `eval()` after loading produces the
+    same output as before saving."""
+    import tempfile
+
+    model = Sequential(Conv2d(1, 4, kernel_size=3), BatchNorm2d(4))
+    x = Tensor(np.random.default_rng(1).standard_normal((5, 1, 8, 8)).astype(np.float32))
+    model(x)  # a training-mode pass to move the running stats away from init
+    model.eval()
+
+    with no_grad():
+        pre_save = model(x).numpy()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = f"{tmp}/model.forge"
+        save_model(model, path)
+        loaded = load_model(path)
+
+    assert loaded.training is False
+    with no_grad():
+        post_load = loaded(x).numpy()
+
+    np.testing.assert_allclose(pre_save, post_load, atol=1e-6)
+
+
+def test_state_dict_includes_batchnorm_buffers(tmp_path):
+    model = BatchNorm2d(3)
+    path = tmp_path / "bn.forge"
+    save_model(model, str(path))
+    with zipfile.ZipFile(path) as zf:
+        metadata = json.loads(zf.read(METADATA_ENTRY))
+        names = set(zf.namelist())
+
+    buffers = metadata["root"]["buffers"]
+    assert set(buffers.keys()) == {"running_mean", "running_var"}
+    assert f"{PARAMETERS_DIR}/running_mean.npy" in names
+    assert f"{PARAMETERS_DIR}/running_var.npy" in names

@@ -18,7 +18,7 @@ import forge
 from forge import Tensor, no_grad
 from forge.backend.cpu import CPUBackend
 from forge.backend.cuda import CUDAStorage, is_cuda_available
-from forge.nn import Conv2d, Dropout, Flatten, Linear, MaxPool2d, Module, ReLU, Sequential
+from forge.nn import BatchNorm2d, Conv2d, Dropout, Flatten, Linear, MaxPool2d, Module, ReLU, Sequential
 from forge.serialization import load_model, register_module, save_model
 
 pytestmark = pytest.mark.skipif(not is_cuda_available(), reason="CUDA is not available on this machine")
@@ -279,3 +279,48 @@ def test_cuda_trained_model_can_be_saved_and_reloaded_after_training(tmp_path):
         post_load_prediction = loaded(x_query).to("cpu").numpy()
 
     np.testing.assert_allclose(pre_save_prediction, post_load_prediction, atol=1e-6)
+
+
+# -- BatchNorm2d buffers on CUDA (Milestone 53) -------------------------------
+
+
+def test_cuda_batchnorm_buffers_restore_onto_cuda(tmp_path):
+    forge.random.seed(0)
+    model = Sequential(Conv2d(1, 4, kernel_size=3), BatchNorm2d(4)).to("cuda")
+    x = Tensor(np.random.default_rng(0).standard_normal((5, 1, 8, 8)).astype(np.float32)).to("cuda")
+    model(x)  # move the running stats off their (0, 1) init
+
+    bn = model._modules["1"]
+    running_mean_before = bn.running_mean.to("cpu").numpy().copy()
+    running_var_before = bn.running_var.to("cpu").numpy().copy()
+
+    path = tmp_path / "bn_cuda.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+
+    loaded_bn = loaded._modules["1"]
+    assert loaded_bn.running_mean.device.type == "cuda"
+    assert isinstance(loaded_bn.running_mean._data, CUDAStorage)
+    np.testing.assert_allclose(loaded_bn.running_mean.to("cpu").numpy(), running_mean_before, atol=1e-5)
+    np.testing.assert_allclose(loaded_bn.running_var.to("cpu").numpy(), running_var_before, atol=1e-5)
+
+
+def test_cuda_batchnorm_eval_after_load_matches_eval_before_save(tmp_path):
+    forge.random.seed(0)
+    model = Sequential(Conv2d(1, 4, kernel_size=3), BatchNorm2d(4)).to("cuda")
+    x = Tensor(np.random.default_rng(1).standard_normal((5, 1, 8, 8)).astype(np.float32)).to("cuda")
+    model(x)
+    model.eval()
+
+    with no_grad():
+        pre_save = model(x).to("cpu").numpy()
+
+    path = tmp_path / "bn_cuda_eval.forge"
+    save_model(model, str(path))
+    loaded = load_model(str(path))
+    assert loaded.training is False
+
+    with no_grad():
+        post_load = loaded(x).to("cpu").numpy()
+
+    np.testing.assert_allclose(pre_save, post_load, atol=1e-5)
