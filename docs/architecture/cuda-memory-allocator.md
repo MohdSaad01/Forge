@@ -449,9 +449,22 @@ callable directly) would let a caller reclaim cached-but-unused VRAM
 proactively, e.g. between an evaluation pass and the next training phase.
 
 ### Thread safety
-One `threading.Lock` around the free-list dict, matching `_MemoryTracker`'s
+One `threading.RLock` around the free-list dict, matching `_MemoryTracker`'s
 existing convention (Forge is single-threaded elsewhere; this is cheap
-insurance, not a concurrency subsystem).
+insurance, not a concurrency subsystem). Originally a plain `threading.Lock`
+(M25); Milestone 51 found and fixed a real self-deadlock -- CPython's cyclic
+GC can synchronously finalize an unrelated `CUDAStorage` while `release()`/
+`release_pending()` (the only methods `CUDAStorage.__del__` calls) hold this
+lock, and that finalizer's own `__del__` reenters the same lock on the same
+thread. The fix removes all new-object allocation from those two methods'
+critical sections (the actual, always-firing trigger) and additionally
+switches to `RLock` as an analyzed backstop, since same-thread reentrant
+execution of their simple, order-independent accumulation is behaviorally
+correct under CPython's GIL, not merely non-deadlocking. See
+`docs/development/m51-allocator-reentrancy.md` for the full investigation,
+including one still-open, much narrower residual (`_empty_ready`/
+`_drain_pending`'s own snapshot-construction allocations, reachable only via
+`empty_cache()`).
 
 ### Multi-device
 Forge supports exactly one GPU today (`CUDABackend.device_count` is probed

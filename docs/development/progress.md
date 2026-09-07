@@ -3034,3 +3034,40 @@ architecture/workload definition, the existing-capability attempt,
 rejected enhancements, training/validation results, the allocator-deadlock
 finding, limitations, M51 recommendation): `docs/development/
 m50-char-rnn.md`.
+
+### M51 — CUDA allocator reentrancy fix (`CUDACachingAllocator` self-deadlock)
+
+M50 found, but deliberately did not fix, a real self-deadlock in
+`CUDACachingAllocator.release()`. This milestone reproduced it
+independently (a reference-cycle-trapped `CUDAStorage` finalized by
+CPython's GC while `release()` held its lock, forced deterministically via
+a `gc.collect()`-on-acquire test proxy rather than relying on natural GC
+timing), confirmed the exact root cause with two identical `py-spy` stack
+dumps, and corrected M50's hypothesis: the trigger is `self._free_blocks
+.setdefault(nbytes, [])`'s *unconditional* list allocation (every call, not
+just a first-time size), not specifically the `any()` generator M50
+pointed to. **Fixed**, with two deliberately layered changes to
+`forge/backend/cuda/allocator.py`: (1) `release()`/`release_pending()` (the
+only methods `CUDAStorage.__del__` calls, hence the only ones a GC-
+triggered finalizer chain can reenter) now allocate nothing new while
+`self._lock` is held -- the fallback empty list and the `_PendingBlock`
+instance are built before acquiring the lock, and the duplicate-pointer
+scan is a manual index `while` loop rather than `any()`/a generator (direct
+measurement showed a plain `for` loop would *not* have helped -- `list_
+iterator` objects are themselves GC-tracked in CPython); (2) `self._lock`
+is now a `threading.RLock`, analyzed and adopted as a deliberate backstop
+for the one path not restructured (`_empty_ready`/`_drain_pending`'s
+snapshot-construction list comprehensions, reachable only via
+`empty_cache()`, never `__del__`) rather than accepted merely because it
+makes the deadlock disappear -- same-thread reentrant execution of
+`release()`/`release_pending()` is shown to be behaviorally correct, not
+just non-deadlocking, given CPython's GIL and both methods' simple,
+order-independent accumulation. 8 new regression tests
+(`tests/test_cuda_allocator_reentrancy.py`), independently verified against
+the pre-fix code (`git stash`) to fail/hang appropriately before verifying
+all pass after. Full suite: **1,627 passed** (1,619 + 8), run as a single
+process three consecutive times (~52-53s each, no hang) -- the exact
+condition M50's defect required. No performance regression detected
+(`benchmarks/allocator_bench.py`'s cached-path timings before/after are
+within this hardware's known microbenchmark noise floor). Full report:
+`docs/development/m51-allocator-reentrancy.md`.

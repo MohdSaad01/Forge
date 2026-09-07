@@ -57,12 +57,55 @@ would need to re-establish "safe to reuse" explicitly (e.g. stream-ordered
 events) before immediate cache reuse across streams would be safe again --
 out of scope here (see Section 30 of the milestone brief).
 
-**Thread safety**: one `threading.Lock` guards `_free_blocks` and every
+**Thread safety**: one `threading.RLock` guards `_free_blocks` and every
 counter, matching `memory.py`'s pre-existing `_MemoryTracker` convention --
 Forge remains single-threaded elsewhere; this is cheap insurance, not a
 concurrency subsystem. The lock is released before any real CUDA driver call
 (`cf_malloc`/`cf_free`) so a slow driver call never holds up unrelated
 bookkeeping reads.
+
+**Milestone 51 -- reentrant release fix.** `release()`/`release_pending()`
+are the only methods reachable from `CUDAStorage.__del__` (`backend.py`), so
+they are the only methods whose critical section can be *reentered*: a
+`CUDAStorage.__del__` call already in progress can, via CPython's cyclic GC,
+synchronously finalize an unrelated `CUDAStorage` mid-critical-section --
+e.g. one trapped in a reference cycle -- whose own `__del__` calls back into
+this same allocator, on the same thread, while the first call still holds
+the lock. This was a real, hardware-confirmed self-deadlock against a plain
+`threading.Lock` (see `docs/development/m51-allocator-reentrancy.md`): any
+new GC-tracked object (a list, a generator, an `enumerate`/`for`-loop
+iterator, a non-`__slots__` instance) allocated while the lock is held is a
+potential trip point for CPython's generation-0 threshold check, which can
+run an arbitrary finalizer inline. Fixed two ways, deliberately layered
+rather than relying on either alone:
+
+1. `release()`/`release_pending()` now allocate nothing new while the lock
+   is held -- the fallback empty list and the `_PendingBlock` instance are
+   built *before* `with self._lock:`, and the existing-pointer scan is a
+   manual index `while` loop (no `for`, no `any()`/genexpr -- both create a
+   GC-tracked iterator/generator; a `list`-indexed `while` loop does not, by
+   direct measurement). This removes the actual, always-executed trigger
+   (`self._free_blocks.setdefault(nbytes, [])` unconditionally evaluated its
+   `[]` argument on *every* call, not only on a cache-size miss) that fires
+   on every single `CUDAStorage` destruction -- the dominant, demonstrated
+   real-world path.
+2. `self._lock` is a `threading.RLock`, not `threading.Lock`, as a deliberate
+   backstop for whatever this milestone's own analysis could not fully rule
+   out (`_empty_ready`/`_drain_pending`'s snapshot-construction list
+   comprehensions, reachable only via `empty_cache()`, still allocate while
+   holding the lock and were not restructured -- out of scope per this
+   milestone's smallest-fix mandate). Reentrancy through `release()`/
+   `release_pending()` is not merely non-deadlocking but behaviorally
+   correct under an `RLock`: CPython's GIL means a same-thread reentrant
+   call always runs to full completion, in full, before the outer frame
+   resumes (never interleaved), and both methods only perform simple,
+   order-independent accumulation (per-size list membership, integer
+   counters) -- so nested execution order does not affect the result. The
+   one path this milestone did not close (`_empty_ready`/`_drain_pending`)
+   is converted by the `RLock` from a silent hang into, at worst, a loud
+   `RuntimeError: dictionary changed size during iteration` -- consistent
+   with `release()`'s own stated philosophy of failing loudly rather than
+   silently corrupting state -- not left as a silent hang.
 
 **Milestone 27 -- pending (stream-ordered) blocks.** The ownership invariant
 above still holds, but a device allocation released by a `CUDAStorage` last
@@ -241,7 +284,7 @@ class CUDACachingAllocator:
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._free_blocks: "dict[int, list[ctypes.c_void_p]]" = {}
         self._pending_blocks: "dict[int, list[_PendingBlock]]" = {}
         self._active_bytes = 0
@@ -350,10 +393,27 @@ class CUDACachingAllocator:
         in ordinary use -- the check below exists to fail loudly, not
         silently corrupt `_free_blocks`, if that invariant is ever violated
         by a future internal bug (Section 7 of the milestone brief).
+
+        Milestone 51: allocates nothing new while `self._lock` is held (see
+        the module docstring's M51 note) -- `spare` is built beforehand so a
+        first-time `nbytes` needs no in-lock allocation, and the duplicate
+        scan is a manual index `while` loop rather than `any()`/a generator,
+        since either of those would themselves allocate a new GC-tracked
+        object right here.
         """
+        spare: "list[ctypes.c_void_p]" = []
         with self._lock:
-            blocks = self._free_blocks.setdefault(nbytes, [])
-            if any(b.value == ptr.value for b in blocks):
+            blocks = self._free_blocks.get(nbytes)
+            if blocks is None:
+                blocks = spare
+                self._free_blocks[nbytes] = blocks
+            i, n, duplicate = 0, len(blocks), False
+            while i < n:
+                if blocks[i].value == ptr.value:
+                    duplicate = True
+                    break
+                i += 1
+            if duplicate:
                 raise RuntimeError(
                     f"CUDACachingAllocator.release() called with a pointer already cached at "
                     f"{nbytes} bytes -- this indicates a double-release of the same allocation "
@@ -374,12 +434,23 @@ class CUDACachingAllocator:
         enqueued before this call, so the recorded event completing implies
         all of them have too (stream program-order, not wall-clock timing).
         See `allocator.py`'s module docstring.
+
+        Milestone 51: like `release()`, allocates nothing new while
+        `self._lock` is held -- the `_PendingBlock` instance (a non-`__slots__`
+        dataclass, so GC-tracked) and the `spare` fallback list are both
+        built beforehand.
         """
         event = _stream.CUDAEvent(lib)
         event.record(stream_handle)
+        pending_block = _PendingBlock(event, ptr)
+        spare: "list[_PendingBlock]" = []
         with self._lock:
+            pending = self._pending_blocks.get(nbytes)
+            if pending is None:
+                pending = spare
+                self._pending_blocks[nbytes] = pending
             self._active_bytes -= nbytes
-            self._pending_blocks.setdefault(nbytes, []).append(_PendingBlock(event, ptr))
+            pending.append(pending_block)
             self._pending_bytes += nbytes
             self._pending_count += 1
         _profiler.get_profiler().record("free", nbytes, ptr.value or 0)
