@@ -49,3 +49,9 @@ examples/waveform_classification/artifacts*/
 # examples/mnist/data by default for its MNIST files (already ignored
 # above), not its own data directory.
 examples/autoencoder/artifacts*/
+
+# Milestone 64 segmentation example: generated run artifacts (models/
+# checkpoints) -- machine-local and reproducible via
+# `python -m examples.segmentation.train`; never committed. No downloaded
+# data (the synthetic shape dataset is generated in-process).
+examples/segmentation/artifacts*/

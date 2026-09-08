@@ -3726,3 +3726,80 @@ separately-confirmed-unrelated `test_dataloader_prefetch.py` allocator
 -measurement flake that passed cleanly in isolation), zero regressions
 attributable to this milestone. Full report:
 `docs/development/m63-conv-autoencoder.md`.
+
+### M64 — U-Net-style image segmentation: Forge's first dense-prediction workload, zero new framework capability
+
+M64's brief explicitly required attempting the workload against Forge's
+existing `Tensor`/`Module`/loss/optimizer/`DataLoader`/`Trainer`/
+serialization/`Conv2d`/`UpsampleNearest2d` capabilities *before* assuming a
+gap exists, and forbade adding an API "merely because the milestone needs a
+feature." Direct execution against the real API -- building
+`Sequential(Conv2d, ReLU, MaxPool2d, Conv2d, ReLU, UpsampleNearest2d,
+Conv2d)`, then running a forward pass, backward pass, an `Adam` step, and a
+save/load round trip on both CPU and CUDA -- succeeded immediately, with no
+shape mismatch and no missing method. This is Forge's first genuine dense
+-prediction task (a per-pixel output evaluated against an independent,
+structured ground truth mask, distinct from `autoencoder`'s
+reconstruct-the-input task shape).
+
+**What was added**: nothing to `forge/`. `examples/segmentation/`
+(`dataset.py`/`model.py`/`metrics.py`/`train.py`/`README.md`) is the first
+Forge image example whose model needs no `register_module()` call at all --
+`Conv2d`, `MaxPool2d`, `ReLU`, `UpsampleNearest2d`, and `Sequential` were
+already registered for persistence by prior milestones (15/53/62/63).
+`dataset.py`'s `SegmentationDataset` generates synthetic `32x32` RGB images
+(one randomly placed/sized/colored circle or square against a fixed
+-statistics noisy background, with a minimum foreground/background contrast
+margin enforced by rejection sampling) entirely in-process, matching
+`regression`/`char_rnn`/`word_rnn`'s no-download convention. `metrics.py`'s
+`PixelAccuracy`/`IoU` are ordinary `forge.training.Metric` subclasses --
+example-local code exercising that class's documented extension point, not
+a framework change.
+
+**Real consumer**: the ~5.4k-parameter model (`Conv2d(3,16)` -> `ReLU` ->
+`MaxPool2d(2)` -> `Conv2d(16,32)` -> `ReLU` -> `UpsampleNearest2d(2)` ->
+`Conv2d(32,1)`, no skip connections, no final activation -- the exact
+minimal architecture the brief itself suggests) trains through
+`Trainer.fit()` completely unmodified against a `{0,1}`-mask `MSELoss`
+target, the third confirmation (after `regression`/`autoencoder`) that
+`Trainer` makes no assumption about what its loss target represents.
+
+Verified on the reference i5-7200U (CPU) and GeForce 940MX (CUDA, real
+hardware), 15 epochs over 3,000 synthetic training images (500 held out for
+test): IoU rose from a **0.0000** trivial (predict-all-background) baseline
+to **0.9901** (CPU) / **0.9909** (CUDA) -- CPU and CUDA agreeing within
+0.0008 IoU and 0.00002 MSE, genuine end-to-end parity. Pixel accuracy alone
+(0.7975 baseline -> 0.9980) is reported but not treated as the primary
+signal, since the trivial baseline already scores high on it purely from
+foreground/background class imbalance -- IoU (which the trivial baseline
+scores at exactly `0.0` by construction) is the metric that actually
+demonstrates dense prediction. **Performance observation**: CUDA trained
+**~5.9x faster** than CPU (~689 vs. ~116 samples/sec), consistent with
+`mnist`'s/`autoencoder`'s own CUDA advantage on real multi-`Conv2d`
+workloads; not chased, per the M59 performance policy.
+
+One candidate gap was considered and explicitly rejected: true U-Net skip
+connections need a channel-concatenation primitive (`concat`/`cat`) that
+does not exist anywhere in `forge/tensor/tensor.py` or
+`forge/backend/base.py`. Not added -- the brief's own suggested minimal
+architecture has none, and this milestone's results show the task is fully
+solvable without them, so adding a speculative primitive with no
+demonstrated consumer would have violated the brief's own guardrail.
+
+**Testing**: 30 new tests -- `tests/test_segmentation_example_integration.py`
+(25, CPU: dataset determinism/shape/value-range/non-degenerate-mask checks,
+model forward shape and exact parameter count, `PixelAccuracy`/`IoU`
+correctness against hand-crafted predictions including the `union == 0`
+edge case, the majority-class baseline against a manual NumPy
+recomputation, full-pipeline training that beats that baseline on both
+metrics, checkpoint/resume + resume equivalence, model persistence, CLI
+inspection), `tests/test_segmentation_example_cuda_integration.py` (5, CUDA
+hardware: full pipeline trains and beats baseline, parameter/gradient/
+Adam-state CUDA residency, checkpoint/resume, model persistence, CPU/CUDA
+prediction parity). Full suite: **1,961 passed** (1,936 + 25 new), one
+pre-existing, unrelated `test_dataloader_prefetch.py` allocator
+-measurement flake in the same full-suite run (the same flakiness M63's own
+report footnoted) that passed cleanly in isolation immediately afterward --
+zero regressions attributable to this milestone. **Outcome A**: workload
+completed with existing framework, no new production capability required.
+Full report: `docs/development/m64-unet-segmentation.md`.
