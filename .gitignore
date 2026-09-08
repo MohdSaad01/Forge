@@ -42,3 +42,10 @@ examples/regression/artifacts*/
 # (models/checkpoints) -- same reasoning as regression above. No downloaded
 # data (the dataset is generated in-process).
 examples/waveform_classification/artifacts*/
+
+# Milestone 63 convolutional autoencoder example: generated run artifacts
+# (models/checkpoints) -- machine-local and reproducible via
+# `python -m examples.autoencoder.train`; never committed. Uses
+# examples/mnist/data by default for its MNIST files (already ignored
+# above), not its own data directory.
+examples/autoencoder/artifacts*/

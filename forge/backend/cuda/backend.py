@@ -1700,6 +1700,54 @@ class CUDABackend(Backend):
         self._maybe_synchronize("max_pool2d backward")
         return CUDAStorage(grad_x_ptr, x.shape, dtype, self._lib)
 
+    # -- Nearest-neighbor upsampling (Milestone 63) --------------------------
+    #
+    # See `base.py`'s `upsample_nearest2d` docstring for why this exists.
+    # Forward is one thread per *output* element (a plain gather, mirroring
+    # `k_maxpool2d_forward`'s indexing); backward is one thread per *input*
+    # element summing its fixed `sh x sw` fan-out block directly from
+    # `grad_output` -- no `atomicAdd`, no `cudaMemset` zeroing needed (every
+    # thread writes exactly one `grad_x` element exactly once), unlike
+    # `max_pool2d_backward`'s data-dependent-argmax scatter.
+
+    def upsample_nearest2d(self, x: CUDAStorage, scale_factor: "tuple[int, int]") -> CUDAStorage:
+        dtype = self._require_compute_dtype(x, op="upsample_nearest2d")
+        N, C, H, W = x.shape
+        sh, sw = scale_factor
+        Hout, Wout = H * sh, W * sw
+
+        out_ptr = self._alloc(N * C * Hout * Wout * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_upsample_nearest2d_forward_{_SUFFIX[dtype]}")
+        code = fn(
+            x.ptr, out_ptr,
+            ctypes.c_int(N), ctypes.c_int(C), ctypes.c_int(H), ctypes.c_int(W),
+            ctypes.c_int(sh), ctypes.c_int(sw), ctypes.c_int(Hout), ctypes.c_int(Wout),
+            self._stream_handle(),
+        )
+        self._check(code, "upsample_nearest2d")
+        self._maybe_synchronize("upsample_nearest2d")
+        return CUDAStorage(out_ptr, (N, C, Hout, Wout), dtype, self._lib)
+
+    def upsample_nearest2d_backward(
+        self, grad_output: CUDAStorage, input_shape: "tuple[int, int, int, int]", scale_factor: "tuple[int, int]"
+    ) -> CUDAStorage:
+        dtype = self._require_compute_dtype(grad_output, op="upsample_nearest2d_backward")
+        N, C, H, W = input_shape
+        sh, sw = scale_factor
+        Hout, Wout = grad_output.shape[2], grad_output.shape[3]
+
+        grad_x_ptr = self._alloc(N * C * H * W * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_upsample_nearest2d_backward_{_SUFFIX[dtype]}")
+        code = fn(
+            grad_output.ptr, grad_x_ptr,
+            ctypes.c_int(N), ctypes.c_int(C), ctypes.c_int(H), ctypes.c_int(W),
+            ctypes.c_int(sh), ctypes.c_int(sw), ctypes.c_int(Hout), ctypes.c_int(Wout),
+            self._stream_handle(),
+        )
+        self._check(code, "upsample_nearest2d backward")
+        self._maybe_synchronize("upsample_nearest2d backward")
+        return CUDAStorage(grad_x_ptr, (N, C, H, W), dtype, self._lib)
+
     # -- Dropout (Milestone 16) ---------------------------------------------------
     #
     # Real on-device mask generation (`kernels.cu`'s "Dropout mask" section):

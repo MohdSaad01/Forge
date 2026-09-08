@@ -273,3 +273,55 @@ class Backend(ABC):
         differentiated (an integer dtype cannot be, matching `cross_entropy`
         's non-differentiable `target`).
         """
+
+    # -- Nearest-neighbor upsampling (Milestone 63) --------------------------
+    #
+    # Added for `nn.UpsampleNearest2d`, the decoder half of
+    # `examples/autoencoder/`'s convolutional autoencoder. A genuine gap: no
+    # existing Forge primitive could grow an NCHW spatial map back up (the
+    # inverse of `max_pool2d`'s shrink) -- `reshape` alone cannot repeat
+    # elements, and general N-D broadcasting is a deliberately-scoped-out
+    # CUDA capability (`docs/architecture/cuda-backend.md`), so this needed
+    # one dedicated fused primitive, the same "narrow, consumer-scoped
+    # kernel" precedent `cross_entropy`/`embedding_lookup`/`rnn_cell`/
+    # `batch_norm2d` already established, rather than a general `repeat`/
+    # `tile` op nothing else in Forge needs yet. Upsample-then-Conv2d (rather
+    # than a transposed convolution) is itself a standard, deliberate
+    # architectural choice -- it avoids the checkerboard-artifact failure
+    # mode transposed convolution is well known for -- not a workaround for
+    # a missing `ConvTranspose2d`.
+    #
+    # `x` is NCHW; `scale_factor` is a `(height, width)` pair of positive
+    # ints, already normalized by `Tensor.upsample_nearest2d` before it
+    # reaches here (matching `conv2d`/`max_pool2d`'s own stride/padding
+    # convention above). Only integer, non-overlapping nearest-neighbor
+    # upsampling is supported -- no bilinear/bicubic interpolation, no
+    # fractional scale factor -- because that is the only mode `Conv2d`'s
+    # own im2col-style forward/backward already assumes for its output-size
+    # arithmetic, and no consumer needs more.
+
+    @abstractmethod
+    def upsample_nearest2d(self, x: Any, scale_factor: "tuple[int, int]") -> Any:
+        """Nearest-neighbor upsample: `out[n,c,ho,wo] = x[n,c,ho//sh,wo//sw]`.
+
+        For input `(N, C, H, W)`, the output is `(N, C, H*sh, W*sw)` -- each
+        input element is repeated into an `sh x sw` block of identical
+        output elements, the exact inverse shape transform of a `(sh, sw)`
+        `max_pool2d` with matching kernel/stride.
+        """
+
+    @abstractmethod
+    def upsample_nearest2d_backward(
+        self, grad_output: Any, input_shape: "tuple[int, int, int, int]", scale_factor: "tuple[int, int]"
+    ) -> Any:
+        """Gradient w.r.t. `x`: sum each output element's gradient back into the one input element it copied from.
+
+        `grad_x[n,c,hi,wi] = sum` over the `sh x sw` block of `grad_output`
+        that `x[n,c,hi,wi]` was broadcast into during the forward pass --
+        the same "sum the gradient over every consumer of one input element"
+        shape `max_pool2d_backward`'s overlapping-window case handles, but
+        computed directly (one thread/vectorized op per *input* element,
+        no argmax/atomics needed) since forward's fan-out pattern here is
+        fixed and data-independent, unlike `max_pool2d`'s data-dependent
+        argmax.
+        """

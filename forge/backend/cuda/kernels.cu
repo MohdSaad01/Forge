@@ -3253,6 +3253,108 @@ __global__ void k_maxpool2d_backward(
 MAXPOOL2D_BACKWARD_LAUNCHER(float, f32)
 MAXPOOL2D_BACKWARD_LAUNCHER(double, f64)
 
+// -- Nearest-neighbor upsampling (Milestone 63) ----------------------------------
+//
+// Added for `nn.UpsampleNearest2d`, the decoder half of
+// `examples/autoencoder/`'s convolutional autoencoder -- see `base.py`'s
+// `upsample_nearest2d` docstring for why this primitive exists at all
+// (there was no way to grow an NCHW spatial map back up before this).
+//
+// Forward: one thread per *output* element, a plain gather -- identical
+// indexing shape to `k_maxpool2d_forward` above, but dividing down to the
+// source input index instead of scanning a window.
+
+template <typename T>
+__global__ void k_upsample_nearest2d_forward(
+    const T* x, T* out,
+    int N, int C, int H, int W,
+    int SH, int SW, int Hout, int Wout)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = static_cast<long long>(N) * C * Hout * Wout;
+    if (idx >= total) return;
+
+    int wo = static_cast<int>(idx % Wout);
+    long long t1 = idx / Wout;
+    int ho = static_cast<int>(t1 % Hout);
+    long long t2 = t1 / Hout;
+    int c = static_cast<int>(t2 % C);
+    int n = static_cast<int>(t2 / C);
+
+    int hi = ho / SH;
+    int wi = wo / SW;
+    long long x_idx = ((static_cast<long long>(n) * C + c) * H + hi) * W + wi;
+    out[idx] = x[x_idx];
+}
+
+#define UPSAMPLE_NEAREST2D_FORWARD_LAUNCHER(TYPE, SUFFIX)                                \
+    extern "C" __declspec(dllexport) int cf_upsample_nearest2d_forward_##SUFFIX(         \
+        const TYPE* x, TYPE* out,                                                        \
+        int N, int C, int H, int W, int SH, int SW, int Hout, int Wout, void* stream) {  \
+        long long total = static_cast<long long>(N) * C * Hout * Wout;                   \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_upsample_nearest2d_forward<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(\
+            x, out, N, C, H, W, SH, SW, Hout, Wout);                                     \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+UPSAMPLE_NEAREST2D_FORWARD_LAUNCHER(float, f32)
+UPSAMPLE_NEAREST2D_FORWARD_LAUNCHER(double, f64)
+
+// -- Nearest-neighbor upsampling backward (Milestone 63) --------------------------
+//
+// One thread per *input* element, summing its fixed `SH x SW` fan-out block
+// directly from `grad_output` -- unlike `k_maxpool2d_backward`'s
+// data-dependent argmax scatter, forward's fan-out here is a fixed,
+// data-independent pattern, so backward can be a direct per-thread gather
+// -reduction: no `atomicAdd`, no zeroing `grad_x` first (every thread writes
+// its own `grad_x` element exactly once).
+
+template <typename T>
+__global__ void k_upsample_nearest2d_backward(
+    const T* grad_out, T* grad_x,
+    int N, int C, int H, int W,
+    int SH, int SW, int Hout, int Wout)
+{
+    long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    long long total = static_cast<long long>(N) * C * H * W;
+    if (idx >= total) return;
+
+    int wi = static_cast<int>(idx % W);
+    long long t1 = idx / W;
+    int hi = static_cast<int>(t1 % H);
+    long long t2 = t1 / H;
+    int c = static_cast<int>(t2 % C);
+    int n = static_cast<int>(t2 / C);
+
+    T acc = static_cast<T>(0);
+    int ho_base = hi * SH;
+    int wo_base = wi * SW;
+    for (int kh = 0; kh < SH; ++kh) {
+        for (int kw_ = 0; kw_ < SW; ++kw_) {
+            long long o_idx = ((static_cast<long long>(n) * C + c) * Hout + (ho_base + kh)) * Wout + (wo_base + kw_);
+            acc += grad_out[o_idx];
+        }
+    }
+    grad_x[idx] = acc;
+}
+
+#define UPSAMPLE_NEAREST2D_BACKWARD_LAUNCHER(TYPE, SUFFIX)                               \
+    extern "C" __declspec(dllexport) int cf_upsample_nearest2d_backward_##SUFFIX(        \
+        const TYPE* grad_out, TYPE* grad_x,                                              \
+        int N, int C, int H, int W, int SH, int SW, int Hout, int Wout, void* stream) {  \
+        long long total = static_cast<long long>(N) * C * H * W;                         \
+        int blocks, threads;                                                             \
+        launch_config(total, blocks, threads);                                           \
+        k_upsample_nearest2d_backward<TYPE><<<blocks, threads, 0, (cudaStream_t)stream>>>(\
+            grad_out, grad_x, N, C, H, W, SH, SW, Hout, Wout);                            \
+        return static_cast<int>(cudaGetLastError());                                     \
+    }
+
+UPSAMPLE_NEAREST2D_BACKWARD_LAUNCHER(float, f32)
+UPSAMPLE_NEAREST2D_BACKWARD_LAUNCHER(double, f64)
+
 // -- Dropout mask (Milestone 16) ----------------------------------------------
 //
 // Every element's Bernoulli(1-p) draw is generated entirely on-device, one

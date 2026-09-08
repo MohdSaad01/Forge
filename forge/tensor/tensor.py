@@ -536,6 +536,31 @@ class Tensor:
 
         return self._differentiable_wrap(result, (self,), backward_fn, "max_pool2d")
 
+    # -- Nearest-neighbor upsampling (Milestone 63) --------------------------
+
+    def upsample_nearest2d(self, scale_factor: "tuple[int, int]") -> "Tensor":
+        """Nearest-neighbor upsample over an NCHW tensor: `(N, C, H, W) -> (N, C, H*sh, W*sw)`.
+
+        Each input element is repeated into an `(sh, sw)` block of identical
+        output elements -- the shape-inverse of a `(sh, sw)` `max_pool2d`.
+        Backward sums each output block's gradient back into the one input
+        element it came from -- see `Backend.upsample_nearest2d_backward`.
+        """
+        if self.ndim != 4:
+            raise ShapeMismatchError(
+                f"upsample_nearest2d expects a 4D (N, C, H, W) input, got shape {self.shape}."
+            )
+
+        backend = get_backend(self._device)
+        result = backend.upsample_nearest2d(self._data, scale_factor)
+
+        input_shape = self.shape
+
+        def backward_fn(grad_output):
+            return (backend.upsample_nearest2d_backward(grad_output, input_shape, scale_factor),)
+
+        return self._differentiable_wrap(result, (self,), backward_fn, "upsample_nearest2d")
+
     # -- Dropout (Milestone 16) ----------------------------------------------
 
     def dropout_mask(self, p: float, rng: np.random.Generator) -> "Tensor":

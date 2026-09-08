@@ -354,3 +354,24 @@ class CPUBackend(Backend):
         # batch/sequence must accumulate every occurrence's gradient.
         np.add.at(grad_table, indices, grad_output)
         return grad_table
+
+    # -- Nearest-neighbor upsampling (Milestone 63) --------------------------
+    #
+    # `np.repeat` along each spatial axis is exactly nearest-neighbor
+    # upsampling: repeating element `i` `s` times in order is `[i]*s`, which
+    # is precisely the `sh x sw` block-of-copies forward pass `base.py`
+    # documents. Backward reshapes each `sh x sw` output block back next to
+    # its source input element and sums over it -- a pure reshape+reduction,
+    # no Python loop, no scatter.
+
+    def upsample_nearest2d(self, x: np.ndarray, scale_factor: "tuple[int, int]") -> np.ndarray:
+        sh, sw = scale_factor
+        return np.repeat(np.repeat(x, sh, axis=2), sw, axis=3)
+
+    def upsample_nearest2d_backward(
+        self, grad_output: np.ndarray, input_shape: "tuple[int, int, int, int]", scale_factor: "tuple[int, int]"
+    ) -> np.ndarray:
+        N, C, H, W = input_shape
+        sh, sw = scale_factor
+        reshaped = grad_output.reshape(N, C, H, sh, W, sw)
+        return np.ascontiguousarray(reshaped.sum(axis=(3, 5)))

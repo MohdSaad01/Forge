@@ -3646,3 +3646,83 @@ hardware: parameter/gradient/Adam-state CUDA residency, checkpoint/resume,
 model persistence, CPU/CUDA prediction parity). Full suite: **1,883
 passed** (1,792 + 91 new), zero regressions. Full report:
 `docs/development/m62-conv1d-waveform-classification.md`.
+
+### M63 — Convolutional autoencoder: `nn.UpsampleNearest2d` and Forge's first unsupervised-reconstruction workload
+
+M62's own "no foregone-conclusion direction" recommendation plus this
+milestone's brief (explicitly forbidding another readiness survey) required
+selecting one concrete model family meaningfully different from all five
+existing examples. Direct inspection found a real gap: every existing
+example is supervised (a label, next-token, or regression target separate
+from the input); Forge had never validated unsupervised reconstruction
+-- a model whose training signal is its own input. A convolutional
+autoencoder was selected over a stacked-RNN/tabular-classifier/small
+-generative-model alternative (each rejected for either recombining
+existing capability without new value, or requiring several simultaneous
+new primitives -- VAE/GAN -- against the brief's own guardrail).
+
+**What was added**: `nn.UpsampleNearest2d` (`forge/nn/upsample.py`), backed
+by a new `Backend.upsample_nearest2d`/`upsample_nearest2d_backward`
+primitive pair (`forge/backend/base.py`, `cpu.py`, a dedicated real CUDA
+kernel pair in `kernels.cu`/`backend.py`). This was a genuine blocker
+discovered by implementation, not speculation: every prior Forge
+architecture only ever *shrinks* a spatial feature map (`Conv2d`'s
+valid-region shrink, `MaxPool2d`'s stride-2 shrink); this example's decoder
+needed the opposite (`(N, 32, 7, 7) -> (N, 1, 28, 28)`), and neither
+`Tensor.reshape` nor general N-D broadcasting (deliberately out of CUDA
+scope) could do it. Composing `UpsampleNearest2d` with `Conv2d`
+(upsample-then-convolve) is a standard, deliberate architectural choice
+(it avoids transposed convolution's well-known checkerboard artifacts),
+not a `ConvTranspose2d` workaround. The CUDA backward kernel is notably
+*simpler* than `MaxPool2d`'s: since the forward fan-out pattern is fixed
+and data-independent (unlike `MaxPool2d`'s data-dependent argmax), backward
+is a direct one-thread-per-input-element gather-reduction -- no
+`atomicAdd`, no `cudaMemset` zeroing needed.
+
+**Real consumer**: `examples/autoencoder/` -- a new, complete example
+(`dataset.py`/`model.py`/`train.py`/`README.md`) reusing
+`examples/mnist/dataset.py`'s `MNISTDataset` directly (via a thin
+`AutoencoderDataset` wrapper returning `(image, image)` pairs instead of
+`(image, label)`) rather than a synthetic corpus -- the first example after
+`mnist` itself to train against real external data. `ConvAutoencoder`
+(`Conv2d`/`MaxPool2d` encoder -> `Linear` 32-d bottleneck -> `Linear`/
+`UpsampleNearest2d`/`Conv2d` decoder, ~111.5k parameters) trains through
+`Trainer.fit()` completely unmodified -- `Trainer` needed no changes to
+train on a target that is the input itself, confirming the M50/M54/M59
+finding that it makes no assumption about what its loss target represents.
+
+Verified on the reference i5-7200U (CPU) and GeForce 940MX (CUDA, real
+hardware), 3 epochs over the full 60,000-image MNIST training set: test MSE
+dropped from a 0.06747 trivial (predict-the-training-mean-image) baseline
+to 0.01740 (CPU) / 0.01755 (CUDA) -- a 74.2%/74.0% reduction, CPU and CUDA
+agreeing within 0.00015. A bonus qualitative check -- do same-digit test
+images end up with nearby latent codes, despite training with no labels at
+all? -- scored 80.0% (CPU) / 79.0% (CUDA) nearest-neighbor label agreement
+against a 10% random baseline, evidence the bottleneck learned genuine
+digit-shape structure. **Performance observation**: unlike `regression`
+(CUDA slower) or `waveform_classification` (roughly tied), this
+architecture's four real `Conv2d` layers gave CUDA substantial work per
+batch -- CUDA trained **~6.1x faster** than CPU (~1,170 vs. ~190
+samples/sec), closer to `mnist`'s own CUDA advantage; reported as observed,
+not chased, per the M59 performance policy.
+
+**Testing**: 61 new tests -- `tests/test_upsample_nearest2d.py` (25, CPU:
+config validation, forward vs. an independent `np.repeat` reference,
+gradient-accumulation/scaling checks, finite-difference gradients across 4
+configurations, `Sequential`+`Conv2d` training, serialization round trip),
+`tests/test_cuda_upsample_nearest2d.py` (12, CUDA hardware: forward/
+backward parity with CPU, finite-difference, a spy-based "never falls back
+to CPUBackend" guard, device movement, an end-to-end training loop),
+`tests/test_autoencoder_example_integration.py` (12, CPU: full-pipeline
+training beats baseline, checkpoint/resume + resume equivalence, model
+persistence, CLI inspection, the latent nearest-neighbor algorithm checked
+deterministically against hand-crafted latents, `AutoencoderDataset`'s
+MNIST-wrapping logic against tiny in-memory real-IDX-format files with no
+network access), `tests/test_autoencoder_example_cuda_integration.py` (5,
+CUDA hardware: parameter/gradient/Adam-state CUDA residency including the
+new decoder path, checkpoint/resume, model persistence, CPU/CUDA prediction
+parity). Full suite: **1,936 passed** (1,883 + 61 - 1 flaky, plus a
+separately-confirmed-unrelated `test_dataloader_prefetch.py` allocator
+-measurement flake that passed cleanly in isolation), zero regressions
+attributable to this milestone. Full report:
+`docs/development/m63-conv-autoencoder.md`.

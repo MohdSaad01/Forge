@@ -134,6 +134,7 @@ def _register_builtins() -> None:
     from ..nn.module import Module
     from ..nn.pooling import MaxPool1d, MaxPool2d
     from ..nn.rnn import RNNCell
+    from ..nn.upsample import UpsampleNearest2d
 
     register_module(
         "Linear",
@@ -186,6 +187,11 @@ def _register_builtins() -> None:
             "stride": m.stride,
             "padding": m.padding,
         },
+    )
+    register_module(
+        "UpsampleNearest2d",
+        UpsampleNearest2d,
+        get_config=lambda m: {"scale_factor": list(m.scale_factor)},
     )
     register_module(
         "Sequential",

@@ -15,6 +15,7 @@ this page is only an index so you can find the right one quickly.
 | [`word_rnn/`](word_rnn/README.md) | Word-level language modeling over a real (1,806-word) vocabulary. | `Embedding` → RNN | + `nn.Embedding`, `Tensor.embedding_lookup()` | CPU and CUDA (hardware-verified) |
 | [`regression/`](regression/README.md) | Tabular regression: continuous features with linear, interaction, and quadratic structure. | MLP (`Linear`/`ReLU` stack) | Same as `mnist/` (`Trainer`, `Adam`, checkpoint/resume, persistence) applied to a regression loss/metrics | CPU and CUDA (hardware-verified) |
 | [`waveform_classification/`](waveform_classification/README.md) | Classifying fixed-length 1D time series (noisy sine/square/sawtooth/triangle waveforms) by shape. | 1D CNN (`Conv1d`, `MaxPool1d`) | + `nn.Conv1d`/`MaxPool1d` (Milestone 62), same `Trainer`/`Adam`/checkpoint/resume/persistence pipeline as `mnist/` | CPU and CUDA (hardware-verified) |
+| [`autoencoder/`](autoencoder/README.md) | Unsupervised image reconstruction through a compressed bottleneck, on real MNIST images -- the first example with no label/target beyond its own input. | Convolutional autoencoder (`Conv2d`/`MaxPool2d` encoder, `UpsampleNearest2d`/`Conv2d` decoder) | + `nn.UpsampleNearest2d` (Milestone 63), same `Trainer`/`Adam`/checkpoint/resume/persistence pipeline as `mnist/` | CPU and CUDA (hardware-verified) |
 | [`data_pipeline_demo.py`](data_pipeline_demo.py) | `Dataset` → `Transform` → `DataLoader` → batches feeding a model, with no training loop at all. | N/A (pipeline only) | `data.TensorDataset`, `data.transforms.Normalize`, `data.DataLoader` | CPU only (demo script) |
 | [`persistence_demo.py`](persistence_demo.py) | Proof that a saved model survives a process boundary: train in one process, load and predict in a fresh subprocess. | `Linear` regression | `forge.save_model`/`load_model` | CPU only (demo script) |
 
@@ -33,25 +34,27 @@ what it does.
 
 ## The "real workload" examples
 
-`mnist`, `char_rnn`/`word_rnn`, `regression`, and `waveform_classification`
-are Forge's "real workload" examples -- each is validated end-to-end
-(training, evaluation, checkpoint save/resume, model persistence, CPU/CUDA
-parity where applicable) at the same standard, not toy scripts. The first
-three are Forge's vision-named workload families
+`mnist`, `char_rnn`/`word_rnn`, `regression`, `waveform_classification`, and
+`autoencoder` are Forge's "real workload" examples -- each is validated
+end-to-end (training, evaluation, checkpoint save/resume, model
+persistence, CPU/CUDA parity where applicable) at the same standard, not
+toy scripts. The first three are Forge's vision-named workload families
 (`docs/product/vision.md`/`docs/product/use-cases.md`'s UC1-UC3);
 `waveform_classification` (Milestone 62) is UC1 again, expressed with a
 model family (1D temporal convolution, `nn.Conv1d`/`nn.MaxPool1d`) none of
-the others cover. If you're evaluating whether Forge can support a workload
-shaped like yours, read the closest match's own README first; the
-model/data code is designed to be a starting point you copy and adapt, not a
-fixed template.
+the others cover; `autoencoder` (Milestone 63) is a genuinely new task
+shape -- unsupervised reconstruction through a compressed bottleneck,
+requiring a new primitive (`nn.UpsampleNearest2d`) no prior example needed.
+If you're evaluating whether Forge can support a workload shaped like
+yours, read the closest match's own README first; the model/data code is
+designed to be a starting point you copy and adapt, not a fixed template.
 
 ## Running the tests for these examples
 
-Every example under `mnist/`, `char_rnn/`, `word_rnn/`, `regression/`, and
-`waveform_classification/` has a corresponding integration test (CPU) and,
-where applicable, a CUDA test (skips cleanly without a working CUDA backend)
-under `tests/` that exercises the same pipeline on a small synthetic/fast
-dataset -- see each example's own README for the exact `pytest` invocation,
-or run the whole suite with `python -m pytest tests/` from the repository
-root.
+Every example under `mnist/`, `char_rnn/`, `word_rnn/`, `regression/`,
+`waveform_classification/`, and `autoencoder/` has a corresponding
+integration test (CPU) and, where applicable, a CUDA test (skips cleanly
+without a working CUDA backend) under `tests/` that exercises the same
+pipeline on a small synthetic/fast dataset -- see each example's own README
+for the exact `pytest` invocation, or run the whole suite with
+`python -m pytest tests/` from the repository root.
