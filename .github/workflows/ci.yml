@@ -1,0 +1,32 @@
+name: CPU test suite
+
+# Runs Forge's CPU-only test surface on ordinary GitHub-hosted runners (no
+# GPU available there). CUDA-specific tests already skip cleanly via
+# pytest.mark.skipif(not is_cuda_available()) -- see tests/test_cuda_*.py
+# and tests/test_*_example_cuda_integration.py -- so this workflow exercises
+# roughly half the suite (every CPU-only test file) plus the CPU paths of
+# the rest; it deliberately makes no claim about CUDA correctness. CUDA
+# behavior remains hardware-verified manually on the reference GPU per
+# docs/development/development-environment.md, as CLAUDE.md requires
+# ("CUDA support must be real and hardware-tested; never simulate GPU
+# behavior").
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest tests/ -q

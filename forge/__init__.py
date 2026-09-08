@@ -1,36 +1,39 @@
 """Forge: a from-scratch deep-learning framework.
 
-Milestone 1 established the Tensor abstraction and the CPU execution
-boundary. Milestone 2 added gradient tracking and reverse-mode autodiff on
-top of that Tensor. Milestone 3 added the `nn` module/parameter composition
-layer built on top of both. Milestone 4 added loss functions (`nn.MSELoss`,
-`nn.CrossEntropyLoss`) and the `optim` optimizer package (`optim.SGD`) that
-consumes `Parameter` gradients to update model state. Milestone 5 added the
-`data` package (`Dataset`, `TensorDataset`, `DataLoader`, transforms) for
-representing training data and producing model-ready batches, independent of
-the model/loss/optimizer stack. Milestone 6 added the `training` package
-(`Trainer`, metrics, `TrainingHistory`) that orchestrates all of the above
-into a reusable training/evaluation workflow, plus `no_grad()` -- a minimal
-autograd extension that suspends graph construction during evaluation.
-Milestone 7 adds the `serialization` package (`save_model`, `load_model`,
-`register_module`) for reconstructing a trained model's architecture and
-parameter state after the training process has exited -- see
-`docs/architecture/persistence.md`. Milestone 8 adds a real CUDA execution
-backend (`forge.backend.cuda`) for a small forward-only operation set
-(tensor transfer, `add`/`sub`/`mul`, `matmul`, `sum`), `Tensor.to(device)`
-for explicit CPU<->CUDA transfer, and `CUDAError` for CUDA-specific
-failures -- see `docs/architecture/cuda-backend.md`. Milestone 22 adds the
-`forge.cuda` package (`memory_stats()`, `reset_peak_memory_stats()`) for
-observing CUDA allocation/free lifecycle and peak memory usage. Milestone 25
-adds an exact-size CUDA caching allocator sitting between `CUDAStorage` and
-the driver (`forge.cuda.empty_cache()`; `memory_stats()` grows
-`reserved_bytes`/`cached_bytes`/`cache_hit_count`/`cache_miss_count`) -- see
-`docs/architecture/cuda-memory-allocator.md`. Milestone 26 formalizes
-Forge's CUDA execution/synchronization contract (single default stream,
-per-operation `cudaDeviceSynchronize()`, allocator reuse safety) and adds
-`forge.cuda.synchronize()`, a thin public wrapper around the pre-existing
-`CUDABackend.synchronize()` -- see `docs/architecture/cuda-backend.md`'s
-**CUDA Execution and Synchronization Semantics (Milestone 26)** section.
+Forge owns its core ML machinery end-to-end -- Tensor/autograd, CPU and CUDA
+execution backends, neural-network modules, optimizers, data loading,
+training orchestration, and model/checkpoint persistence -- rather than
+wrapping an existing framework. See `README.md` for an overview and
+`docs/architecture/architecture.md` for the layered design.
+
+Public subpackages:
+
+- `forge.nn` -- `Module`/`Parameter` composition; layers `Linear`, `Conv2d`,
+  `MaxPool2d`, `Conv1d`, `MaxPool1d`, `BatchNorm2d`, `RNNCell`, `Embedding`,
+  `Dropout`, `Sequential`, `ReLU`, `Tanh`; losses `MSELoss`, `CrossEntropyLoss`.
+- `forge.optim` -- `SGD`, `Adam`.
+- `forge.data` -- `Dataset`/`TensorDataset`/`DataLoader`, transforms, and
+  CUDA-prefetching (`CUDAPrefetchLoader`).
+- `forge.training` -- `Trainer`, metrics, `TrainingHistory`.
+- `forge.serialization` -- `save_model`/`load_model`,
+  `save_checkpoint`/`load_checkpoint`, and the module/optimizer
+  reconstruction registries -- see `docs/architecture/persistence.md`.
+- `forge.backend` -- device/backend dispatch (`forge.backend.device.Device`);
+  `forge.backend.cuda` holds the real CUDA execution backend.
+- `forge.cuda` -- the public CUDA API: `is_cuda_available()`, streams,
+  synchronization, memory statistics, pinned memory -- see that package's
+  own module docstring for the full command list.
+- `forge.random` -- process-global RNG seeding for reproducible parameter
+  initialization.
+
+This module also re-exports `Tensor`, `DType`, `DEFAULT_DTYPE`, `Device`,
+`no_grad`, the exception hierarchy, and the persistence/checkpoint functions
+above at the top level -- see `__all__`.
+
+Complete example workloads under `examples/` (image classification,
+character/word-level language modeling, tabular regression, and
+1D-convolutional sequence classification) exercise this entire public
+surface end-to-end -- see `examples/README.md`.
 """
 
 from . import backend, cuda, data, nn, optim, random, serialization, training

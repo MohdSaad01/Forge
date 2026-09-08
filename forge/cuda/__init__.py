@@ -1,6 +1,7 @@
 """Public CUDA API: streams (Milestone 27), synchronization (Milestone 26), memory statistics (Milestone 22; caching allocator in Milestone 25).
 
 ```python
+forge.cuda.is_cuda_available()        # can this process actually use a CUDA device right now
 forge.cuda.Stream()                   # a real CUDA stream (Milestone 27)
 forge.cuda.current_stream()           # the stream Forge CUDA ops issued right now execute on
 forge.cuda.set_stream(s)              # make `s` current, returning the previous one
@@ -52,7 +53,11 @@ block (or use `s.synchronize()` for just that stream).
 Importing `forge.cuda` itself never requires a CUDA-capable device or
 `nvcc` -- it only imports pure-Python counters and stream/event wrappers
 (see `forge/backend/cuda/__init__.py`'s module docstring) -- so `import
-forge` remains CUDA-optional. Only *calling* `Stream()`/`current_stream()`/
+forge` remains CUDA-optional. `is_cuda_available()` is the one entry point
+that is always safe to *call* on any machine (it never raises); use it to
+decide which device string to pass to `Tensor(..., device=...)`/`Trainer(
+device=...)`/`Module.to(...)` before touching anything else in this
+package. Only *calling* `Stream()`/`current_stream()`/
 `set_stream()`/`stream()`/`synchronize()`/`memory_stats()`/
 `reset_peak_memory_stats()`/`empty_cache()` requires a working CUDA backend,
 raising `forge.CUDAError` otherwise, matching every other CUDA-specific
@@ -65,6 +70,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from ..backend.cuda.allocator import CUDAMemoryStats
+from ..backend.cuda.backend import is_cuda_available
 from ..backend.cuda.pinned import PinnedMemory as _PinnedMemoryImpl
 from ..backend.cuda.pinned import PinnedMemoryStats as _PinnedMemoryStats
 from ..backend.cuda.stream import CUDAStream
@@ -73,9 +79,9 @@ from . import profiler
 
 
 def _require_cuda() -> None:
-    from ..backend.cuda.backend import is_cuda_available
+    from ..backend.cuda.backend import is_cuda_available as _is_cuda_available
 
-    if not is_cuda_available():
+    if not _is_cuda_available():
         raise CUDAError(
             "forge.cuda.Stream()/current_stream()/set_stream()/stream()/synchronize()/"
             "memory_stats()/reset_peak_memory_stats()/empty_cache()/PinnedMemory()/"
@@ -271,6 +277,7 @@ def empty_cache() -> int:
 
 
 __all__ = [
+    "is_cuda_available",
     "Stream",
     "current_stream",
     "set_stream",

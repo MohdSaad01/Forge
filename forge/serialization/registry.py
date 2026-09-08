@@ -126,13 +126,13 @@ def _register_builtins() -> None:
     from ..nn.activation import ReLU
     from ..nn.batchnorm import BatchNorm2d
     from ..nn.container import Sequential
-    from ..nn.conv import Conv2d
+    from ..nn.conv import Conv1d, Conv2d
     from ..nn.dropout import Dropout
     from ..nn.embedding import Embedding
     from ..nn.flatten import Flatten
     from ..nn.linear import Linear
     from ..nn.module import Module
-    from ..nn.pooling import MaxPool2d
+    from ..nn.pooling import MaxPool1d, MaxPool2d
     from ..nn.rnn import RNNCell
 
     register_module(
@@ -164,6 +164,27 @@ def _register_builtins() -> None:
             "kernel_size": list(m.kernel_size),
             "stride": list(m.stride),
             "padding": list(m.padding),
+        },
+    )
+    register_module(
+        "Conv1d",
+        Conv1d,
+        get_config=lambda m: {
+            "in_channels": m.in_channels,
+            "out_channels": m.out_channels,
+            "kernel_size": m.kernel_size,
+            "stride": m.stride,
+            "padding": m.padding,
+            "bias": m.bias is not None,
+        },
+    )
+    register_module(
+        "MaxPool1d",
+        MaxPool1d,
+        get_config=lambda m: {
+            "kernel_size": m.kernel_size,
+            "stride": m.stride,
+            "padding": m.padding,
         },
     )
     register_module(

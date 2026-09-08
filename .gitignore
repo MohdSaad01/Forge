@@ -11,6 +11,11 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
+# Per-machine, per-developer IDE metadata (JetBrains project settings) --
+# never portable across machines/editors, never committed (Milestone 62
+# hygiene: removed from tracking, see docs/development/m61-framework-readiness.md).
+.idea/
+
 # Milestone 20 MNIST example: downloaded dataset and generated run artifacts
 # (models/checkpoints) -- large, machine-local, and reproducible via
 # `python -m examples.mnist.train --download`; never committed.
@@ -32,3 +37,8 @@ examples/word_rnn/artifacts*/
 # `python -m examples.regression.train`; never committed. No downloaded data
 # (the dataset is generated in-process).
 examples/regression/artifacts*/
+
+# Milestone 62 waveform classification example: generated run artifacts
+# (models/checkpoints) -- same reasoning as regression above. No downloaded
+# data (the dataset is generated in-process).
+examples/waveform_classification/artifacts*/

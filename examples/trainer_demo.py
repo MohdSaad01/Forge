@@ -1,6 +1,11 @@
-"""Milestone 6 manual verification: Dataset -> DataLoader -> Trainer -> Model.
+"""Forge's "first model" walkthrough (originally a Milestone 6 manual check):
+Dataset -> DataLoader -> Trainer -> Model.
 
 Run directly: `python examples/trainer_demo.py`
+
+Start here if you are new to Forge -- see README.md's "First model" section
+for a line-by-line walkthrough of `regression_demo()` below, and
+`examples/README.md` for how this relates to the other examples.
 
 Demonstrates the full public training-engine workflow from
 `docs/architecture/training-engine.md`, replacing the hand-written

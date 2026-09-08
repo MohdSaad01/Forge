@@ -3492,3 +3492,157 @@ inspection, CUDA parameter/gradient/Adam-state residency, and CPU/CUDA
 prediction parity after identical training. Full suite: **1,787 passed**
 (1,771 + 16 new), zero regressions. Full report:
 `docs/development/m60-tabular-regression.md`.
+
+### M61 — Framework readiness and developer experience (documentation + one discoverability fix, no new ML capability)
+
+M60 closed the last vision-driven capability gap (three demonstrated
+workload families); M59's own recommendation and this milestone's brief
+both pointed at the same remaining gap: the top-level onboarding surface
+(`README.md`, `forge/__init__.py`'s docstring) was stale (`README.md` was a
+5-line stub last meaningfully updated around Milestone 2; the package
+docstring narrated milestones 1-26 by number and never mentioned
+`char_rnn`/`word_rnn`/`regression`, `BatchNorm2d`, or `Embedding`), and no
+central examples index existed. Direct inspection (not assumption) of
+`README.md`, `pyproject.toml`, `forge/__init__.py`, `forge/nn/__init__.py`,
+`forge/optim/__init__.py`, `forge/cuda/__init__.py`, every example's own
+README, `.gitignore`, `git ls-files`, and a from-scratch `pip install -e
+".[dev]"` into a fresh venv confirmed: packaging, the example READMEs, and
+`forge/nn`/`forge/optim`'s docstrings were already accurate and were left
+unchanged (Outcome C for those areas); the top-level README, the package
+docstring, and one real API-discoverability gap were not.
+
+**The one discoverability gap**: `forge.cuda.is_cuda_available()` did not
+exist -- checking CUDA availability required reaching into
+`forge.backend.cuda` (an internal-sounding path) even though every other
+CUDA entry point (`Stream`, `synchronize`, `memory_stats`, ...) already
+lived on the public `forge.cuda` package. Fixed by re-exporting the
+existing `forge.backend.cuda.backend.is_cuda_available` at `forge.cuda`
+(module-level import + `__all__` entry); `_require_cuda()`'s own internal
+check kept its own lazy per-call import so the existing monkeypatch-based
+availability tests (`test_cuda_memory_availability.py`,
+`test_cuda_allocator_availability.py`,
+`test_cuda_pinned_memory_availability.py`) kept passing -- the first version
+of this change (a single shared module-level import) broke exactly those
+five tests, caught by running them before moving on. Two new tests added
+(`tests/test_cuda_public_api.py`) protect the re-export permanently.
+
+**Changes made**: rewrote `README.md` (architecture diagram, current
+capability list, CPU/CUDA installation, a copy-paste-runnable "first model"
+snippet verified to actually run, an examples table, testing instructions,
+project scope/philosophy, contributing pointers); rewrote
+`forge/__init__.py`'s docstring (milestone-narrative -> current public
+surface); added `examples/README.md` as a central examples index; added
+`tests/test_smoke.py` (a fast import + minimal-model-trains-one-step check,
+distinct from the full suite); added a CPU-only GitHub Actions workflow
+(`.github/workflows/ci.yml`, Python 3.11/3.13 on `ubuntu-latest`) -- a
+deliberate, evidence-based decision (over half the test files are pure-CPU
+and the rest skip their CUDA portions cleanly via the project's existing
+`skipif(not is_cuda_available())` convention, so a no-GPU runner still
+exercises substantial real coverage at zero cost) rather than the default
+"don't add CI for a solo CUDA-hardware-dependent project" position the
+brief itself offered; lightly repositioned `examples/trainer_demo.py` as
+the documented first-model walkthrough (docstring pointer only, no logic
+change) instead of writing a duplicate tutorial script.
+
+**Verified directly, not assumed**: all four major examples
+(`mnist`/`char_rnn`/`word_rnn`/`regression`) actually run their documented
+commands end-to-end this milestone (not just inspected as source); the
+README's inline "first model" snippet was extracted to a scratch file and
+actually executed; a from-scratch `pip install -e ".[dev]"` into a fresh
+venv succeeded and both `import forge` and the installed `forge` console
+script worked; the full suite was run before (1,787 passed) and after
+(**1,792 passed** = 1,787 + 5 new, zero regressions) every change.
+
+**Not changed** (Outcome C, verified adequate as found): `pyproject.toml`
+packaging (a from-scratch editable install and console-script entry point
+both work correctly; a stale local `forge.egg-info/PKG-INFO` description
+was noted as a harmless artifact of an old install, not a packaging bug --
+it self-corrects on the next `pip install -e .`), the four example READMEs
+(already detailed, accurate, and cross-referenced), `forge/nn/__init__.py`
+and `forge/optim/__init__.py` docstrings (already concise and accurate),
+`docs/development/cli.md` (already accurate against `forge --help`'s actual
+output). No `Tensor` primitive, `nn.Module`, optimizer, CUDA kernel, or
+`Trainer` feature was added -- every example already fully covered its
+workload (confirmed again by re-running each one), so no blocker requiring
+new framework logic was found. Full report:
+`docs/development/m61-framework-readiness.md`.
+
+### M62 — `nn.Conv1d`/`nn.MaxPool1d`: 1D temporal convolution, plus a real waveform-classification workload
+
+M59 ended the recurring assessment-only pattern; this milestone's brief
+explicitly forbade another readiness survey and required one concrete,
+implemented, user-visible framework capability with a real consumer.
+Inspection of the current architecture (`Tensor.conv2d`/`max_pool2d`,
+`nn.Flatten`'s existing "compose from `Tensor.reshape`, no new backend code"
+convention, `forge/serialization/registry.py`) found that Forge had no way
+to express 1D/temporal convolution -- every existing example either does 2D
+image convolution (`mnist`) or step-by-step recurrence (`char_rnn`/
+`word_rnn`); nothing covers the standard 1D-CNN model family used for
+sensor/audio/time-series classification, a real gap in `UC1` ("train a
+classifier") coverage, not a rejected-and-resurrected direction (LSTM/GRU/
+attention/LayerNorm/generic softmax stayed rejected; this is a new op
+family, not one of those).
+
+**What was added**: `nn.Conv1d` and `nn.MaxPool1d`
+(`forge/nn/conv.py`/`forge/nn/pooling.py`), each implemented entirely by
+reshaping an `(N, C, L)` tensor to a dummy `(N, C, 1, L)` 4D tensor and
+dispatching to the existing, already CPU/CUDA-hardware-tested `Conv2d`/
+`MaxPool2d` machinery, then reshaping the result back down -- the exact
+"compose from an existing differentiable op, no new `Backend` method, no
+new CUDA kernel" convention `nn.Flatten` already established for
+`Tensor.reshape`. This means `Conv1d`/`MaxPool1d` inherit `Conv2d`/
+`MaxPool2d`'s forward/backward correctness (including `Conv2d`'s
+already-optimized CUDA kernels from Milestones 21-48) automatically, with
+zero new low-level code and therefore no new CUDA-parity risk. Both are
+registered for persistence (`forge/serialization/registry.py`) and exported
+from `forge.nn`.
+
+**Real consumer**: `examples/waveform_classification/` -- a new, complete
+example (`dataset.py`/`model.py`/`train.py`/`README.md`, matching M60/M61's
+example quality bar) classifying length-64 synthetic 1D waveforms (sine/
+square/sawtooth/triangle, random phase/frequency/amplitude, additive
+Gaussian noise; in-process/deterministic-seed generation, no download,
+following `regression`'s precedent) with a 2-layer `Conv1d`->`ReLU`->
+`MaxPool1d` CNN (~35k parameters) via the existing `Trainer`/`Adam`/
+`CrossEntropyLoss`/checkpoint/persistence pipeline -- unchanged from
+`mnist`'s. Verified training on the reference i5-7200U (CPU) and GeForce
+940MX (CUDA, real hardware): trivial baseline 25% accuracy (uniform over 4
+classes); trained to 90.80% (CPU) / 91.80% (CUDA) test accuracy in 15
+epochs, ~1.35s/epoch either device (~2,900-3,100 samples/sec) -- genuine
+learning, not "the code runs," and CPU/CUDA parity within normal
+training-variance tolerance.
+
+**Incidental fix (regression safety, not scope creep)**: while CUDA-
+verifying the new example's final persistence-check line, found
+`examples/regression/train.py`'s own equivalent line
+(`query_x.to(args.device).reshape(1, -1)`) crashes on CUDA with
+`ShapeMismatchError` -- `CUDABackend.reshape` (unlike CPU's, which delegates
+to NumPy) never supported `-1` shape inference. This is a pre-existing bug,
+unrelated to this milestone's own changes, that silently broke
+`examples/regression/train.py --device cuda`'s documented final
+verification step (the crash was previously invisible because the example
+was being piped through `tail` when checked). Fixed with the same one-line
+pattern (`reshape(1, N_FEATURES)` instead of `reshape(1, -1)`); re-ran
+`tests/test_regression_example_cuda_integration.py` (16 passed) and the
+live CLI command to confirm.
+
+**Repository hygiene**: removed the tracked `.idea/` directory from git
+(`git rm -r --cached .idea/`, files kept on disk) and added `.idea/` plus
+`examples/waveform_classification/artifacts*/` to `.gitignore`; `git
+status` now shows only the intended M62 changes plus M61's pre-existing
+uncommitted work.
+
+**Testing**: 91 new tests -- `tests/test_conv1d.py` (36, CPU: config
+validation, parameter shapes/init, forward vs. an independent triple-loop
+reference, gradient accumulation, finite-difference checks, serialization
+round trip), `tests/test_maxpool1d.py` (27, CPU: same structure adapted to
+1D, including tie-breaking and overlapping-window gradient accumulation),
+`tests/test_cuda_conv1d.py` (12, CUDA hardware: forward/backward parity
+with CPU, device movement, an end-to-end tiny-TCN training step, `Sequential`
+integration -- all real `CUDAStorage`, never a silent CPU fallback),
+`tests/test_waveform_classification_example_integration.py` (11, CPU) and
+`tests/test_waveform_classification_example_cuda_integration.py` (5, CUDA
+hardware: parameter/gradient/Adam-state CUDA residency, checkpoint/resume,
+model persistence, CPU/CUDA prediction parity). Full suite: **1,883
+passed** (1,792 + 91 new), zero regressions. Full report:
+`docs/development/m62-conv1d-waveform-classification.md`.
