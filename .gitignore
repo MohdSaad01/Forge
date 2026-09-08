@@ -21,3 +21,14 @@ examples/mnist/artifacts*/
 # machine-local and reproducible via `python -m examples.char_rnn.train`;
 # never committed. No downloaded data (the corpus is generated in-process).
 examples/char_rnn/artifacts*/
+
+# Milestone 54 word-RNN example: generated run artifacts (models) -- same
+# reasoning as char-RNN above. No downloaded data (the corpus is generated
+# in-process).
+examples/word_rnn/artifacts*/
+
+# Milestone 60 tabular regression example: generated run artifacts (models/
+# checkpoints) -- machine-local and reproducible via
+# `python -m examples.regression.train`; never committed. No downloaded data
+# (the dataset is generated in-process).
+examples/regression/artifacts*/

@@ -4,6 +4,11 @@
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/examples/mnist/data" />
       <excludeFolder url="file://$MODULE_DIR$/forge.egg-info" />
+      <excludeFolder url="file://$MODULE_DIR$/examples/char_rnn/artifacts" />
+      <excludeFolder url="file://$MODULE_DIR$/examples/char_rnn/artifacts_cuda" />
+      <excludeFolder url="file://$MODULE_DIR$/examples/regression/artifacts" />
+      <excludeFolder url="file://$MODULE_DIR$/examples/regression/artifacts_cuda" />
+      <excludeFolder url="file://$MODULE_DIR$/examples/word_rnn/artifacts" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.13" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />

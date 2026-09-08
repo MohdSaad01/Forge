@@ -3299,3 +3299,196 @@ test_char_rnn_example_cuda_integration.py`/`tests/
 test_word_rnn_example_cuda_integration.py`, 4 new tests). Full suite:
 **1,771 passed** (1,753 pre-M55 + 18 new), zero regressions. Full report:
 `docs/development/m55-post-m54-assessment.md`.
+
+### M56 — Fresh post-M55 assessment: no production change warranted (assessment only)
+
+A fresh survey (explicitly forbidden from defaulting to another RNNCell/
+Embedding/Conv2d optimization pass) re-read every architecture document,
+every M49-M55 milestone report, the full `forge/` source surface, and all
+five real example workloads, then re-ran the full test suite as a
+baseline. Every previously-rejected candidate (binary classification,
+autoencoder, deeper/stacked RNN, LayerNorm, attention/transformer,
+optimizer/scheduler changes, sparse Embedding gradients, further RNN
+backward fusion, Conv2d/generic CUDA sweeps) was re-examined against this
+milestone's own fresh reading and found still correctly rejected, with no
+new evidence to overturn any of them.
+
+One new candidate was seriously evaluated: extracting `examples/char_rnn`'s
+and `examples/word_rnn`'s duplicated hand-written training-loop structure
+(~50 near-identical lines, including M55's `compute_stream` addition made
+identically in both files) into a shared helper. Rejected — only two
+consumers exist, no third sequence-model workload is anticipated to
+validate an abstraction boundary against, and the same "premature
+generalization from a sample size of two" reasoning M49/M52 already used
+to reject a shared `forge.data` tokenization abstraction applies here.
+
+**Outcome D: assessment only.** No production code changed. Full suite
+re-verified: **1,771 passed**, identical to M55's own count, confirming
+zero regression and zero untested work already in the tree. Full report:
+`docs/development/m56-post-m55-assessment.md`.
+
+### M57 — Fresh post-M56 assessment: no production change warranted (assessment only)
+
+An independent fresh survey across all six mandated candidate areas (a
+third model/workload family, a framework gap it might expose, developer
+ergonomics, testing/reliability infrastructure, serialization/training
+infrastructure, and whether any CUDA optimization is newly worth
+revisiting) re-derived Forge's current capability inventory directly from
+source rather than trusting M56's report, since the repository tree is
+unchanged since M56 (its own report and progress-log entry are still
+uncommitted on top of the same M55 commit). Every candidate reached the
+same conclusion M56 already reached, because no new evidence exists to
+change it — including one candidate not previously named by number,
+sequence-to-sequence (encoder-decoder RNN), checked directly against the
+current `forge/nn`/`forge/tensor` surface and rejected: it requires no new
+primitive, so it would only recombine existing, already-proven capability.
+
+Two small, concretely-evidenced repository-hygiene gaps were found in
+`examples/word_rnn/` (added M54) by direct inspection and fixed: `.gitignore`
+had no entry for its generated-artifact directory (`examples/mnist/` and
+`examples/char_rnn/` both already have one — a real latent risk of
+accidentally committing a model binary, though none currently exists on
+disk), and the example had no `README.md` (unlike both other examples).
+Neither fix touches `forge/`, any public API, or any test.
+
+**Outcome: no framework-capability change justified** — the fourth
+consecutive milestone (M49, M52, M54, M56, now M57) to independently reach
+this conclusion across the same candidate space. Full suite re-verified
+unchanged before and after this milestone's two documentation/config-only
+changes: **1,771 passed** both times, identical to M56's own count. Full
+report: `docs/development/m57-post-m56-assessment.md`.
+
+### M58 — Fresh post-M57 assessment: MNIST CUDA default-stream investigated, no bug found (assessment only)
+
+A fresh survey re-verified the full test suite (**1,771 passed**, unchanged)
+and re-examined every M52/M54/M56/M57 candidate with no new evidence to
+overturn any rejection. The one genuinely new angle this milestone pursued:
+M55 fixed a real CUDA default-stream per-kernel-launch synchronize overhead
+that made `char_rnn`/`word_rnn` train slower on CUDA than CPU, but that
+investigation was scoped only to those two RNN examples -- no milestone
+since M30 (`prefetch=True`'s introduction) had measured whether MNIST's
+`Trainer`-based CNN path (which also runs on the default CUDA stream, since
+`examples/mnist/train.py` never passes `prefetch=True`) has the same latent
+problem. Measured directly via a throwaway probe reusing
+`examples/mnist/model.py::build_model()` against a synthetic MNIST-shaped
+dataset through the real `Trainer`: CUDA is already ~3.5x faster than CPU
+(1.37s vs. 4.76s over 3 epochs) even without `prefetch=True`, which adds
+only a further 1.19x. No bug exists -- MNIST's Conv2d/matmul kernels do far
+more arithmetic per launch than an RNN's per-timestep step, so the fixed
+per-launch synchronize cost that dominated the RNN case is negligible here.
+Also directly verified this milestone (not carried forward from prior
+reports): CUDA hardware live, `examples/word_rnn/train.py` runs end to end
+from the command line with its M57-fixed `.gitignore` entry working
+correctly, `python -m forge --help`'s actual current command surface, and
+zero `TODO`/`FIXME`/`XXX` markers anywhere in `forge/`.
+
+**Outcome: no production change justified** -- the third consecutive
+assessment-only milestone (M56, M57, now M58), each independently gathering
+fresh evidence; this one closes out a real previously-open question (whether
+M55's RNN-specific fix had a hidden CNN-path counterpart) with hardware
+measurement rather than assumption. Full report:
+`docs/development/m58-post-m57-assessment.md`.
+
+### M59 — Vision reassessment: end the assessment-loop pattern; select tabular regression (UC2) as the next workload (strategic decision, no production change)
+
+M49-M58's ten-milestone narrow-capability-survey loop was itself diagnosed
+as exhausted by M56/M57/M58. M59 stepped back to ask a project-level
+question none of those milestones were scoped to ask: is Forge becoming
+what `docs/product/vision.md` describes, or an increasingly polished pile
+of individually-justified additions? Re-read the vision/requirements/
+use-case documents and every prior milestone report, then directly audited
+`forge/tensor/tensor.py`, `forge/nn/module.py`, `forge/backend/base.py`,
+`forge/exceptions.py`, `forge/training/trainer.py`, `forge/optim/
+optimizer.py`, `forge/cli/*`, all three example READMEs, and the full test
+suite (fresh run: **1,771 passed**, identical to M56-M58).
+
+**Finding: the code is more coherent than the assessment-loop framing
+implied; the project surface around it is where the real, previously
+unmeasured gaps are.** Every fused primitive added since M31
+(`cross_entropy`, `batch_norm2d`, `embedding_lookup`, `rnn_cell`) follows
+an identical, documented file-touch pattern; every public error is a typed,
+actionable `ForgeError`; naming and validation order are consistent across
+every sampled Tensor op. What is not coherent: (1) Forge demonstrates only
+two of the vision's three named workload classes (classification, sequence
+modeling) at production quality -- **regression, named explicitly in
+`vision.md`/`use-cases.md` (UC2), has only a bare, un-READMEd
+milestone-verification script (`trainer_demo.py`)**, never built to the
+`mnist`/`char_rnn`/`word_rnn` standard; (2) the top-level onboarding
+surface is stale -- `forge/__init__.py`'s own module docstring stops
+narrating at Milestone 26 and never mentions M31/M53/M54/M55's additions,
+and `README.md` remains thin (M58's own finding, re-confirmed); (3) five
+of the last ten milestones were assessment-only, each 15-28KB, with
+diminishing marginal signal -- a real process cost distinct from any code
+defect.
+
+**Decision**: pursue the third vision-named workload family (tabular
+regression, UC2) as M60's concrete objective -- the one gap in this
+report's entire survey justified by the original product vision itself
+rather than a measured framework-capability pressure, and cheap/low-risk
+since it composes entirely from already-proven primitives
+(`Linear`/`ReLU`/`MSELoss`/`Adam`/`Trainer`, fitting `Trainer`'s
+one-forward-per-step shape with no new `Tensor`/`Backend`/`nn` surface
+needed). Adopted immediately, independent of M60: a permanent milestone
+guardrail ending the assessment-loop-as-default pattern -- a fresh,
+unscoped "survey and decide" milestone is no longer the automatic next
+step; it requires a named external trigger (a new use case, a real usage
+attempt, a workload failure, an environment change). A full guardrail set
+(consumer/evidence/value/scope/validation/stop/revisit/no-milestone-count
+-objective, plus area-specific rules for performance/primitives/layers/
+infra/examples/docs) was codified for all future milestones.
+
+No `forge/`, `examples/`, or `tests/` file was changed -- per the brief's
+own instruction, this is a strategic-decision milestone; M60's actual
+implementation (a full example with README, CPU+CUDA integration tests,
+checkpoint/resume) is real engineering work deserving its own budget, the
+same precedent M52 set for BatchNorm2d. Full report:
+`docs/development/m59-vision-and-next-stage.md`.
+
+### M60 — Tabular regression example (`examples/regression`, UC2)
+
+Built Forge's third vision-named workload family to the same production
+standard as `mnist`/`char_rnn`/`word_rnn`, per M59's selected direction.
+`examples/regression/dataset.py` generates a deterministic, in-process
+synthetic tabular dataset (no download, matching `char_rnn`/`word_rnn`'s
+convention): 8 continuous features drawn `Uniform(-2, 2)`, a target mixing
+linear, interaction (`x4*x5`), and quadratic (`x6**2`) terms plus
+`Normal(0, 0.5)` noise, with one pure distractor feature (`x7`) the model
+must learn to down-weight. `make_datasets()` splits train/val/test
+contiguously (equivalent to a random split for i.i.d. draws) and fits
+`forge.data.Normalize` on the training split only. `examples/regression/
+model.py::build_model()` is a plain `Sequential(Linear(8,64), ReLU,
+Linear(64,32), ReLU, Linear(32,1))` -- 2,689 parameters, already covered by
+the persistence registry's built-in `Linear`/`ReLU`/`Sequential` entries, so
+no `register_module()` call was needed. `examples/regression/train.py`
+mirrors `examples/mnist/train.py`'s structure exactly (`Trainer.fit()`,
+checkpoint save/resume, `save_model()`/`load_model()` round-trip
+verification, CLI-inspection hints), confirming the M59 brief's prediction
+that this workload fits `Trainer`'s one-forward-per-step shape with zero
+`Tensor`/`Backend`/`nn` changes -- **Outcome A**, framework unchanged.
+
+Hardware-verified end-to-end on the reference machine: CPU training (40
+epochs, `--seed 0`) reduced train MSE `15.11 -> 0.294` and beat the trivial
+predict-the-mean baseline (MSE 24.29) by 98.6%, with final test MSE (0.335)
+close to the dataset's irreducible noise floor (0.25) -- genuine recovery of
+`true_function`, not just "the code runs." CUDA training with the identical
+seed matched within floating-point tolerance (train MSE `15.11 -> 0.293`,
+same 98.6% reduction) but ran ~3.3x *slower* than CPU (small matmuls, batch
+size 32 -- kernel-launch/sync overhead dominates), the inverse of MNIST's
+CUDA speedup; per M59's performance policy this was reported, not chased,
+since it does not undermine the example's purpose. Checkpoint save/resume
+verified both programmatically (continuing 40 epochs -> 5 more, global step
+5000 -> 5625, loss continuing to drop) and via a resume-equivalence test
+(`N+M` continuous vs. `N`-checkpoint-`M` epochs matching within `1e-5`).
+Model save/load prediction parity verified on CPU and CUDA. CLI `model
+inspect`/`checkpoint inspect` verified against real generated artifacts.
+
+16 new tests added (11 CPU in `tests/test_regression_example_integration.py`,
+5 CUDA in `tests/test_regression_example_cuda_integration.py`, the CUDA file
+skipping cleanly without hardware) covering deterministic dataset
+generation/reproducibility, split disjointness and normalization
+correctness, model construction, training convergence vs. baseline,
+checkpoint/resume (including resume equivalence), model persistence, CLI
+inspection, CUDA parameter/gradient/Adam-state residency, and CPU/CUDA
+prediction parity after identical training. Full suite: **1,787 passed**
+(1,771 + 16 new), zero regressions. Full report:
+`docs/development/m60-tabular-regression.md`.
