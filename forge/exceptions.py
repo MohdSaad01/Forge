@@ -65,19 +65,22 @@ class DataError(ForgeError):
     Examples: mismatched sample counts between tensors in a `TensorDataset`,
     an out-of-range or invalid dataset index, an invalid `DataLoader` batch
     size or configuration, `random_split` lengths that do not sum to the
-    dataset size, a transform applied to an incompatible sample, or invoking
-    a `Dataset`/`Transform` base method that has not been implemented.
+    dataset size, a transform applied to an incompatible sample, invoking a
+    `Dataset`/`Transform` base method that has not been implemented, or
+    `forge.predict()` given a non-`Tensor` batch or an empty iterable of
+    inputs.
     """
 
 
 class TrainerError(ForgeError):
-    """Raised for invalid Trainer/metric configuration or usage.
+    """Raised for invalid Trainer/metric/inference configuration or usage.
 
     Examples: a missing/invalid model, loss, or optimizer; an unsupported
     device; a non-positive epoch count; a DataLoader that yields no batches;
     a batch that is not a `(features, target)` tuple; a metric given
-    mismatched prediction/target shapes; or a metric's `compute()` called
-    with no samples seen.
+    mismatched prediction/target shapes; a metric's `compute()` called with
+    no samples seen; or `forge.predict()` given a `model` that is not a
+    `forge.nn.Module`.
     """
 
 

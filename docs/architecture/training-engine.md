@@ -1,16 +1,17 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68)
 
 ## Package layout
 ```
 forge/
     training/
-        trainer.py    Trainer, EpochResult, EvaluationResult, TrainingHistory
-        metrics.py    Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
+        trainer.py     Trainer, EpochResult, EvaluationResult, TrainingHistory
+        metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
+        inference.py   predict() (Milestone 68)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
 ```
 `forge.training` is exposed as a submodule of `forge` (`forge.training.Trainer`),
 alongside `forge.nn`/`forge.optim`/`forge.data`/`forge.random`. `forge.no_grad`
-is exposed at the top level (`forge.no_grad()`), alongside `forge.Tensor`.
+and `forge.predict` are exposed at the top level, alongside `forge.Tensor`.
 
 ## Trainer responsibility
 `Trainer` (`forge/training/trainer.py`) orchestrates the existing
@@ -433,6 +434,71 @@ constructed with. See `docs/architecture/persistence.md`'s
 determinism policy, and what `TrainingHistory` does *not* carry across a
 resume (a fresh `TrainingHistory` starts at the resumed epoch numbers; nothing
 concatenates it with a prior call's history automatically).
+
+## Inference (Milestone 68)
+`Trainer` deliberately requires a `Loss` and an `Optimizer` at construction
+-- both are meaningless once a model is trained, but every `mnist`/
+`regression`/`resnet`/`segmentation`/`autoencoder`/`waveform_classification`
+example that reached the "load a saved model and run it on new data" point
+had independently hand-rolled the same four-line sequence to do it without
+constructing a full `Trainer` just to call it once:
+```python
+with no_grad():
+    prediction = model(x.to(device)).to("cpu").numpy()
+```
+`predict()` (`forge/training/inference.py`) is that sequence, written once,
+as a free function -- not a `Trainer` method (no `Loss`/`Optimizer` to own)
+and not a `Module.predict()` (would blur the "what a Module computes" vs.
+"how it's orchestrated" boundary `Trainer` itself exists to preserve):
+```python
+model = forge.load_model("model.forge", device="cuda")
+prediction = forge.predict(model, x)              # x: a single Tensor
+predictions = forge.predict(model, test_loader)    # a DataLoader
+```
+1. Validates `model` is a `forge.nn.Module` (`TrainerError` otherwise).
+2. Resolves the compute device: an explicit `device=` argument, else
+   `model.device` (inferred, not assumed), else `"cpu"` for a
+   Parameter-less model -- the same edge-case exemption
+   `Trainer._check_model_device` already uses.
+3. Records `model.training`, calls `model.eval()`.
+4. Runs the forward pass(es) inside `forge.no_grad()` -- identical to
+   `evaluate()`'s own inference discipline.
+5. Restores the model's prior training mode in a `finally` block, exactly
+   like `evaluate()`.
+6. Returns the result as a `Tensor` already on `"cpu"` -- ready for
+   `.numpy()`, comparison, or display with no further device/autograd
+   bookkeeping.
+
+**Two input shapes.** A single `Tensor` returns a single `Tensor` (one
+forward pass). An iterable of batches (a `DataLoader`, or anything yielding
+a bare `Tensor` or a `(features, ...)` tuple) runs the model over every
+batch and returns the per-batch outputs concatenated into one `Tensor`, in
+iteration order. Concatenation happens on already-materialized NumPy arrays
+(`np.concatenate`, then wrapped back into one `Tensor`) -- there is no
+`Tensor.cat` primitive in Forge, and adding one purely for this
+non-differentiable, inference-time convenience would be exactly the kind of
+speculative core primitive `docs/development/m49-capability-assessment.md`
+already rejected for an unrelated op; `Metric`'s own `_as_numpy` host-side
+reductions are the same precedent applied to a different consumer.
+
+**Not a `Trainer` method.** `Trainer.fit()`/`evaluate()` both need a `Loss`
+to report a meaningful loss value; pure post-training inference has no loss
+to compute and, per `docs/product/vision.md`'s own workflow
+(`load -> give it new data -> receive a prediction`), should not require
+constructing one. `predict()` therefore takes only `model`
+(+ `inputs`/`device`) and reuses none of `Trainer`'s internal state --
+callers who already have a live `Trainer` can call `forge.predict(trainer.model,
+x)` exactly as anyone else would.
+
+**Real consumers.** Every single-forward-per-step example's own
+model-persistence round-trip check (`mnist`, `regression`, `resnet`,
+`segmentation`, `autoencoder`, `waveform_classification`) now calls
+`predict()` instead of hand-rolling the block above -- see each example's
+`train.py`. The two hand-written-training-loop examples (`char_rnn`,
+`word_rnn`, `long_range_recall`) are unchanged: their per-timestep `.step()`
+inference does not fit `predict()`'s single-forward-call shape, and forcing
+it to would be exactly the kind of speculative generalization
+`docs/product/scope.md` warns against building without a real consumer.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

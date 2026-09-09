@@ -4010,3 +4010,63 @@ footnoted -- re-ran in isolation immediately afterward and it passed
 cleanly, confirming zero regressions attributable to this milestone).
 Hardware-verified on the reference 940MX (CUDA 12.6). Full report:
 `docs/development/m67-lstm-long-range-recall.md`.
+
+### M68 — `forge.predict()`: a standalone post-training inference path, closing the last undemonstrated step of Forge's vision workflow
+
+A project-level milestone: read `docs/product/vision.md`/`requirements.md`/
+`use-cases.md`, the full public API, every example, and M59-M67's history,
+then built a dependency map from "Forge can train models" to "a developer
+can use Forge to solve a task" and selected exactly one foundational,
+reusable next step to implement (brief explicitly forbade another
+capability survey or building the whole eventual image-folder pipeline at
+once). Found the `dataset -> model -> train -> evaluate -> save -> load`
+chain already solid and public (`Dataset`/`TensorDataset`/`random_split`/
+`DataLoader`, `Trainer.fit`/`evaluate`, `save_model`/`load_model`/
+`save_checkpoint`/`load_checkpoint`) -- but the final `predict` step had no
+dedicated API: `mnist`, `regression`, `resnet`, `segmentation`,
+`autoencoder`, and `waveform_classification` (six of Forge's nine examples)
+had each independently hand-rolled the identical
+`with no_grad(): model(x.to(device)).to("cpu").numpy()` sequence, because
+`Trainer` requires a `Loss`/`Optimizer` neither exists nor is needed once a
+model is trained.
+
+Added `predict(model, inputs, device=None) -> Tensor`
+(`forge/training/inference.py`, re-exported as `forge.predict`/
+`forge.training.predict`) -- a free function, not a `Trainer` method (would
+force constructing an unneeded `Loss`/`Optimizer`) and not `Module.predict()`
+(would blur the computation/orchestration boundary `Trainer` itself exists
+to preserve). Puts the model in eval mode, resolves the compute device
+(explicit `device=`, else `model.device`, else `"cpu"`), runs the forward
+pass under `no_grad()`, restores the model's prior training mode (even on
+exception), and returns a CPU `Tensor` -- ready for `.numpy()` with no
+further device/autograd bookkeeping. Accepts either a single `Tensor` (one
+forward pass) or an iterable of batches (a `DataLoader`, or anything
+yielding a bare `Tensor`/`(features, ...)` tuple) -- batched outputs are
+concatenated on already-materialized host NumPy arrays, not via a new
+`Tensor.cat` primitive (no real consumer has ever needed that
+differentiable, and M49 already rejected an analogous speculative op for
+the same reason). Retrofitted all six affected examples' persistence
+-round-trip checks to call `predict()` instead of the duplicated block,
+removing five now-unused `from forge import no_grad` imports (one file kept
+its import for an unrelated, still-live use). Zero `forge/tensor/`,
+`forge/nn/`, `forge/data/`, `forge/serialization/`, or `forge/backend/`
+file touched; `Trainer` itself unmodified.
+
+**Testing**: 18 new tests -- `tests/test_inference.py` (15, CPU: re-export
+identity, single-Tensor and iterable/DataLoader correctness against a
+manual reference, `(x, y)`-tuple batch handling, training-mode restoration
+in both directions, eval-mode-Dropout determinism proving real mode
+switching, no-grad-graph/always-CPU-output guarantees, all three
+validation-error paths, device default/override/Parameter-less-model
+behavior, and a direct Trainer-vs-predict() forward-pass agreement check),
+`tests/test_inference_cuda.py` (3, CUDA hardware-gated: automatic CPU
+-to-CUDA input movement with no explicit `.to("cuda")` from the caller,
+DataLoader-driven concatenation on CUDA matching a manual reference, and
+the always-returns-to-CPU guarantee). Every retrofitted example's own
+existing CPU (78 tests) and CUDA (30 tests) integration suites re-run
+unmodified and passing, proving the new code path against six real trained
+workloads, not a toy unit test. Full suite: **2,075 tests collected, 2,074
+passed, 1 failed** (`test_dataloader_prefetch.py`'s pre-existing allocator
+-measurement flake, unchanged since M63 -- re-ran in isolation immediately
+afterward and it passed cleanly). Hardware-verified on the reference 940MX
+(CUDA 12.6). Full report: `docs/development/m68-standalone-inference.md`.

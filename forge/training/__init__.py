@@ -7,6 +7,7 @@ gradients, updates no parameters, and implements no loss/optimizer/batching
 logic of its own. See `docs/architecture/training-engine.md`.
 """
 
+from .inference import predict
 from .metrics import Accuracy, MeanAbsoluteError, MeanSquaredError, Metric
 from .trainer import EpochResult, EvaluationResult, Trainer, TrainingHistory
 
@@ -19,4 +20,5 @@ __all__ = [
     "MeanSquaredError",
     "MeanAbsoluteError",
     "Accuracy",
+    "predict",
 ]

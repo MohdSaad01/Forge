@@ -14,7 +14,9 @@ Public subpackages:
 - `forge.optim` -- `SGD`, `Adam`.
 - `forge.data` -- `Dataset`/`TensorDataset`/`DataLoader`, transforms, and
   CUDA-prefetching (`CUDAPrefetchLoader`).
-- `forge.training` -- `Trainer`, metrics, `TrainingHistory`.
+- `forge.training` -- `Trainer`, metrics, `TrainingHistory`, and `predict()`
+  -- the standalone post-training inference path (no `Loss`/`Optimizer`
+  required, unlike `Trainer`).
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, and the module/optimizer
   reconstruction registries -- see `docs/architecture/persistence.md`.
@@ -27,8 +29,8 @@ Public subpackages:
   initialization.
 
 This module also re-exports `Tensor`, `DType`, `DEFAULT_DTYPE`, `Device`,
-`no_grad`, the exception hierarchy, and the persistence/checkpoint functions
-above at the top level -- see `__all__`.
+`no_grad`, `predict`, the exception hierarchy, and the persistence/checkpoint
+functions above at the top level -- see `__all__`.
 
 Complete example workloads under `examples/` (image classification,
 character/word-level language modeling, tabular regression, and
@@ -55,6 +57,7 @@ from .exceptions import (
 )
 from .serialization import Checkpoint, load_checkpoint, load_model, save_checkpoint, save_model
 from .tensor import DEFAULT_DTYPE, DType, Tensor
+from .training import predict
 
 __version__ = "0.1.0"
 
@@ -89,4 +92,5 @@ __all__ = [
     "save_checkpoint",
     "load_checkpoint",
     "Checkpoint",
+    "predict",
 ]

@@ -46,12 +46,11 @@ from pathlib import Path
 import numpy as np
 
 import forge
-from forge import no_grad
 from forge.data import Compose, DataLoader, Lambda, Normalize
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
 from forge.serialization import load_checkpoint, load_model, save_model
-from forge.training import Accuracy, Trainer
+from forge.training import Accuracy, Trainer, predict
 
 try:
     from .dataset import MNISTDataset
@@ -154,11 +153,9 @@ def main(argv=None) -> None:
     # already demonstrates for a Linear model.
     query_x, _ = test_ds[0]
     query_x = query_x.to(args.device).reshape(1, 1, 28, 28)
-    with no_grad():
-        pre_save_pred = model(query_x).to("cpu").numpy()
+    pre_save_pred = predict(model, query_x).numpy()
     reloaded = load_model(str(model_path), device=args.device)
-    with no_grad():
-        post_load_pred = reloaded(query_x).to("cpu").numpy()
+    post_load_pred = predict(reloaded, query_x).numpy()
     assert np.allclose(pre_save_pred, post_load_pred, atol=1e-5), "reloaded model prediction diverged"
     print("Verified: reloaded model reproduces the pre-save prediction.")
 

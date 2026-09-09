@@ -53,7 +53,9 @@ See `docs/architecture/architecture.md` for the full design rules and
   `random_split`), and `CUDAPrefetchLoader` for overlapped host-to-device
   transfer.
 - **`forge.training`** -- `Trainer` (`fit`/`evaluate`/checkpoint resume),
-  metrics (`Accuracy`, `MeanAbsoluteError`, ...), `TrainingHistory`.
+  metrics (`Accuracy`, `MeanAbsoluteError`, ...), `TrainingHistory`, and
+  `predict()` -- standalone post-training inference (`forge.predict(model,
+  x)`), no `Loss`/`Optimizer` required.
 - **`forge.serialization`** -- `save_model`/`load_model` (architecture +
   parameters, via an explicit module registry -- never arbitrary code
   execution) and `save_checkpoint`/`load_checkpoint` (adds optimizer state,
@@ -146,8 +148,7 @@ trainer = Trainer(model=model, loss_fn=MSELoss(), optimizer=optimizer)
 trainer.fit(loader, epochs=15)
 
 # 7. Predict.
-with forge.no_grad():
-    prediction = model(Tensor(X[:1]))
+prediction = forge.predict(model, Tensor(X[:1]))
 print(prediction.numpy())
 ```
 
