@@ -3803,3 +3803,72 @@ report footnoted) that passed cleanly in isolation immediately afterward --
 zero regressions attributable to this milestone. **Outcome A**: workload
 completed with existing framework, no new production capability required.
 Full report: `docs/development/m64-unet-segmentation.md`.
+
+### M65 — Reproducible training/experiment workflow: `examples/regression`, zero `forge/` change, one real gap found and closed
+
+M65's brief required turning an existing example into a small, repeatable
+`configure -> seed -> train -> record metrics -> checkpoint -> resume ->
+evaluate -> compare` workflow, forbidding a generic experiment-management
+platform, and requiring the baseline to be established by *executing* the
+current workflow, not merely reading it. Selected `examples/regression`
+(Milestone 60), the brief's own preferred "cleanest deterministic baseline."
+
+**Baseline investigation found almost everything already present**: a full
+CLI (`argparse`), three already-independent deterministic RNG streams
+(`forge.random`, dataset generation, `DataLoader` shuffling), `Trainer.fit()`
+returning an already-JSON-safe `TrainingHistory`/`EpochResult`/
+`EvaluationResult` (`dataclasses.asdict()` needed no framework change),
+full checkpoint/resume with Adam state + `forge.random` state restore, and
+`save_checkpoint(..., extra=...)`'s existing caller-defined JSON-safe dict.
+
+**One genuine, execution-proven gap**: a throwaway probe script reproduced
+`train.py`'s actual `shuffle=True` default resume path and measured
+`max abs param diff = 0.0252` between continuous `N+M`-epoch training and
+`N`-epochs-then-resume-`M`-more -- the pre-existing resume-equivalence test
+only covered `shuffle=False` and its own docstring said so explicitly. Root
+cause: a resumed run re-seeded a *fresh* `--seed`-derived `DataLoader`
+generator instead of continuing the interrupted run's shuffle stream. Fixed
+using only the existing `extra` mechanism -- `numpy.random.Generator.
+bit_generator.state` is itself already a JSON-safe dict, confirmed by a
+direct `json.dumps`/`json.loads` round trip -- closing the gap to `max abs
+param diff = 0.0` exactly, with **zero `forge/` production code changed**.
+
+**What was added** (all in `examples/regression/`, nothing in `forge/`):
+`train.py` now saves/restores the `DataLoader` generator's state via
+`checkpoint.extra["data_loader_rng_state"]`; `experiment.py` (new) builds a
+small versioned JSON "run record" per output directory (config fixed at
+first invocation + cumulative per-epoch history + final evaluation + total
+runtime, continuous across a resume) using only `dataclasses.asdict()` on
+Forge's existing dataclasses and plain `json`; `compare.py` (new) is a
+`python -m examples.regression.compare <a> <b>` CLI that diffs two run
+records' configuration/final-metrics/epochs/runtime as plain text -- no UI,
+no database, no visualization, per the brief's explicit guardrails.
+
+Directly verified (not just tested): **(A)** two identical from-scratch runs
+produced bit-identical per-epoch losses/metrics and bit-identical final
+model parameters (`atol=0.0`), only wall-clock `duration` differed; **(B)**
+full training vs. partial-then-resume with `shuffle=True` matched within
+`1e-6` on CPU and `1e-5` on the real 940MX (CUDA), with the run record's
+epoch numbering staying continuous across the resume; **(C)** two `--lr`
+configurations produced a `compare_runs()` diff that correctly identified
+the differing config key and a correspondingly different final loss.
+
+**Testing**: 20 new tests -- `tests/test_regression_experiment.py` (14,
+CPU, no training: run-record round trip, format-version validation,
+cumulative-history accumulation, `compare_runs()` correctness, `compare.py`
+CLI including its missing-file error path), `tests/
+test_regression_reproducible_training.py` (5, CPU, drives `examples.
+regression.train.main(argv)` directly -- the real CLI entry point, since
+the CLI wiring itself is what this milestone changed: same-config bitwise
+reproducibility, the flagship `shuffle=True` resume-equivalence regression
+test, checkpoint `extra` contents, config-distinguishes-runs, and the
+missing-run-record-sidecar fallback), `tests/
+test_regression_example_cuda_integration.py` (+1, CUDA hardware: the same
+flagship resume test on the real 940MX). Full suite: **1,981 passed**
+(1,961 + 20), one pre-existing, unrelated `test_dataloader_prefetch.py`
+allocator-measurement flake (the same one M63/M64 already footnoted) in the
+full-suite run that passed cleanly in isolation immediately afterward --
+zero regressions attributable to this milestone. **Outcome A**: workflow
+completed mostly with existing framework; the one gap found was closed
+using an existing extension point (`extra`), not a new API. Full report:
+`docs/development/m65-reproducible-training.md`.

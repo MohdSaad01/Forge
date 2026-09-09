@@ -342,6 +342,15 @@ the caller's own responsibility. Forge does not build a general-purpose
 RNG-tracking framework for this (`forge/random.py` stays a single default
 generator plus `get_state()`/`set_state()`).
 
+**Worked example (Milestone 65):** `save_checkpoint(..., extra=...)`'s
+existing caller-defined JSON-safe dict is sufficient for a caller to fulfill
+this responsibility itself, with no framework change -- `numpy.random.
+Generator.bit_generator.state` is already a JSON-safe dict, so a caller can
+save it into `extra` and restore it into the same generator object on
+resume. `examples/regression/train.py` does exactly this for its
+`DataLoader`'s shuffle generator; see
+`docs/development/m65-reproducible-training.md`.
+
 ### Training progress
 `epoch`/`global_step` are plain non-negative integers the caller supplies
 (`Trainer.save_checkpoint()` fills them in from `Trainer.epoch`/

@@ -1,4 +1,4 @@
-# Forge Tabular Regression Example (Milestone 60)
+# Forge Tabular Regression Example (Milestones 60, 65)
 
 An end-to-end, production-quality validation of Forge's third vision-named
 workload family -- tabular regression (`docs/product/vision.md`,
@@ -19,6 +19,12 @@ added for this example; the milestone confirmed `Linear`/`ReLU`/`MSELoss`/
 `Adam`/`DataLoader`/`Trainer`/`forge.serialization` already fully cover the
 workload (see `docs/development/m60-tabular-regression.md`).
 
+This example is also Forge's canonical demonstration of a **reproducible
+training/experiment workflow** (Milestone 65) -- `configure -> seed -> train
+-> record metrics -> checkpoint -> resume -> evaluate -> compare` -- see the
+**Reproducible training workflow** section below and
+`docs/development/m65-reproducible-training.md` for the full investigation.
+
 ## Files
 
 - `dataset.py` -- deterministic synthetic tabular data generation
@@ -27,6 +33,10 @@ workload (see `docs/development/m60-tabular-regression.md`).
 - `model.py` -- `build_model()`, the small MLP architecture.
 - `train.py` -- the runnable example: training, evaluation, checkpointing,
   resume, and model persistence.
+- `experiment.py` (Milestone 65) -- JSON "run record" bookkeeping (config +
+  per-epoch history + final evaluation + runtime) and `compare_runs()`.
+- `compare.py` (Milestone 65) -- `python -m examples.regression.compare` CLI:
+  a text diff between two runs' recorded configuration and metrics.
 
 ## Prerequisites
 
@@ -163,10 +173,17 @@ order identically, but the three are separate streams, not one shared one.
 This example uses no `Dropout`, so there is no other source of
 training-time randomness.
 
+**Milestone 65**: two identical `train.py` invocations (same `--seed` and
+every other flag) now produce bitwise-identical per-epoch training/
+validation loss, metrics, and final model parameters -- the only field that
+differs is wall-clock `duration` (see
+`tests/test_regression_reproducible_training.py::test_same_config_from_scratch_twice_is_bitwise_reproducible`).
+
 ## Checkpointing and resume
 
 Every `train.py` run saves a checkpoint (`regression_checkpoint.forge`)
-capturing model + Adam state + epoch/global_step + Forge's RNG state:
+capturing model + Adam state + epoch/global_step + Forge's RNG state +
+(Milestone 65) the `DataLoader` shuffle generator's exact stream position:
 
 ```bash
 # Train from scratch for 40 epochs, saving a checkpoint.
@@ -183,11 +200,59 @@ repository (resuming a 40-epoch checkpoint for 5 more epochs continued train
 MSE from `0.2938 -> 0.2877`, global step `5000 -> 5625`) and by
 `tests/test_regression_example_integration.py::test_checkpoint_save_and_resume_restores_state_and_continues_training`.
 
-**Resume equivalence.** For a small deterministic configuration with
-`shuffle=False`, continuous `N+M`-epoch training and `N` epochs ->
+**Resume equivalence.** Continuous `N+M`-epoch training and `N` epochs ->
 checkpoint -> reload -> `M` more epochs produce parameters matching within
-`1e-5` --
-`tests/test_regression_example_integration.py::test_resume_equivalence_matches_continuous_training`.
+`1e-5`, **including with `shuffle=True`** (`train.py`'s actual default) as
+of Milestone 65 -- before this milestone, a resumed run re-seeded a *fresh*
+`--seed`-derived `DataLoader` generator instead of continuing the
+interrupted run's shuffle stream, and measurably diverged (see
+`docs/development/m65-reproducible-training.md`'s baseline investigation).
+The `data_loader_rng_state` saved into `save_checkpoint(..., extra=...)`
+closes this gap, using only the existing `extra` mechanism -- no
+`forge/` framework change was needed.
+`tests/test_regression_example_integration.py::test_resume_equivalence_matches_continuous_training`
+(`shuffle=False`, Milestone 60) and
+`tests/test_regression_reproducible_training.py::test_full_training_matches_partial_then_resume_with_shuffle`
+/ `tests/test_regression_example_cuda_integration.py::test_full_training_matches_partial_then_resume_with_shuffle_on_cuda`
+(`shuffle=True`, Milestone 65, CPU and CUDA) all cover this.
+
+## Reproducible training workflow (Milestone 65)
+
+Every run also writes a JSON "run record" next to its checkpoint
+(`regression_history.json`): the resolved configuration (every `--flag`),
+per-epoch training/validation loss and metrics, the final test evaluation,
+and total runtime. A resumed run's epochs are appended to the *same* record
+(the original run's `config` is preserved, not overwritten), so the record
+stays continuous across a resume exactly like `Trainer.epoch` does.
+
+```bash
+python -m examples.regression.train --epochs 40 --lr 1e-3 --output-dir artifacts_a
+python -m examples.regression.train --epochs 40 --lr 5e-3 --output-dir artifacts_b
+
+python -m examples.regression.compare artifacts_a/regression_history.json artifacts_b/regression_history.json
+```
+
+```text
+Comparing:
+  A: artifacts_a/regression_history.json
+  B: artifacts_b/regression_history.json
+
+Configuration differences:
+  lr: A=0.001  B=0.005
+  output_dir: A='artifacts_a'  B='artifacts_b'
+
+Epochs trained:     A=40  B=40
+Final train loss:   A=0.2938  B=...
+Final eval loss:    A=0.335   B=...
+Final eval metrics: A={'mae': 0.451}  B={...}
+Total runtime (s):  A=12.3    B=...
+```
+
+`experiment.py`/`compare.py` add no framework code -- they are built
+entirely from `dataclasses.asdict()` on `forge.training`'s already-JSON-safe
+`EpochResult`/`EvaluationResult`, plain `json`, and `save_checkpoint`'s
+existing `extra` parameter. See `docs/development/m65-reproducible-training.md`
+for the full investigation and design rationale.
 
 ## Model persistence
 

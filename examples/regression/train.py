@@ -23,10 +23,21 @@ generator: `Linear` parameter initialization at model construction.
 `examples/mnist/train.py`'s documented policy (see
 `docs/architecture/persistence.md`'s checkpoint RNG policy).
 
+**Milestone 65**: the `DataLoader` shuffle generator's exact position in its
+stream is now saved into `save_checkpoint(..., extra=...)` and restored on
+`--resume`, closing the one reproducibility gap Milestone 65's baseline
+investigation found (a resumed run previously re-seeded a *fresh*
+`--seed`-derived generator rather than continuing the interrupted run's
+shuffle stream -- see `docs/development/m65-reproducible-training.md`).
+Every run also writes a JSON "run record" (config + per-epoch metrics
+history + final evaluation + runtime) next to its checkpoint -- see
+`experiment.py` -- so two runs can be compared with `compare.py` without
+parsing terminal output.
+
 ## Usage
 
 ```bash
-# First run: train from scratch, save a checkpoint + model.
+# First run: train from scratch, save a checkpoint + model + run record.
 python -m examples.regression.train --epochs 40 --device cpu
 
 # Continue training from the saved checkpoint for 10 more epochs.
@@ -34,6 +45,9 @@ python -m examples.regression.train --resume artifacts/regression_checkpoint.for
 
 # CUDA (requires a working Forge CUDA backend).
 python -m examples.regression.train --epochs 40 --device cuda
+
+# Compare two completed runs' configuration/metrics.
+python -m examples.regression.compare artifacts/regression_history.json artifacts2/regression_history.json
 ```
 """
 
@@ -56,9 +70,11 @@ from forge.training import MeanAbsoluteError, Trainer
 
 try:
     from .dataset import N_FEATURES, make_datasets
+    from .experiment import extend_run_record, load_run_record, new_run_record, save_run_record
     from .model import build_model
 except ImportError:  # running as a plain script (`python examples/regression/train.py`)
     from dataset import N_FEATURES, make_datasets
+    from experiment import extend_run_record, load_run_record, new_run_record, save_run_record
     from model import build_model
 
 
@@ -83,6 +99,7 @@ def main(argv=None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / "regression_model.forge"
     checkpoint_path = output_dir / "regression_checkpoint.forge"
+    history_path = output_dir / "regression_history.json"
 
     forge.random.seed(args.seed)
     data_rng = np.random.default_rng(args.seed)
@@ -107,10 +124,21 @@ def main(argv=None) -> None:
         trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device=args.device, metrics=[MeanAbsoluteError()])
         trainer.resume(checkpoint)
         print(f"Resumed at epoch={trainer.epoch}, global_step={trainer.global_step}")
+        # Milestone 65: restore the DataLoader shuffle generator to exactly
+        # where the interrupted run left off, instead of restarting its
+        # stream from --seed -- see this module's Determinism section.
+        saved_rng_state = checkpoint.extra.get("data_loader_rng_state")
+        if saved_rng_state is not None:
+            data_rng.bit_generator.state = saved_rng_state
+        run_record = load_run_record(history_path)
+        if run_record is None:
+            print(f"(no existing run record at '{history_path}' -- starting a new one)")
+            run_record = new_run_record(vars(args))
     else:
         model = build_model().to(args.device)
         optimizer = Adam(model.parameters(), lr=args.lr)
         trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device=args.device, metrics=[MeanAbsoluteError()])
+        run_record = new_run_record(vars(args))
 
     start = time.perf_counter()
     history = trainer.fit(train_loader, epochs=args.epochs, validation_loader=val_loader)
@@ -130,10 +158,14 @@ def main(argv=None) -> None:
     print(f"Trivial baseline MSE was {baseline_mse:.4f} -- "
           f"model achieves a {(1 - test_mse / baseline_mse):.1%} reduction over predicting the mean.")
 
-    trainer.save_checkpoint(str(checkpoint_path))
+    trainer.save_checkpoint(str(checkpoint_path), extra={"data_loader_rng_state": data_rng.bit_generator.state})
     print(f"\nSaved checkpoint -> {checkpoint_path}")
     save_model(model, str(model_path))
     print(f"Saved model -> {model_path}")
+
+    extend_run_record(run_record, history=history, final_eval=final_eval, duration_seconds=duration)
+    save_run_record(history_path, run_record)
+    print(f"Saved run record -> {history_path}")
 
     # Model-persistence round trip: reload fresh and confirm predictions
     # match, the same property `examples/mnist/train.py` demonstrates.
@@ -158,6 +190,8 @@ def main(argv=None) -> None:
     print("\nInspect the generated artifacts with the Milestone 19 CLI:")
     print(f"  python -m forge model inspect {model_path}")
     print(f"  python -m forge checkpoint inspect {checkpoint_path}")
+    print("\nCompare this run against another with the Milestone 65 tool:")
+    print(f"  python -m examples.regression.compare {history_path} <other_run>/regression_history.json")
 
 
 if __name__ == "__main__":

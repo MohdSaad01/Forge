@@ -33,7 +33,9 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from examples.regression.dataset import N_FEATURES, make_datasets  # noqa: E402
+from examples.regression.experiment import load_run_record  # noqa: E402
 from examples.regression.model import build_model  # noqa: E402
+from examples.regression.train import main as train_main  # noqa: E402
 
 
 def test_full_pipeline_trains_and_beats_baseline_on_cuda():
@@ -141,3 +143,41 @@ def test_cpu_and_cuda_prediction_parity_after_training():
     cpu_pred = run("cpu")
     cuda_pred = run("cuda")
     np.testing.assert_allclose(cuda_pred, cpu_pred, rtol=1e-3, atol=1e-3)
+
+
+# -- Milestone 65: reproducible-training workflow, on CUDA ---------------------
+
+
+def _cuda_params(model_path):
+    model = load_model(str(model_path), device="cuda")
+    return {name: p.to("cpu").numpy().copy() for name, p in model.named_parameters()}
+
+
+def test_full_training_matches_partial_then_resume_with_shuffle_on_cuda(tmp_path):
+    """CUDA counterpart of `tests/test_regression_reproducible_training.py`'s
+    same-named CPU test -- the DataLoader shuffle-generator save/restore this
+    milestone added is backend-agnostic (it operates entirely on NumPy
+    generators the example owns, never on device-resident state), so it
+    should close the same resume gap on CUDA. Hardware-verified on the
+    reference GeForce 940MX.
+    """
+    small = ["--n-train", "80", "--n-val", "20", "--n-test", "20", "--batch-size", "8", "--device", "cuda"]
+    base = small + ["--seed", "55", "--lr", "5e-3"]
+    out_full = tmp_path / "full"
+    out_partial = tmp_path / "partial"
+
+    train_main(base + ["--epochs", "5", "--output-dir", str(out_full)])
+    train_main(base + ["--epochs", "3", "--output-dir", str(out_partial)])
+    checkpoint_path = out_partial / "regression_checkpoint.forge"
+    train_main(base + ["--epochs", "2", "--resume", str(checkpoint_path), "--output-dir", str(out_partial)])
+
+    full_params = _cuda_params(out_full / "regression_model.forge")
+    partial_params = _cuda_params(out_partial / "regression_model.forge")
+    for name in full_params:
+        np.testing.assert_allclose(
+            full_params[name], partial_params[name], atol=1e-5,
+            err_msg=f"parameter '{name}' diverged between full and resumed CUDA training",
+        )
+
+    record = load_run_record(out_partial / "regression_history.json")
+    assert [e["epoch"] for e in record["history"]] == [1, 2, 3, 4, 5]
