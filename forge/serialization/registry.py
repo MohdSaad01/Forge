@@ -133,7 +133,7 @@ def _register_builtins() -> None:
     from ..nn.linear import Linear
     from ..nn.module import Module
     from ..nn.pooling import MaxPool1d, MaxPool2d
-    from ..nn.rnn import RNNCell
+    from ..nn.rnn import LSTMCell, RNNCell
     from ..nn.upsample import UpsampleNearest2d
 
     register_module(
@@ -225,6 +225,11 @@ def _register_builtins() -> None:
     register_module(
         "RNNCell",
         RNNCell,
+        get_config=lambda m: {"input_size": m.input_size, "hidden_size": m.hidden_size},
+    )
+    register_module(
+        "LSTMCell",
+        LSTMCell,
         get_config=lambda m: {"input_size": m.input_size, "hidden_size": m.hidden_size},
     )
     register_module(

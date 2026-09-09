@@ -408,6 +408,23 @@ class Tensor:
 
         return self._differentiable_wrap(result, (self,), backward_fn, "tanh")
 
+    def sigmoid(self) -> "Tensor":
+        """`sigmoid(x) = 1 / (1 + exp(-x))`, elementwise. Milestone 67: added
+        for `nn.LSTMCell`'s input/forget/output gates.
+
+        `d(sigmoid(x))/dx = sigmoid(x) * (1 - sigmoid(x))`, so the backward
+        rule is `grad_output * result * (1 - result)` (`result` is sigmoid's
+        own saved forward output) -- the same "derivative expressible from
+        the saved output" convention `tanh`/`exp` already use.
+        """
+        backend = get_backend(self._device)
+        result = backend.sigmoid(self._data)
+
+        def backward_fn(grad_output):
+            return (backend.sigmoid_backward(grad_output, result),)
+
+        return self._differentiable_wrap(result, (self,), backward_fn, "sigmoid")
+
     def sqrt(self) -> "Tensor":
         """`sqrt(x)`, elementwise. Milestone 53: added for `nn.BatchNorm2d`'s `sqrt(var + eps)`.
 

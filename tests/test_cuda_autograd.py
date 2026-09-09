@@ -454,6 +454,18 @@ def test_tanh_backward_matches_cpu():
     np.testing.assert_allclose(x_cuda.grad.to("cpu").numpy(), 1 - np.tanh(data) ** 2, **TOL)
 
 
+def test_sigmoid_backward_matches_cpu():
+    """Milestone 67: sigmoid is a real, differentiable CUDA op, needed by `nn.LSTMCell`'s gates."""
+    data = np.array([0.0, 1.0, -1.0, 2.5])
+    (x_cpu,), (x_cuda,) = _cpu_and_cuda_leaves(data)
+    x_cpu.sigmoid().sum().backward()
+    x_cuda.sigmoid().sum().backward()
+    _assert_matching_grads([x_cpu], [x_cuda])
+    # d(sigmoid(x))/dx = sigmoid(x) * (1 - sigmoid(x))
+    s = 1.0 / (1.0 + np.exp(-data))
+    np.testing.assert_allclose(x_cuda.grad.to("cpu").numpy(), s * (1 - s), **TOL)
+
+
 def test_log_backward_matches_cpu():
     data = np.array([0.5, 1.0, 2.0, 10.0])
     (x_cpu,), (x_cuda,) = _cpu_and_cuda_leaves(data)

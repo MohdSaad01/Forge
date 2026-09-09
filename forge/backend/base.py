@@ -58,6 +58,9 @@ class Backend(ABC):
     def tanh(self, a: np.ndarray) -> np.ndarray: ...
 
     @abstractmethod
+    def sigmoid(self, a: np.ndarray) -> np.ndarray: ...
+
+    @abstractmethod
     def sqrt(self, a: np.ndarray) -> np.ndarray: ...
 
     @abstractmethod
@@ -106,6 +109,10 @@ class Backend(ABC):
     @abstractmethod
     def tanh_backward(self, grad_output: Any, result: Any) -> Any:
         """`d(tanh(x))/dx = 1 - tanh(x)^2`, i.e. `grad_output * (1 - result**2)` (`result` is tanh's own saved output)."""
+
+    @abstractmethod
+    def sigmoid_backward(self, grad_output: Any, result: Any) -> Any:
+        """`d(sigmoid(x))/dx = sigmoid(x)*(1-sigmoid(x))`, i.e. `grad_output * result * (1 - result)` (`result` is sigmoid's own saved output)."""
 
     @abstractmethod
     def sqrt_backward(self, grad_output: Any, result: Any) -> Any:

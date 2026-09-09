@@ -61,3 +61,9 @@ examples/segmentation/artifacts*/
 # `python -m examples.resnet.train`; never committed. Reuses
 # `examples/mnist/data` for the dataset, so no separate data directory here.
 examples/resnet/artifacts*/
+
+# Milestone 67 long-range-recall example: generated run artifacts (saved
+# models) -- machine-local and reproducible via
+# `python -m examples.long_range_recall.train`; never committed. The
+# dataset is synthetic and generated in-process, so no data directory here.
+examples/long_range_recall/artifacts*/

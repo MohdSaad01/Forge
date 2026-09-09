@@ -257,6 +257,17 @@ def _configure_signatures(lib: "ctypes.CDLL") -> None:
         ]
         tanh_backward_fn.restype = ctypes.c_int
 
+        # -- Milestone 67: sigmoid (nn.LSTMCell's gates) --
+        sigmoid_fn = getattr(lib, f"cf_sigmoid_{suffix}")
+        sigmoid_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
+        sigmoid_fn.restype = ctypes.c_int
+
+        sigmoid_backward_fn = getattr(lib, f"cf_sigmoid_backward_{suffix}")
+        sigmoid_backward_fn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p,
+        ]
+        sigmoid_backward_fn.restype = ctypes.c_int
+
         # -- Milestone 53: sqrt / div --
         sqrt_fn = getattr(lib, f"cf_sqrt_{suffix}")
         sqrt_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_longlong, ctypes.c_void_p]
@@ -1208,6 +1219,18 @@ class CUDABackend(Backend):
         self._maybe_synchronize("tanh")
         return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
 
+    # -- sigmoid (Milestone 67) ----------------------------------------------------
+
+    def sigmoid(self, a: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(a, op="sigmoid")
+        n = a.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_sigmoid_{_SUFFIX[dtype]}")
+        code = fn(a.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
+        self._check(code, "sigmoid")
+        self._maybe_synchronize("sigmoid")
+        return CUDAStorage(out_ptr, a.shape, dtype, self._lib)
+
     # -- sqrt / div (Milestone 53) -------------------------------------------------
 
     def sqrt(self, a: CUDAStorage) -> CUDAStorage:
@@ -1426,6 +1449,16 @@ class CUDABackend(Backend):
         code = fn(grad_output.ptr, result.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
         self._check(code, "tanh backward")
         self._maybe_synchronize("tanh backward")
+        return CUDAStorage(out_ptr, result.shape, dtype, self._lib)
+
+    def sigmoid_backward(self, grad_output: CUDAStorage, result: CUDAStorage) -> CUDAStorage:
+        dtype = self._require_compute_dtype(grad_output, result, op="sigmoid_backward")
+        n = result.size
+        out_ptr = self._alloc(n * dtype.itemsize)
+        fn = getattr(self._lib, f"cf_sigmoid_backward_{_SUFFIX[dtype]}")
+        code = fn(grad_output.ptr, result.ptr, out_ptr, ctypes.c_longlong(n), self._stream_handle())
+        self._check(code, "sigmoid backward")
+        self._maybe_synchronize("sigmoid backward")
         return CUDAStorage(out_ptr, result.shape, dtype, self._lib)
 
     def sqrt_backward(self, grad_output: CUDAStorage, result: CUDAStorage) -> CUDAStorage:

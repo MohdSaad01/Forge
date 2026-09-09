@@ -352,6 +352,22 @@ def test_tanh_unsupported_dtype_raises_clearly_on_cuda():
         t.tanh()
 
 
+def test_sigmoid_executes_on_gpu_and_produces_correct_values():
+    """Milestone 67: sigmoid is a real CUDA kernel, needed by `nn.LSTMCell`'s gates."""
+    t = Tensor([0.0, 1.0, -1.0, 2.0, -20.0, 20.0]).to("cuda")
+    result = t.sigmoid()
+    assert result.device.type == "cuda"
+    assert isinstance(result._data, CUDAStorage)
+    expected = 1.0 / (1.0 + np.exp(-np.array([0.0, 1.0, -1.0, 2.0, -20.0, 20.0])))
+    np.testing.assert_allclose(result.to("cpu").numpy(), expected, **TOL)
+
+
+def test_sigmoid_unsupported_dtype_raises_clearly_on_cuda():
+    t = Tensor([1, -2, 3], dtype="int32").to("cuda")
+    with pytest.raises(CUDAError, match="dtype"):
+        t.sigmoid()
+
+
 def test_log_unsupported_dtype_raises_clearly_on_cuda():
     t = Tensor([1, 2, 3], dtype="int32").to("cuda")
     with pytest.raises(CUDAError, match="dtype"):

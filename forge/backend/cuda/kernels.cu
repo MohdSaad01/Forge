@@ -389,6 +389,33 @@ __global__ void k_tanh(const T* a, T* out, long long n) {
 UNARY_LAUNCHER(cf_tanh, k_tanh, float, f32)
 UNARY_LAUNCHER(cf_tanh, k_tanh, double, f64)
 
+// -- sigmoid (Milestone 67) ----------------------------------------------------
+//
+// Required by `nn.LSTMCell`'s gates (`docs/development/m67-*.md`). Computed
+// in the same numerically-stable branchless-per-sign form as
+// `CPUBackend.sigmoid` (`forge/backend/cpu.py`) so CPU/CUDA agree bit-for-bit
+// on the algorithm, not just the result within tolerance.
+
+__device__ inline float cf_sigmoidv(float x) {
+    if (x >= 0.0f) { return 1.0f / (1.0f + expf(-x)); }
+    float e = expf(x);
+    return e / (1.0f + e);
+}
+__device__ inline double cf_sigmoidv(double x) {
+    if (x >= 0.0) { return 1.0 / (1.0 + exp(-x)); }
+    double e = exp(x);
+    return e / (1.0 + e);
+}
+
+template <typename T>
+__global__ void k_sigmoid(const T* a, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = cf_sigmoidv(a[i]);
+}
+
+UNARY_LAUNCHER(cf_sigmoid, k_sigmoid, float, f32)
+UNARY_LAUNCHER(cf_sigmoid, k_sigmoid, double, f64)
+
 // -- sqrt / div (Milestone 53) -------------------------------------------------
 //
 // Required by `nn.BatchNorm2d`'s CPU-composed forward (`std = sqrt(var +
@@ -498,6 +525,20 @@ __global__ void k_tanh_backward(const T* grad_output, const T* result, T* out, l
 
 ELEMENTWISE_LAUNCHER(cf_tanh_backward, k_tanh_backward, float, f32)
 ELEMENTWISE_LAUNCHER(cf_tanh_backward, k_tanh_backward, double, f64)
+
+// sigmoid backward (Milestone 67): `d(sigmoid(x))/dx = sigmoid(x)*(1-sigmoid(x))`,
+// i.e. `grad_output * result * (1 - result)` (`result` is sigmoid's own saved
+// forward output) -- the same "derivative from the saved output" shape as
+// `k_tanh_backward` above.
+
+template <typename T>
+__global__ void k_sigmoid_backward(const T* grad_output, const T* result, T* out, long long n) {
+    long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x;
+    if (i < n) out[i] = grad_output[i] * result[i] * (static_cast<T>(1) - result[i]);
+}
+
+ELEMENTWISE_LAUNCHER(cf_sigmoid_backward, k_sigmoid_backward, float, f32)
+ELEMENTWISE_LAUNCHER(cf_sigmoid_backward, k_sigmoid_backward, double, f64)
 
 // sqrt backward (Milestone 53): `d(sqrt(x))/dx = 1/(2*sqrt(x)) = 0.5/result`
 // (`result` is sqrt's own saved forward output) -- the same "derivative from

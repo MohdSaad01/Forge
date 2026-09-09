@@ -255,6 +255,47 @@ Unrolling over a sequence (calling the *same* `RNNCell` instance once per timest
 
 **No buffer/running-state concept was needed.** Unlike e.g. batch normalization, `RNNCell` carries no persistent non-parameter state between calls (the hidden state is an ordinary `Tensor` the *caller* threads through the unroll loop, not module state) -- so it needed no change to `Module`'s Parameter-only `.to()`/persistence machinery, only a registry entry (`forge/serialization/registry.py`) mirroring `Linear`'s.
 
+## LSTMCell (Milestone 67)
+
+`forge/nn/rnn.py`. A gated recurrence step (Hochreiter & Schmidhuber, 1997)
+added to close a directly measured gap: `RNNCell`'s repeated
+`tanh`-bounded multiplicative recurrence loses its backpropagated gradient
+exponentially fast over long sequences (measured, not assumed -- 9-12
+orders of magnitude by `seq_len=50`; see
+`docs/development/m67-lstm-long-range-recall.md`). `LSTMCell`'s additive
+cell-state update (`c' = f*c + i*g`) gives the cell-state gradient a path
+with no repeated multiplication by a squashed activation, which is exactly
+the mechanism that reduces that decay.
+
+Composed entirely from eight existing `Linear` layers (one `i2h`/`h2h` pair
+per gate -- input/forget/candidate/output -- mirroring `RNNCell`'s own
+`i2h`/`h2h` split) plus the `+`/`*`/`.sigmoid()`/`.tanh()` Tensor
+primitives (`.sigmoid()` is this milestone's one new Tensor primitive,
+following the exact `tanh`/M50 CPU+CUDA-kernel pattern). Like `RNNCell`'s
+*original* M50 form, `LSTMCell` has no dedicated CUDA fused kernel -- every
+op it composes from already has CPU+CUDA support, so CUDA correctness
+follows for free; `RNNCell`'s own fused kernel was only added later (M55)
+once real per-timestep launch-overhead pressure was measured, and no such
+measurement has been made for `LSTMCell` (see this milestone's report for
+why that is an explicit, documented scope boundary rather than an
+oversight).
+
+A single `Linear(input_size, 4*hidden_size)` "combined gate" projection
+would be more efficient than four separate per-gate `Linear`s, but Forge's
+`Tensor` has no slicing/indexing primitive to split that combined output
+back into four `(batch, hidden_size)` chunks -- confirmed absent by direct
+inspection, not assumed. Eight small `Linear`s is the smallest change that
+needs no new primitive at all; see `LSTMCell`'s own docstring for the full
+reasoning.
+
+The forget gate's bias is initialized `+1.0` above `Linear`'s ordinary
+`Uniform(-1/sqrt(in), 1/sqrt(in))` draw (Jozefowicz et al. 2015) so the
+cell starts in a "mostly remember" regime.
+
+Same "no buffer/running-state concept needed" shape as `RNNCell`: the
+`(h, c)` state pair is an ordinary caller-threaded value, not module state,
+so persistence needed only a registry entry.
+
 ## Embedding (Milestone 54)
 
 `forge/nn/embedding.py`. `Embedding(num_embeddings, embedding_dim)` owns one

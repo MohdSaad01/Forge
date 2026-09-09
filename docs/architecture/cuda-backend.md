@@ -153,6 +153,7 @@ transfers a tensor to make itself work.
 | `max_pool2d` (Milestone 15) | `cf_maxpool2d_forward_{f32,f64}` | float32, float64 | One thread per output element, looping over `KH*KW`; see **CUDA Conv2d / MaxPool2d** below |
 | `dropout_mask` (Milestone 16) | `cf_dropout_mask_{f32,f64}` | float32, float64 | One thread per element; a stateless SplitMix64 hash of `(seed, element_index)` decides keep/drop -- no curand, no RNG state on-device; see **CUDA Dropout** below |
 | `tanh` (Milestone 50) | `cf_tanh_{f32,f64}` | float32, float64 | One thread per element, via `tanhf`/`tanh` -- added for `nn.RNNCell`'s recurrence, same launch pattern as `exp`/`log`; see **CUDA tanh** at the end of this file |
+| `sigmoid` (Milestone 67) | `cf_sigmoid_{f32,f64}` | float32, float64 | One thread per element, numerically-stable per-sign branch (matches `CPUBackend.sigmoid`'s algorithm exactly) -- added for `nn.LSTMCell`'s gates, same launch pattern as `tanh`; see **CUDA sigmoid** at the end of this file |
 
 `relu` moved out of this list in Milestone 9; `exp`/`log` moved out of the
 "required by the ABC but unsupported on CUDA" state they were in through
@@ -2702,6 +2703,27 @@ correctness against CPU (`tests/test_cuda_backend.py`,
 `tests/test_cuda_autograd.py::test_tanh_backward_matches_cpu`), and
 end-to-end through the real `nn.RNNCell` API including a multi-timestep
 unroll (`tests/test_rnn_cuda.py`).
+
+## CUDA sigmoid (Milestone 67)
+
+Added as the smallest primitive `nn.LSTMCell`'s input/forget/output gates
+need (`docs/development/m67-lstm-long-range-recall.md`). `k_sigmoid`/
+`k_sigmoid_backward` (`kernels.cu`) follow the exact `tanh` launch pattern
+above -- one thread per element, `UNARY_LAUNCHER`/`ELEMENTWISE_LAUNCHER`
+macro instantiations at `f32`/`f64`. The device-side `cf_sigmoidv` uses the
+same numerically-stable per-sign branch as `CPUBackend.sigmoid`
+(`forge/backend/cpu.py`) -- `1/(1+exp(-x))` for `x >= 0`, `exp(x)/(1+exp(x))`
+otherwise -- so CPU and CUDA agree on the exact algorithm, not just the
+result within tolerance. Backward is `grad_output * result * (1 - result)`
+(`result` is sigmoid's own saved forward output), the same
+saved-output shape as `tanh_backward`/`exp_backward`. No new CUDA
+infrastructure was needed: a small, self-contained elementwise op exactly
+like `tanh` before it. Verified on the reference 940MX: CPU/CUDA numerical
+consistency (`tests/test_cuda_consistency.py::test_sigmoid_consistency`),
+forward/backward correctness against CPU (`tests/test_cuda_backend.py`,
+`tests/test_cuda_autograd.py::test_sigmoid_backward_matches_cpu`), and
+end-to-end through the real `nn.LSTMCell` API including a multi-timestep
+unroll (`tests/test_lstm_cell_cuda.py`).
 
 ## CUDA sqrt / div, and BatchNorm2d (Milestone 53)
 

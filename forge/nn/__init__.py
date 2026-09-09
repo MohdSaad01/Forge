@@ -19,12 +19,12 @@ from .loss import CrossEntropyLoss, Loss, MSELoss
 from .module import Module
 from .parameter import Parameter
 from .pooling import MaxPool1d, MaxPool2d
-from .rnn import RNNCell
+from .rnn import LSTMCell, RNNCell
 from .upsample import UpsampleNearest2d
 
 __all__ = [
     "Module", "Parameter", "Linear", "ReLU", "Tanh", "Conv2d", "MaxPool2d",
     "Conv1d", "MaxPool1d", "UpsampleNearest2d",
-    "Sequential", "Flatten", "Dropout", "RNNCell", "BatchNorm2d", "Embedding",
+    "Sequential", "Flatten", "Dropout", "RNNCell", "LSTMCell", "BatchNorm2d", "Embedding",
     "Loss", "MSELoss", "CrossEntropyLoss",
 ]

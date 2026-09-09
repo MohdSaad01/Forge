@@ -97,6 +97,18 @@ class CPUBackend(Backend):
     def tanh(self, a: np.ndarray) -> np.ndarray:
         return np.tanh(a)
 
+    def sigmoid(self, a: np.ndarray) -> np.ndarray:
+        # Numerically stable form: avoids `exp()` overflow for large-magnitude
+        # negative inputs (`exp(-x)` would overflow for very negative `x`
+        # under the naive `1/(1+exp(-x))` formula), mirroring `CrossEntropyLoss`'s
+        # log-sum-exp stability trick.
+        out = np.empty_like(a)
+        positive = a >= 0
+        out[positive] = 1.0 / (1.0 + np.exp(-a[positive]))
+        exp_a = np.exp(a[~positive])
+        out[~positive] = exp_a / (1.0 + exp_a)
+        return out
+
     def sqrt(self, a: np.ndarray) -> np.ndarray:
         return np.sqrt(a)
 
@@ -157,6 +169,9 @@ class CPUBackend(Backend):
 
     def tanh_backward(self, grad_output: np.ndarray, result: np.ndarray) -> np.ndarray:
         return grad_output * (1 - result * result)
+
+    def sigmoid_backward(self, grad_output: np.ndarray, result: np.ndarray) -> np.ndarray:
+        return grad_output * result * (1 - result)
 
     def sqrt_backward(self, grad_output: np.ndarray, result: np.ndarray) -> np.ndarray:
         return grad_output * 0.5 / result

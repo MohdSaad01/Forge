@@ -3940,3 +3940,73 @@ that passed cleanly in isolation immediately afterward -- zero regressions
 attributable to this milestone. **Outcome A**: residual model completed
 entirely with existing Forge capabilities; no new production capability was
 required. Full report: `docs/development/m66-residual-cnn.md`.
+
+### M67 — `nn.LSTMCell`: closing a measured `RNNCell` vanishing-gradient gap, plus `examples/long_range_recall`
+
+Re-opened a direction M52/M54-M57's assessment milestones had repeatedly
+flagged "no consumer" for (`Sigmoid`/`LSTM`/`GRU`), this time by proving or
+disproving the need with a direct measurement first rather than deferring
+again. A gradient-norm probe against Forge's existing `RNNCell` (no
+production code changed yet) measured `||d loss / d x_0||` vs.
+`||d loss / d x_{T-1}||` on a real Forge autograd graph: at `seq_len=40`
+(shorter than `char_rnn`'s own default `seq_len=40`), the gradient reaching
+the sequence's first timestep was `6.35e-15` -- twelve orders of magnitude
+smaller than the gradient reaching the last timestep. At `seq_len>=100`,
+`RNNCell`'s gradient to the first timestep underflows to **exactly `0.0`**
+in Forge's default `float32` -- a real, measured, not speculative,
+framework limitation.
+
+**Implemented**: `Tensor.sigmoid()` (CPU numerically-stable per-sign
+branch + a real CUDA kernel pair, following M50's `tanh` precedent exactly)
+and `nn.LSTMCell` (composed from eight existing `Linear` layers -- one
+`i2h`/`h2h` pair per gate, mirroring `RNNCell`'s own split -- plus
+`+`/`*`/`.sigmoid()`/`.tanh()`, no dedicated backward rule, no CUDA-specific
+code; a combined single-`Linear` gate projection was considered and
+rejected since it needs a Tensor slicing primitive Forge doesn't have and
+no other consumer needs). Forget-gate bias initialized `+1.0` (Jozefowicz
+et al. 2015). Verified via a finite-difference gradient check on a
+multi-timestep unroll (max abs diff `8.07e-11`) and CPU/CUDA parity to
+machine precision (`float64` max diff `2.2e-16`); a hand-configured "ideal
+gating" parameter set was shown to retain a binary memory over 60 steps
+with negligible decay, confirming the additive-cell-state mechanism works
+as the theory predicts.
+
+Built `examples/long_range_recall/` (new): the classic Hochreiter &
+Schmidhuber temporal-order/copy-task benchmark, as a real dataset -> loader
+-> model -> loss -> optimizer -> train -> evaluate -> persist pipeline
+(mirroring every other Forge example's shape) supporting either cell via
+`--cell {rnn,lstm}`, plus a `--gradient-probe` mode that reproduces the
+core evidence measurement directly and is locked in by a dedicated
+regression test. Both cells train successfully (loss well below the
+untrained chance baseline, held-out accuracy well above chance) at
+`seq_len` up to 100 given enough epochs; end-to-end trainability at
+`seq_len=200` did not reliably converge for *either* cell within this
+milestone's tested budgets -- reported honestly (not omitted) as a genuine,
+more nuanced finding than the clean gradient-norm story alone would
+suggest, since the parameters that drive training are shared across every
+timestep and can sometimes still find a solution via shorter, better-
+conditioned local transitions even once one specific input's gradient has
+(by the input-probe measure) already vanished past significance.
+
+**Testing**: 49 new tests -- `tests/test_sigmoid.py` (8, CPU forward/
+backward/finite-difference/overflow-safety), `tests/test_lstm_cell.py` (14,
+CPU: shapes, gate-equation correctness against a hand-computed NumPy
+reference, a mechanism sanity check via hand-set gate biases, multi-
+timestep weight-sharing gradient accumulation, finite-difference check,
+persistence registration), `tests/test_lstm_cell_cuda.py` (4, CUDA
+hardware-gated parity: single step, multi-step unroll, backward gradients
+for all 8 gate `Linear`s, device residency), `tests/
+test_long_range_recall_example_integration.py` (13, CPU: dataset/model
+shape, both cells' end-to-end training/evaluation/persistence, the
+gradient-survival regression check), `tests/
+test_long_range_recall_example_cuda_integration.py` (4, CUDA hardware-
+gated: full pipeline, CPU/CUDA loss parity, both cells), plus sigmoid
+coverage added to the existing `tests/test_cuda_backend.py`/`tests/
+test_cuda_consistency.py`/`tests/test_cuda_autograd.py` files (+2/+2/+1)
+mirroring `tanh`'s own existing coverage in each. Full suite: **2,057
+tests collected, 2,056 passed, 1 failed** (`test_dataloader_prefetch.py`'s
+pre-existing allocator-measurement flake, the same one M63-M66 already
+footnoted -- re-ran in isolation immediately afterward and it passed
+cleanly, confirming zero regressions attributable to this milestone).
+Hardware-verified on the reference 940MX (CUDA 12.6). Full report:
+`docs/development/m67-lstm-long-range-recall.md`.
