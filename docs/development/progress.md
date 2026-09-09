@@ -3872,3 +3872,71 @@ zero regressions attributable to this milestone. **Outcome A**: workflow
 completed mostly with existing framework; the one gap found was closed
 using an existing extension point (`extra`), not a new API. Full report:
 `docs/development/m65-reproducible-training.md`.
+
+### M66 — Residual CNN workload: `examples/resnet`, zero `forge/` change
+
+M66's brief asked whether Forge's current CNN/module infrastructure can
+express and train a small ResNet-style residual network -- genuine branch +
+identity/shortcut addition, repeated module composition, `BatchNorm2d`,
+serialization, checkpoint/resume -- using only the existing public API,
+explicitly forbidding the assumption that a framework gap exists before
+proving one by direct execution.
+
+**Direct API investigation found no gap at all.** A probe script built a
+`TinyResidualBlock` (identity shortcut) and a `ProjectionResidualBlock`
+(1x1-conv + `BatchNorm2d` shortcut, for a channel/stride change) and ran
+forward + backward on both CPU and CUDA, plus a finite-difference gradient
+check (float64, `eps=1e-5`) against the reduced block: max abs
+analytic-vs-numeric difference `3.23e-10`. `Tensor.__add__`'s existing
+reverse-topological-order gradient accumulation (the same mechanism M50
+already proved handles a `Parameter` reused across many graph positions)
+distributes gradient correctly to both the branch and the identity path,
+with zero `forge/` changes needed anywhere.
+
+**What was built** (all in `examples/resnet/`, nothing in `forge/`):
+`ResidualBlock` (one ordinary `forge.nn.Module` subclass -- two 3x3
+`Conv2d`+`BatchNorm2d` stages, `ReLU`, and either a true identity or a 1x1
+projection shortcut depending on whether channels/stride change) and
+`ResNetMNIST` (stem `Conv2d`+`BatchNorm2d`+`ReLU`, three `ResidualBlock`
+instances, `MaxPool2d`+`Linear` classifier, ~17.6k parameters), both
+registered via `forge.serialization.register_module()` at import time --
+the same pattern `ConvAutoencoder`/`CharRNN`/`WordRNN` already established,
+now proven for a *nested* custom-`Module`-inside-custom-`Module` tree for
+the first time. `train.py` reuses `examples/mnist/dataset.py` (the real
+MNIST dataset) and `examples/regression/experiment.py`/`compare.py` (the
+M65 reproducible-training workflow) directly rather than duplicating
+either.
+
+Trained on real MNIST (`--seed 0`, 3 epochs): CPU reaches 98.60% test
+accuracy (loss 0.2000 -> 0.0387, 1312.1s total, ~137 samples/sec); CUDA
+(940MX) reaches 98.64% (loss 0.2001 -> 0.0389, 247.2s total, ~728
+samples/sec, ~5.3x faster than CPU) -- both far above the 10.00% chance
+baseline, and closely matching each other (epoch-1 loss within 0.0001),
+confirming genuine CPU/CUDA parity. `BatchNorm2d` train/eval-mode
+behavior, running-statistics update/freeze, and buffer persistence were all
+validated three levels deep in the nested module tree
+(`model.block2.shortcut_bn`), and checkpoint save/resume, resume
+equivalence, and model save/load through the full nested custom-type tree
+all round-trip correctly with the existing, unmodified serialization
+infrastructure.
+
+**Testing**: 27 new tests -- `tests/test_resnet_example_integration.py`
+(17, CPU: model/block shape correctness, gradient flow through both
+residual branches for identity and projection variants, `BatchNorm2d`
+train/eval/buffer/recursive-mode-propagation behavior, full-pipeline
+training and learning, repeated-forward determinism, checkpoint save/
+resume + resume equivalence, model persistence, device-movement
+idempotence, CLI inspection), `tests/test_resnet_example_cuda_integration.py`
+(5, CUDA hardware-gated: full pipeline on CUDA, parameter/gradient/
+Adam-state/buffer CUDA residency, checkpoint save/resume on CUDA, model
+persistence on CUDA, CPU-to-CUDA `ResidualBlock` forward parity), `tests/
+test_resnet_autograd_validation.py` (5, CPU: dedicated finite-difference
+input- and parameter-gradient checks for both shortcut variants, plus an
+isolated additive-gradient check on the residual addition itself, verified
+to `atol=1e-10`). Full suite: **2,008 passed** (1,981 + 27), one
+pre-existing, unrelated `test_dataloader_prefetch.py` allocator-measurement
+flake (the same one M63/M64/M65 already footnoted) in the full-suite run
+that passed cleanly in isolation immediately afterward -- zero regressions
+attributable to this milestone. **Outcome A**: residual model completed
+entirely with existing Forge capabilities; no new production capability was
+required. Full report: `docs/development/m66-residual-cnn.md`.

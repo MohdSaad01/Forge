@@ -55,3 +55,9 @@ examples/autoencoder/artifacts*/
 # `python -m examples.segmentation.train`; never committed. No downloaded
 # data (the synthetic shape dataset is generated in-process).
 examples/segmentation/artifacts*/
+
+# Milestone 66 residual CNN (ResNet-style) example: generated run artifacts
+# (models/checkpoints/run records) -- machine-local and reproducible via
+# `python -m examples.resnet.train`; never committed. Reuses
+# `examples/mnist/data` for the dataset, so no separate data directory here.
+examples/resnet/artifacts*/
