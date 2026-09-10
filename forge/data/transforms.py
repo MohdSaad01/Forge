@@ -74,6 +74,11 @@ class Normalize(Transform):
         if np.any(std_arr == 0):
             raise DataError("Normalize requires every std value to be non-zero.")
         self.mean = mean
+        # `std` itself (not just its reciprocal) is kept so a serializer
+        # (`forge.serialization.transforms`) can round-trip the exact
+        # constructor arguments rather than reconstructing `std` from
+        # `1 / self._inv_std`, which would introduce needless float error.
+        self.std = std
         self._inv_std = 1.0 / std_arr
 
     def __call__(self, sample: Tensor) -> Tensor:

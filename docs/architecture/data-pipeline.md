@@ -50,7 +50,13 @@ silently reach a label. `Resize` (`forge/data/transforms.py`) resizes a
 `(C, H, W)` image Tensor to an explicit `(height, width)` via Pillow's
 bilinear filter -- added specifically so mixed-resolution `ImageFolder`
 datasets can be batched by the existing `DataLoader` unmodified; see
-`docs/development/m70-image-preprocessing.md`.
+`docs/development/m70-image-preprocessing.md`. A transform's *configuration*
+(not the transform object itself, and never `Lambda`) can optionally travel
+with a saved model via `forge.save_model(..., preprocessing=...)`/
+`forge.load_preprocessing()` (M71) -- see `docs/architecture/persistence.md`'s
+**Preprocessing metadata** section; `forge.data`/`forge.data.transforms`
+themselves are unchanged by this (the registry/serialization logic lives in
+`forge.serialization.transforms`, preserving this document's layering).
 
 ## DataLoader
 `forge.data.DataLoader` (M5) is responsible for batching, optional

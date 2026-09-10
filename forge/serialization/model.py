@@ -39,11 +39,12 @@ from ..nn.parameter import Parameter
 from ..tensor.tensor import Tensor
 from .archive import PARAMETERS_DIR, read_archive, write_archive
 from .registry import spec_for_class, spec_for_name
+from .transforms import deserialize_transform, serialize_transform
 
 FORMAT_VERSION = 2
 
 
-def save_model(model: Module, path: str) -> None:
+def save_model(model: Module, path: str, preprocessing: "Any | None" = None) -> None:
     """Save `model`'s architecture, configuration, and parameter state to `path`.
 
     `model` must be built entirely from module types registered with
@@ -61,6 +62,25 @@ def save_model(model: Module, path: str) -> None:
     (a CUDA parameter via a real device-to-host transfer, through the same
     `Backend.to_numpy()` `Tensor.to()` already uses); no model computation
     ever runs as part of saving.
+
+    `preprocessing` (Milestone 71) optionally records the
+    `forge.data.transforms.Transform` (e.g. a `Resize`/`Compose` pipeline)
+    a caller's inputs must already have been passed through before reaching
+    `model` -- the exact preprocessing configuration, not a copy of the
+    model's own state, saved as a JSON-safe sibling metadata entry (see
+    `forge.serialization.transforms.serialize_transform`) rather than an
+    attribute of `model` itself: a model's parameters and its input
+    preprocessing are conceptually distinct, and `Module` gains no new
+    state for this. Only transform types registered with
+    `forge.serialization.transforms.register_transform()` (`Resize`,
+    `Compose`, `Normalize`, `ToTensor`, `Reshape`, `Flatten`) can be saved
+    this way -- notably **not** `Lambda`, which wraps an arbitrary Python
+    callable with no safe serialized representation; passing one raises
+    `PersistenceError` immediately. Omitting `preprocessing` (the default)
+    writes no `"preprocessing"` key at all, so files saved before Milestone
+    71 and files saved with no preprocessing configured are byte-for-byte
+    equivalent in this respect and remain loadable by `load_model()`
+    unchanged -- see `load_preprocessing()`.
     """
     if not isinstance(model, Module):
         raise PersistenceError(f"save_model() requires a forge.nn.Module, got {type(model).__name__}.")
@@ -71,10 +91,13 @@ def save_model(model: Module, path: str) -> None:
     arrays: "dict[str, np.ndarray]" = {}
     root_node = _build_save_node(model, prefix="", arrays=arrays)
 
+    preprocessing_node = serialize_transform(preprocessing) if preprocessing is not None else None
+
     metadata = {
         "forge_format_version": FORMAT_VERSION,
         "device": device_str,
         "root": root_node,
+        "preprocessing": preprocessing_node,
     }
     prefixed_arrays = {f"{PARAMETERS_DIR}/{name}": array for name, array in arrays.items()}
     write_archive(path, metadata, prefixed_arrays)
@@ -388,4 +411,30 @@ def _build_load_node(
     return module
 
 
-__all__ = ["save_model", "load_model", "FORMAT_VERSION", "SUPPORTED_DEVICE_TYPES"]
+def load_preprocessing(path: str) -> "Any | None":
+    """Reconstruct the `Transform` saved alongside a model at `path`, or `None`.
+
+    Reads only the `"preprocessing"` metadata entry a `save_model(...,
+    preprocessing=...)` call wrote -- independent of `load_model()`, so a
+    caller can fetch just the preprocessing configuration (e.g. before
+    deciding which device to load the model itself onto), or call both
+    against the same file. Returns `None` when `path` was saved with no
+    `preprocessing` (including every file saved before Milestone 71, or a
+    Milestone-71-or-later file saved with `preprocessing=None`) -- this is
+    an ordinary, expected outcome, not an error.
+
+    Raises `PersistenceError` for a corrupt/unreadable file, or a
+    `"preprocessing"` entry that fails to reconstruct (unregistered
+    transform type, malformed configuration) -- see
+    `forge.serialization.transforms.deserialize_transform`.
+    """
+    metadata, _ = read_archive(path, kind="model")
+    if not isinstance(metadata, dict):
+        raise PersistenceError(f"Cannot load preprocessing from '{path}': metadata is not a JSON object.")
+    node = metadata.get("preprocessing")
+    if node is None:
+        return None
+    return deserialize_transform(node)
+
+
+__all__ = ["save_model", "load_model", "load_preprocessing", "FORMAT_VERSION", "SUPPORTED_DEVICE_TYPES"]

@@ -15,15 +15,23 @@ state plus training progress -- in a separate, independently versioned
 format; see `forge.serialization.checkpoint`'s module docstring.
 Reconstruction goes through the same explicit-registry principle
 (`optimizer_registry.register_optimizer()`); `SGD`/`Adam` are pre-registered.
+
+`save_model(..., preprocessing=...)`/`load_preprocessing()` (Milestone 71)
+optionally save and reconstruct the `forge.data.transforms.Transform`
+pipeline a model's inputs are expected to already have gone through, as a
+JSON-safe sibling entry in the same model file -- see
+`forge.serialization.transforms`'s module docstring and
+`docs/architecture/persistence.md`'s **Preprocessing metadata** section.
 """
 
 from .checkpoint import Checkpoint, CHECKPOINT_FORMAT_VERSION, load_checkpoint, save_checkpoint
-from .model import load_model, save_model
+from .model import load_model, load_preprocessing, save_model
 from .optimizer_registry import register_optimizer
 from .registry import register_module
+from .transforms import register_transform
 
 __all__ = [
-    "save_model", "load_model", "register_module",
+    "save_model", "load_model", "load_preprocessing", "register_module",
     "save_checkpoint", "load_checkpoint", "Checkpoint", "CHECKPOINT_FORMAT_VERSION",
-    "register_optimizer",
+    "register_optimizer", "register_transform",
 ]

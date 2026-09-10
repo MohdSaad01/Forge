@@ -18,8 +18,10 @@ Public subpackages:
   -- the standalone post-training inference path (no `Loss`/`Optimizer`
   required, unlike `Trainer`).
 - `forge.serialization` -- `save_model`/`load_model`,
-  `save_checkpoint`/`load_checkpoint`, and the module/optimizer
-  reconstruction registries -- see `docs/architecture/persistence.md`.
+  `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
+  preprocessing-transform configuration optionally saved alongside a
+  model, Milestone 71), and the module/optimizer/transform reconstruction
+  registries -- see `docs/architecture/persistence.md`.
 - `forge.backend` -- device/backend dispatch (`forge.backend.device.Device`);
   `forge.backend.cuda` holds the real CUDA execution backend.
 - `forge.cuda` -- the public CUDA API: `is_cuda_available()`, streams,
@@ -56,7 +58,7 @@ from .exceptions import (
     UnsupportedDeviceError,
     UnsupportedDTypeError,
 )
-from .serialization import Checkpoint, load_checkpoint, load_model, save_checkpoint, save_model
+from .serialization import Checkpoint, load_checkpoint, load_model, load_preprocessing, save_checkpoint, save_model
 from .tensor import DEFAULT_DTYPE, DType, Tensor
 from .training import predict
 
@@ -90,6 +92,7 @@ __all__ = [
     "cuda",
     "save_model",
     "load_model",
+    "load_preprocessing",
     "save_checkpoint",
     "load_checkpoint",
     "Checkpoint",

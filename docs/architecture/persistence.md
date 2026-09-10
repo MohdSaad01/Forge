@@ -8,8 +8,10 @@ forge/
                                  built-in registration of Linear/ReLU/Conv2d/MaxPool2d/Sequential/Flatten/Dropout
         optimizer_registry.py   OptimizerSpec, register_optimizer(), spec_for_class/spec_for_name,
                                  built-in registration of SGD/Adam (Milestone 18)
+        transforms.py            TransformSpec, register_transform(), serialize_transform()/
+                                 deserialize_transform() -- preprocessing-transform configuration (Milestone 71)
         archive.py               write_archive/read_archive -- the generic ZIP(json + .npy) file format
-        model.py                  save_model(), load_model() -- tree walk, validation, reconstruction
+        model.py                  save_model(), load_model(), load_preprocessing() -- tree walk, validation, reconstruction
         checkpoint.py             save_checkpoint(), load_checkpoint() -- training-state persistence (Milestone 18)
 ```
 `forge.serialization` is exposed as a submodule of `forge`, alongside
@@ -409,6 +411,92 @@ respective in-process registries. A malicious/unknown value for either
 raises `PersistenceError` before anything is constructed
 (`tests/test_checkpoint.py`'s security tests cover both).
 
+## Preprocessing metadata (Milestone 71)
+`save_model()`/`load_model()` persist the model itself; they said nothing
+about what a caller was supposed to do to an input *before* handing it to
+the model. Every image-based example built through Milestone 70 (see
+`docs/development/m70-image-preprocessing.md`'s Section 16/17 "Future
+Pressure Identified") therefore left preprocessing (e.g. `Resize`, pixel
+scaling) as external knowledge: a developer had to remember and manually
+reproduce it at inference time, in a possibly-separate process, with
+nothing in the saved file to check against or reconstruct from.
+
+### Public API
+```python
+forge.save_model(model, path, preprocessing=some_transform)  # optional kwarg, default None
+transform = forge.load_preprocessing(path)                   # -> Transform, or None
+```
+`preprocessing` is an ordinary `forge.data.transforms.Transform` (most
+often a `Compose` pipeline) -- the *same object* a caller would otherwise
+pass as `ImageFolder(..., transform=...)` or apply by hand before calling
+`forge.predict()`. `load_preprocessing()` is a separate free function, not
+a second return value of `load_model()`: `load_model()`'s signature and
+return type are completely unchanged, so every existing caller keeps
+working without modification; a caller that also wants the preprocessing
+configuration asks for it explicitly, from the same file, independently.
+
+### What is (and is not) saved
+Only a JSON-safe **configuration** -- the transform's constructor
+arguments -- travels through the file, via a small explicit registry
+(`forge/serialization/transforms.py`, `forge.serialization.transforms.
+register_transform()`) mirroring the module registry described above
+exactly: a `type_name` string is looked up against transform types this
+process has already imported and opted in, never `eval`'d, pickled, or
+dynamically imported. Built-in registered transforms: `Resize`, `Compose`
+(recursively, over its own child transforms), `Normalize`, `ToTensor`,
+`Reshape`, `Flatten`. **`Lambda` is deliberately never registered** -- it
+wraps an arbitrary Python callable (frequently a closure) with no safe
+general representation short of serializing executable code, which
+Milestone 71's brief explicitly ruled out. Attempting to save a `Lambda`
+(directly, or nested inside a `Compose`) raises `PersistenceError`
+immediately, before anything is written -- the same "not registered,
+here's how to fix it" failure `spec_for_class()` already gives for an
+unregistered `Module`. A pipeline needing a `Lambda`-shaped step (e.g.
+pixel scaling) should use `Normalize` instead where the same computation
+is expressible that way -- `examples/image_folder_classification/train.py`
+does exactly this (`Normalize(mean=0.0, std=255.0)` in place of
+`Lambda(lambda x: x / 255.0)`).
+
+What is explicitly **not** part of this mechanism:
+- **`ImageFolder` itself.** A `Dataset` is a data *source* (file paths on
+  a particular machine); persisting it would couple a saved model to one
+  filesystem layout for no benefit `forge.predict()` needs. Only the
+  *transform* a `Dataset`'s samples were passed through is preprocessing
+  in the sense this mechanism cares about.
+- **Class-index-to-name vocabularies.** A model's predicted index -> label
+  mapping is not "how to prepare an input tensor" -- it is model-adjacent
+  metadata a caller (an example, an application) may still want to persist
+  its own way (`examples/image_folder_classification/train.py` writes a
+  plain `classes.json` sidecar for this, not a framework feature).
+- **`Module` state.** `preprocessing` is stored as a sibling top-level
+  metadata entry alongside `"root"`/`"device"`, never as an attribute of
+  the `Module` tree itself -- a model's parameters and its input
+  preprocessing remain conceptually distinct, matching this document's own
+  **Optimizer-state limitations** precedent (a different concern, kept in
+  a different place, rather than folded into `Module`).
+
+### Compatibility: no format-version change
+`"preprocessing"` is a new, *optional* top-level metadata key -- `null`
+(equivalently, absent) when `save_model()` is called without
+`preprocessing=`, exactly matching every pre-Milestone-71 call site. This
+required no `FORMAT_VERSION` bump:
+- **Forward-compatible.** A pre-Milestone-71 Forge build's `load_model()`
+  never reads `metadata["preprocessing"]` at all (it only ever inspected
+  `"root"`), so a Milestone-71-or-later file -- with or without a real
+  preprocessing configuration -- loads on an older build exactly as before
+  (parameters and architecture only; the preprocessing key is silently
+  present but unused).
+- **Backward-compatible.** A file saved before Milestone 71 has no
+  `"preprocessing"` key at all; `load_preprocessing()` (`metadata.get(
+  "preprocessing")`) treats a missing key exactly like an explicit `null`
+  and returns `None` -- an ordinary, documented outcome, not an error.
+
+`tests/test_preprocessing_persistence.py::
+test_backward_compatible_file_has_no_preprocessing_key` verifies both
+directions directly (a `.forge` archive with the `"preprocessing"` key
+deleted entirely still loads through both `load_model()` and
+`load_preprocessing()`).
+
 ## Custom-module limitations
 See **Custom/composite modules** above: only module types registered via
 `forge.serialization.register_module()` in the *loading* process can be
@@ -511,7 +599,13 @@ backend available, a missing parameter's data, a parameter shape/dtype
 mismatch between metadata and the actual array, corrupted parameter bytes,
 and a structural inconsistency between a file's declared parameters/children
 and what the registered constructor actually produced ("inconsistent model
-state"). A mixed-device module tree passed to `save_model()` raises
+state"). `save_model(..., preprocessing=...)`/`load_preprocessing()`
+(Milestone 71) raise the same `PersistenceError` for: an unregistered
+transform type anywhere in the given `preprocessing` (most notably a
+`Lambda`, see **Preprocessing metadata** above), a malformed
+`"preprocessing"` metadata node, and invalid configuration for a registered
+transform type (e.g. a saved `Resize` config with a non-positive
+dimension). A mixed-device module tree passed to `save_model()` raises
 `ModuleError` (from `Module.device`), not `PersistenceError` -- the same
 error that operation already raises everywhere else in Forge. Low-level
 exceptions (`zipfile.BadZipFile`, `json.JSONDecodeError`, raw `OSError`s)
@@ -550,6 +644,18 @@ never a raw exception surfaced to callers.
   explicitly out of scope for this milestone).
 - No CLI (`forge` command-line save/load entry points) yet -- `save_model`/
   `load_model`/`save_checkpoint`/`load_checkpoint` are Python API only.
+- `save_checkpoint()`/`load_checkpoint()` do not carry `preprocessing=`
+  (Milestone 71's mechanism is `save_model()`-only) -- a resumed training
+  run is expected to reconstruct its own `Dataset`/transform pipeline from
+  its own training script, exactly as before; only the trained-model-for-
+  inference path gained persisted preprocessing.
+- Preprocessing persistence covers only the transforms registered with
+  `forge.serialization.transforms.register_transform()` (`Resize`,
+  `Compose`, `Normalize`, `ToTensor`, `Reshape`, `Flatten`) -- `Lambda` and
+  any other custom `Transform` subclass must be registered the same way a
+  custom `Module` subclass must be, or expressed using a registered
+  transform instead; there is no reflection/pickle-based fallback, by the
+  same design choice as the module registry.
 - Checkpointing (Milestone 18) is itself further scoped down: only `SGD` and
   `Adam` are built-in registered optimizer types (any other type needs
   `register_optimizer()`, as `register_module()` requires for a custom

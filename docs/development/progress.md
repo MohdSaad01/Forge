@@ -4207,3 +4207,44 @@ afterward. Full suite: **2,139 tests collected, 2,138 passed, 1 failed**
 (the same pre-existing `test_dataloader_prefetch.py` allocator-measurement
 flake documented since M63 -- reproduced passing cleanly in isolation, no
 M70 regression). Full report: `docs/development/m70-image-preprocessing.md`.
+
+### M71 — Persisted preprocessing: `save_model(..., preprocessing=...)` / `load_preprocessing()`
+
+Closed the gap M70's own report named directly (Sections 16/17): a saved
+model carried no record of the preprocessing its inputs must already have
+gone through, leaving `Resize`/pixel-scaling as external knowledge a
+developer had to remember and manually reproduce in a fresh process.
+Investigation confirmed every transform except `Lambda` is already fully
+described by a handful of JSON-safe constructor arguments, and that the
+existing `Module` persistence registry (`forge.serialization.registry`)
+was exactly the right pattern to mirror -- not invent -- for transforms.
+Added `forge/serialization/transforms.py`: a `register_transform()`
+registry (Resize, Compose -- recursively -- Normalize, ToTensor, Reshape,
+Flatten registered; `Lambda` deliberately never registered, raising a
+clear `PersistenceError` if a caller tries) plus `serialize_transform()`/
+`deserialize_transform()`. `save_model()` gained one optional kwarg
+(`preprocessing=None`) storing a `"preprocessing"` sibling metadata key
+(not a `Module` attribute -- parameters and preprocessing stay
+conceptually separate, per the milestone's own architectural constraint);
+a new `load_preprocessing(path)` free function reconstructs it
+independently of `load_model()`, whose signature/return type are
+unchanged. No `FORMAT_VERSION` bump -- the new key is optional and both
+forward- and backward-compatible, verified directly against a hand-
+constructed archive with the key deleted entirely. One small necessary fix:
+`Normalize` previously stored only `1/std`, not `std` itself -- added
+`self.std` alongside the existing `self.mean` so its own constructor
+arguments can round-trip. `examples/image_folder_classification/train.py`'s
+`build_transform()` swapped its one `Lambda` pixel-scale step for the
+mathematically identical, serializable `Normalize(mean=0.0, std=255.0)`
+-- the only change needed to make the example's pipeline fully
+persistable -- and now saves `preprocessing=build_transform()` alongside
+the model plus a `classes.json` sidecar (explicitly example-level
+bookkeeping, not part of the framework mechanism). New `infer.py`: a
+genuinely standalone script depending on nothing from `train.py`'s
+in-memory state, reconstructing both model and preprocessing from one
+`.forge` file via `load_model()`/`load_preprocessing()`, verified by
+actually running it as a **separate process** against an artifact from a
+prior `train.py` run and reproducing the same prediction. 28 new tests
+(26 CPU incl. two real `ImageFolder`-file end-to-end round trips, 2 CUDA,
+hardware-verified on the 940MX). Full report:
+`docs/development/m71-preprocessing-persistence.md`.

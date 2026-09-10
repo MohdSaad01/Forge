@@ -60,8 +60,11 @@ See `docs/architecture/architecture.md` for the full design rules and
 - **`forge.serialization`** -- `save_model`/`load_model` (architecture +
   parameters, via an explicit module registry -- never arbitrary code
   execution) and `save_checkpoint`/`load_checkpoint` (adds optimizer state,
-  epoch/step, and RNG state, for exact training resume). See
-  `docs/architecture/persistence.md`.
+  epoch/step, and RNG state, for exact training resume). `save_model(...,
+  preprocessing=...)`/`load_preprocessing()` optionally save and reconstruct
+  a model's required input-preprocessing `Transform` (e.g. `Resize`/
+  `Normalize`/`Compose`) alongside it, via the same explicit-registry
+  principle. See `docs/architecture/persistence.md`.
 - **CUDA backend** (`forge.backend.cuda`, `forge.cuda`) -- a real,
   hardware-tested backend (not simulated): device tensor storage, a caching
   memory allocator, explicit streams, pinned-memory async transfer, and
