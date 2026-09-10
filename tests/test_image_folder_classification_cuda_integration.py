@@ -1,11 +1,12 @@
-"""Milestone 69 integration tests: the `examples/image_folder_classification`
+"""Milestone 69/70 integration tests: the `examples/image_folder_classification`
 pipeline on CUDA.
 
 Mirrors `tests/test_image_folder_classification_integration.py` (same
-`generate_dataset()` real-image-file dataset, same small sizes) but drives
-`Trainer(..., device="cuda")`, additionally verifying CUDA residency of
-parameters/gradients/Adam state -- `forge.data.ImageFolder` itself always
-produces plain CPU Tensors (`forge.data` remains CPU-only, per
+`generate_dataset()` real, **mixed-resolution** image-file dataset since
+Milestone 70, same small sizes) but drives `Trainer(..., device="cuda")`,
+additionally verifying CUDA residency of parameters/gradients/Adam state --
+`forge.data.ImageFolder`/`Resize` themselves always produce plain CPU
+Tensors (`forge.data` remains CPU-only, per
 `docs/architecture/data-system.md`); it is `Trainer` that moves each batch
 to CUDA, exactly as it already does for every other Forge dataset. Skips
 cleanly when CUDA is unavailable; hardware-verified on the development
@@ -23,7 +24,7 @@ import pytest
 
 import forge
 from forge.backend.cuda import CUDAStorage, is_cuda_available
-from forge.data import Compose, DataLoader, ImageFolder, Lambda, random_split
+from forge.data import Compose, DataLoader, ImageFolder, Lambda, Resize, random_split
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
 from forge.serialization import load_checkpoint, load_model, save_model
@@ -39,15 +40,17 @@ from examples.image_folder_classification.generate_dataset import CLASSES, gener
 from examples.image_folder_classification.model import build_model  # noqa: E402
 
 _NUM_CLASSES = len(CLASSES)
-_IMAGE_SIZE = 32
+_MIN_SIZE = 24
+_MAX_SIZE = 48
+_RESIZE_SIZE = (64, 64)  # must match examples/image_folder_classification/model.py's expected input
 
 
 def _build_transform():
-    return Compose([Lambda(lambda x: x * (1.0 / 255.0))])
+    return Compose([Resize(_RESIZE_SIZE), Lambda(lambda x: x * (1.0 / 255.0))])
 
 
 def _make_image_folder(root: Path, samples_per_class: int, seed: int) -> ImageFolder:
-    generate_dataset(root, samples_per_class=samples_per_class, image_size=_IMAGE_SIZE, seed=seed)
+    generate_dataset(root, samples_per_class=samples_per_class, min_size=_MIN_SIZE, max_size=_MAX_SIZE, seed=seed)
     return ImageFolder(str(root), transform=_build_transform())
 
 
@@ -68,7 +71,13 @@ def test_full_pipeline_trains_and_learns_on_cuda(tmp_path):
 
     assert history[-1].train_loss < history[0].train_loss * 0.5
     eval_result = trainer.evaluate(test_loader)
-    assert eval_result.metrics["accuracy"] >= 0.5
+    # 3-class chance accuracy is 1/3. Threshold is 0.45, not 0.5: M70's
+    # mixed-resolution + Resize task is measurably harder than M69's
+    # uniform-32x32 one, and CUDA's reduction-order non-determinism at this
+    # reduced test scale (120 samples/class, vs. the full example's 300)
+    # reproducibly lands in the 0.47-0.49 range on the reference 940MX --
+    # see docs/development/m70-image-preprocessing.md.
+    assert eval_result.metrics["accuracy"] >= 0.45
 
 
 def test_cuda_residency_of_parameters_gradients_and_adam_state(tmp_path):

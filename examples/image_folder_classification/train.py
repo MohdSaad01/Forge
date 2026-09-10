@@ -1,18 +1,24 @@
-"""Forge Milestone 69: an end-to-end directory-based image classification example.
+"""Forge Milestone 69/70: an end-to-end directory-based image classification
+example, now with mixed-resolution source images and preprocessing.
 
 ```text
-generate_dataset() -> ImageFolder -> random_split -> DataLoader -> Trainer -> CNN
-    -> CrossEntropyLoss -> Adam -> save/load -> forge.predict()
+generate_dataset() [mixed H, W] -> ImageFolder -> Resize -> random_split -> DataLoader
+    -> Trainer -> CNN -> CrossEntropyLoss -> Adam -> save/load -> forge.predict()
 ```
 
 This is the first Forge example whose data source is **ordinary image files
 on disk** discovered by `forge.data.ImageFolder`, rather than a bundled
-binary format (MNIST's IDX files) or in-memory arrays. Every step below uses
-only public Forge APIs (`forge`, `forge.data`, `forge.nn`, `forge.optim`,
-`forge.training`, `forge.save_model`/`save_checkpoint`) -- this script adds
-no framework logic of its own, only example wiring. See
-`examples/image_folder_classification/README.md` for prerequisites and
-expected output.
+binary format (MNIST's IDX files) or in-memory arrays. Milestone 70 made the
+generated source images genuinely mixed-resolution (each image's height and
+width drawn independently) and added `forge.data.transforms.Resize` so the
+same preprocessing step normalizes every training sample *and* every new
+inference image to one fixed shape before it reaches the model or
+`DataLoader`'s batching -- see `docs/development/m70-image-preprocessing.md`.
+Every step below uses only public Forge APIs (`forge`, `forge.data`,
+`forge.nn`, `forge.optim`, `forge.training`, `forge.save_model`/
+`save_checkpoint`) -- this script adds no framework logic of its own, only
+example wiring. See `examples/image_folder_classification/README.md` for
+prerequisites and expected output.
 
 ## Determinism
 
@@ -45,17 +51,17 @@ from pathlib import Path
 import numpy as np
 
 import forge
-from forge.data import Compose, DataLoader, ImageFolder, Lambda, random_split
+from forge.data import Compose, DataLoader, ImageFolder, Lambda, Resize, random_split
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
 from forge.serialization import load_checkpoint, load_model, save_model
 from forge.training import Accuracy, Trainer, predict
 
 try:
-    from .generate_dataset import generate_dataset
+    from .generate_dataset import _render_image, generate_dataset
     from .model import build_model
 except ImportError:  # running as a plain script (`python examples/image_folder_classification/train.py`)
-    from generate_dataset import generate_dataset
+    from generate_dataset import _render_image, generate_dataset
     from model import build_model
 
 # Raw pixels are [0, 255] (see `forge/data/image_folder.py`); scale to [0, 1]
@@ -63,10 +69,15 @@ except ImportError:  # running as a plain script (`python examples/image_folder_
 # `examples/mnist/train.py` uses -- no new preprocessing API.
 _PIXEL_SCALE = 1.0 / 255.0
 _TRAIN_FRACTION = 0.8
+# Milestone 70: the target shape every sample is resized to. Source images
+# are mixed-resolution by construction (see `generate_dataset.py`); Resize
+# must run *before* the pixel-scaling Lambda (it expects raw [0, 255]
+# 8-bit-range values, see `forge/data/transforms.py`'s `Resize` docstring).
+_RESIZE_SIZE = (64, 64)
 
 
 def build_transform():
-    return Compose([Lambda(lambda x: x * _PIXEL_SCALE)])
+    return Compose([Resize(_RESIZE_SIZE), Lambda(lambda x: x * _PIXEL_SCALE)])
 
 
 def build_datasets(data_root: str, split_seed: int):
@@ -94,7 +105,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--generate", action="store_true",
                          help="(Re)generate the synthetic shape dataset into --data-root before training.")
     parser.add_argument("--samples-per-class", type=int, default=300)
-    parser.add_argument("--image-size", type=int, default=32)
+    parser.add_argument("--min-size", type=int, default=48, help="Minimum generated image width/height.")
+    parser.add_argument("--max-size", type=int, default=128, help="Maximum generated image width/height.")
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Training device.")
     parser.add_argument("--epochs", type=int, default=25, help="Number of epochs to train this run.")
     parser.add_argument("--batch-size", type=int, default=32)
@@ -114,9 +126,10 @@ def main(argv=None) -> None:
     checkpoint_path = output_dir / "image_folder_checkpoint.forge"
 
     if args.generate:
-        print(f"Generating synthetic shape dataset into '{args.data_root}' (seed={args.seed}) ...")
+        print(f"Generating mixed-resolution synthetic shape dataset into '{args.data_root}' "
+              f"(sizes in [{args.min_size}, {args.max_size}]^2, seed={args.seed}) ...")
         generate_dataset(args.data_root, samples_per_class=args.samples_per_class,
-                          image_size=args.image_size, seed=args.seed)
+                          min_size=args.min_size, max_size=args.max_size, seed=args.seed)
 
     forge.random.seed(args.seed)
 
@@ -124,7 +137,7 @@ def main(argv=None) -> None:
     full_dataset, train_ds, test_ds = build_datasets(args.data_root, split_seed=args.seed)
     print(f"classes: {full_dataset.classes}  class_to_idx: {full_dataset.class_to_idx}")
     print(f"train: {len(train_ds)} samples, test: {len(test_ds)} samples, "
-          f"shape (3, {args.image_size}, {args.image_size})")
+          f"resized to (3, {_RESIZE_SIZE[0]}, {_RESIZE_SIZE[1]}) via forge.data.transforms.Resize")
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                                generator=np.random.default_rng(args.seed + 1))
@@ -180,6 +193,27 @@ def main(argv=None) -> None:
     true_name = full_dataset.classes[true_idx]
     print(f"\nInference demo (test sample 0, true class: {true_name}):")
     print(f"Prediction: {predicted_name}")
+
+    # Section 12 (Milestone 70): inference on a brand-new image that was
+    # never part of the dataset, at a resolution the model was never
+    # trained at (deliberately outside [--min-size, --max-size]) -- proving
+    # the *same* Resize preprocessing, not a manually pre-resized file,
+    # makes an arbitrary new image usable by the saved model.
+    new_image_shape = full_dataset.classes[0]
+    new_image_rng = np.random.default_rng(args.seed + 1000)
+    new_image = _render_image(new_image_rng, new_image_shape, width=200, height=140)
+    new_image_path = output_dir / "new_mixed_resolution_query.png"
+    new_image.save(new_image_path)
+
+    raw_query = ImageFolder._load_image(new_image_path)
+    preprocessed_query = build_transform()(raw_query)
+    assert preprocessed_query.shape == (3, *_RESIZE_SIZE), "Resize did not normalize the new image's shape"
+    new_query_batch = preprocessed_query.to(args.device).reshape(1, *preprocessed_query.shape)
+    new_pred = predict(reloaded, new_query_batch).numpy()
+    new_predicted_name = full_dataset.classes[int(np.argmax(new_pred, axis=1)[0])]
+    print(f"\nNew mixed-resolution image (200x140, true class: {new_image_shape}, "
+          f"never seen during training):")
+    print(f"Prediction: {new_predicted_name}")
 
     print("\nInspect the generated artifacts with the M19 CLI:")
     print(f"  python -m forge model inspect {model_path}")

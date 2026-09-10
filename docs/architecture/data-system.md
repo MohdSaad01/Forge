@@ -6,7 +6,7 @@ forge/
     data/
         dataset.py       Dataset, TensorDataset, Subset, random_split
         dataloader.py    DataLoader, batch collation
-        transforms.py    Transform, Compose, ToTensor, Normalize, Reshape, Flatten, Lambda
+        transforms.py    Transform, Compose, ToTensor, Normalize, Reshape, Flatten, Resize, Lambda
         image_folder.py  ImageFolder, IMAGE_EXTENSIONS (Milestone 69)
 ```
 `forge.data` is exposed as a submodule of `forge` (`forge.data.TensorDataset`,
@@ -90,8 +90,8 @@ section anticipated) and converted to `(3, H, W)` float32, raw `[0, 255]`
 range, always RGB (grayscale replicated across channels, RGBA alpha
 discarded) -- decoded fresh on every `__getitem__`, no caching/preloading.
 `ImageFolder` does not resize -- every file under `root` must already share
-one `(H, W)`, or `transform=` must normalize that (no `Resize` transform
-exists yet; see `docs/development/m69-image-folder.md`'s Limitations).
+one `(H, W)`, or `transform=` must normalize that; see `Resize` below
+(Milestone 70), which exists specifically to fill this gap.
 Full contract: `forge/data/image_folder.py`'s module docstring.
 
 ## DataLoader
@@ -161,10 +161,24 @@ alone.
   elsewhere in Forge. Implemented as `(x - mean) * (1/std)` since `Tensor`
   has no division operator; rejects a zero `std` at construction.
 - `Reshape(*shape)` / `Flatten()`: thin wrappers over `Tensor.reshape`.
+- `Resize(size)` (Milestone 70): resizes a `(C, H, W)` image `Tensor`
+  (`C` in `{1, 3}`) to an explicit `(height, width)` via Pillow's bilinear
+  filter, preserving dtype/device. Exists to make mixed-resolution
+  `ImageFolder` datasets batchable by `DataLoader` -- `_stack` requires
+  every sample in a batch to share one shape, and ordinary image
+  collections rarely arrive pre-normalized to one resolution. Runs on raw
+  `[0, 255]`-range pixel data (apply it before a rescaling transform like
+  `Lambda(lambda x: x / 255)`, not after); executes on the CPU via Pillow,
+  outside the autograd graph -- it is a data-pipeline preprocessing step,
+  not a differentiable Tensor op, so it introduces no CUDA kernel and no
+  `Tensor.resize()` primitive. See
+  `docs/development/m70-image-preprocessing.md`.
 - `Lambda(fn)`: wraps an arbitrary callable as a `Transform`.
 
-Deliberately not a computer-vision transform library -- just enough to
-establish composability and cover common numeric preprocessing.
+Deliberately not a computer-vision transform library -- `Resize` is the one
+image-shape-normalizing exception, added because `DataLoader`'s batching
+contract made it a genuine (not speculative) requirement; no augmentation
+transforms (crop/flip/color-jitter) exist.
 
 ## Errors
 All dataset/loader/transform failures raise `forge.exceptions.DataError`
@@ -178,7 +192,11 @@ don't sum to the dataset size or that are negative, a zero `Normalize` std,
 and a non-callable `Compose`/`Lambda` member. As of Milestone 69,
 `ImageFolder` raises `DataError` for a missing/non-directory root, a root
 with no class subdirectories, a root with zero total discovered images, an
-out-of-range/non-int index, and an unreadable/corrupt image file.
+out-of-range/non-int index, and an unreadable/corrupt image file. As of
+Milestone 70, `Resize` raises `DataError` for a malformed/non-2-tuple
+`size`, a non-positive or non-integer dimension, a non-`Tensor` sample, a
+sample that isn't a 3-D `(C, H, W)` Tensor, and an unsupported channel
+count (anything other than 1 or 3).
 
 ## Device behavior
 `forge.data` (`Dataset`/`DataLoader`/transforms) remains CPU-only,

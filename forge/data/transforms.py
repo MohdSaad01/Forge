@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Callable, Iterable
 
 import numpy as np
+from PIL import Image
 
 from ..exceptions import DataError
 from ..tensor.tensor import Tensor
@@ -115,6 +116,79 @@ class Flatten(Transform):
         return sample.reshape(size)
 
 
+class Resize(Transform):
+    """Resize a `(C, H, W)` image Tensor to an explicit `(height, width)` (Milestone 70).
+
+    Exists to make mixed-resolution `ImageFolder` datasets batchable by
+    `DataLoader`, whose `_stack` requires every sample in a batch to share
+    one shape -- see `forge/data/image_folder.py`'s own documented
+    limitation. `Resize` is deliberately an ordinary preprocessing
+    transform, not a differentiable Tensor op: it runs via Pillow on a
+    Tensor's raw pixel data, outside the autograd graph, exactly like
+    `ImageFolder._load_image`'s own Pillow-based decode step.
+
+    ```python
+    dataset = ImageFolder(root, transform=Resize((64, 64)))
+    ```
+
+    - `size`: a `(height, width)` tuple of positive ints. The output
+      Tensor's shape is always `(C, height, width)`.
+    - Input: a `(C, H, W)` Tensor with `C` of 1 (grayscale) or 3 (RGB),
+      values in Pillow's native `[0, 255]` 8-bit range -- i.e. the
+      representation `ImageFolder` produces directly. Apply `Resize` before
+      any transform that rescales pixel values (e.g. a `Lambda` dividing by
+      255), not after: resizing reinterprets whatever values are present as
+      8-bit pixel intensities.
+    - Output: `(C, height, width)` Tensor, same dtype and device as the
+      input (matching every other transform in this module).
+    - Interpolation: Pillow's bilinear filter (`Image.BILINEAR|Resampling.
+      BILINEAR`) -- a reasonable general-purpose default; not configurable,
+      since no consumer has needed another filter yet.
+    """
+
+    def __init__(self, size: "tuple[int, int]"):
+        if not isinstance(size, (tuple, list)) or len(size) != 2:
+            raise DataError(f"Resize requires a (height, width) tuple, got {size!r}.")
+        height, width = size
+        for value in (height, width):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise DataError(f"Resize requires integer (height, width), got {size!r}.")
+            if value <= 0:
+                raise DataError(f"Resize requires positive (height, width), got {size!r}.")
+        self.size = (int(height), int(width))
+
+    def __call__(self, sample: Tensor) -> Tensor:
+        if not isinstance(sample, Tensor):
+            raise DataError(f"Resize expects a Tensor sample, got {type(sample).__name__}.")
+        if sample.ndim != 3 or sample.shape[0] not in (1, 3):
+            raise DataError(
+                f"Resize expects a (C, H, W) Tensor with C in (1, 3), got shape {sample.shape}."
+            )
+
+        channels = sample.shape[0]
+        height, width = self.size
+        chw = np.clip(sample.numpy(), 0, 255).astype(np.uint8)
+        hwc = np.ascontiguousarray(chw.transpose(1, 2, 0))
+
+        if channels == 1:
+            image = Image.fromarray(hwc[:, :, 0], mode="L")
+        else:
+            image = Image.fromarray(hwc, mode="RGB")
+        resized = image.resize((width, height), Image.BILINEAR)
+
+        resized_array = np.array(resized, dtype=np.float32)
+        if channels == 1:
+            resized_array = resized_array[np.newaxis, :, :]
+        else:
+            resized_array = resized_array.transpose(2, 0, 1)
+        resized_array = np.ascontiguousarray(resized_array)
+
+        return Tensor(resized_array, dtype=sample.dtype, device=sample.device)
+
+    def __repr__(self) -> str:
+        return f"Resize(size={self.size})"
+
+
 class Lambda(Transform):
     """Wrap an arbitrary callable as a Transform."""
 
@@ -127,4 +201,4 @@ class Lambda(Transform):
         return self.fn(sample)
 
 
-__all__ = ["Transform", "Compose", "ToTensor", "Normalize", "Reshape", "Flatten", "Lambda"]
+__all__ = ["Transform", "Compose", "ToTensor", "Normalize", "Reshape", "Flatten", "Resize", "Lambda"]

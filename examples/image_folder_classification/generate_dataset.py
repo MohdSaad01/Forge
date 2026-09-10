@@ -1,4 +1,5 @@
-"""Generates a small synthetic shape-classification dataset (Milestone 69).
+"""Generates a small synthetic shape-classification dataset (Milestone 69,
+extended to mixed resolutions in Milestone 70).
 
 `forge.data.ImageFolder`'s real consumer needs "ordinary files arranged as
 a dataset," not another MNIST re-hash -- so this writes three classes of
@@ -19,11 +20,14 @@ root/
 
 Each image varies **position**, **scale**, **orientation** (square/triangle
 rotation; circle is rotationally near-symmetric so instead varies its x/y
-aspect), **background color**, **shape color**, and **per-pixel noise** --
-enough that the task requires real shape recognition, not a hard-coded
-pixel-location shortcut. Fully reproducible from one `--seed`; nothing is
-downloaded. Uses only Pillow (`ImageFolder`'s own image-decoding
-dependency) and NumPy -- no new Forge framework code.
+aspect), **background color**, **shape color**, **per-pixel noise**, and
+(Milestone 70) **height and width**, each drawn independently per image from
+`[MIN_IMAGE_SIZE, MAX_IMAGE_SIZE]` -- enough that the task requires real
+shape recognition, not a hard-coded pixel-location shortcut, and enough that
+`ImageFolder` cannot be batched by `DataLoader` without a `Resize` transform
+(see `docs/development/m70-image-preprocessing.md`). Fully reproducible from
+one `--seed`; nothing is downloaded. Uses only Pillow (`ImageFolder`'s own
+image-decoding dependency) and NumPy -- no new Forge framework code.
 """
 
 from __future__ import annotations
@@ -36,7 +40,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 CLASSES = ("circle", "square", "triangle")
-DEFAULT_IMAGE_SIZE = 32
+DEFAULT_MIN_SIZE = 48
+DEFAULT_MAX_SIZE = 128
 DEFAULT_SAMPLES_PER_CLASS = 200
 _NOISE_SIGMA = 8.0
 # The background is always light and the foreground shape always
@@ -82,15 +87,16 @@ def _regular_polygon(
     return points
 
 
-def _render_image(rng: np.random.Generator, shape: str, image_size: int) -> Image.Image:
+def _render_image(rng: np.random.Generator, shape: str, width: int, height: int) -> Image.Image:
     bg_color, fg_color = _distinct_colors(rng)
-    img = Image.new("RGB", (image_size, image_size), bg_color)
+    img = Image.new("RGB", (width, height), bg_color)
     draw = ImageDraw.Draw(img)
 
-    margin = image_size * 0.15
-    cx = rng.uniform(margin, image_size - margin)
-    cy = rng.uniform(margin, image_size - margin)
-    max_radius = min(cx, cy, image_size - cx, image_size - cy, image_size * 0.42)
+    min_dim = min(width, height)
+    margin = min_dim * 0.15
+    cx = rng.uniform(margin, width - margin)
+    cy = rng.uniform(margin, height - margin)
+    max_radius = min(cx, cy, width - cx, height - cy, min_dim * 0.42)
     radius = rng.uniform(max_radius * 0.8, max_radius)
     rotation = rng.uniform(0.0, 360.0)
 
@@ -113,14 +119,20 @@ def _render_image(rng: np.random.Generator, shape: str, image_size: int) -> Imag
 def generate_dataset(
     root: "str | Path",
     samples_per_class: int = DEFAULT_SAMPLES_PER_CLASS,
-    image_size: int = DEFAULT_IMAGE_SIZE,
+    min_size: int = DEFAULT_MIN_SIZE,
+    max_size: int = DEFAULT_MAX_SIZE,
     seed: int = 0,
 ) -> None:
     """Write `samples_per_class` PNGs per class under `root/<class>/`, deterministically.
 
-    Re-running with the same arguments overwrites the same deterministic
-    filenames with the same deterministic content (one shared `Generator`
-    stream, classes visited in a fixed order) -- idempotent in practice.
+    Each image's width and height are drawn independently and uniformly
+    from `[min_size, max_size]` (Milestone 70) -- the dataset is
+    **mixed-resolution by construction**, so `ImageFolder` cannot be
+    batched by `DataLoader` without a `Resize` transform (the exact gap
+    `docs/development/m70-image-preprocessing.md` documents). Re-running
+    with the same arguments overwrites the same deterministic filenames
+    with the same deterministic content (one shared `Generator` stream,
+    classes visited in a fixed order) -- idempotent in practice.
     """
     root = Path(root)
     rng = np.random.default_rng(seed)
@@ -128,7 +140,9 @@ def generate_dataset(
         class_dir = root / shape
         class_dir.mkdir(parents=True, exist_ok=True)
         for i in range(samples_per_class):
-            image = _render_image(rng, shape, image_size)
+            width = int(rng.integers(min_size, max_size + 1))
+            height = int(rng.integers(min_size, max_size + 1))
+            image = _render_image(rng, shape, width, height)
             image.save(class_dir / f"{shape}_{i:04d}.png")
 
 
@@ -136,17 +150,18 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", default="examples/image_folder_classification/data", help="Output directory.")
     parser.add_argument("--samples-per-class", type=int, default=DEFAULT_SAMPLES_PER_CLASS)
-    parser.add_argument("--image-size", type=int, default=DEFAULT_IMAGE_SIZE)
+    parser.add_argument("--min-size", type=int, default=DEFAULT_MIN_SIZE, help="Minimum generated image width/height.")
+    parser.add_argument("--max-size", type=int, default=DEFAULT_MAX_SIZE, help="Maximum generated image width/height.")
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> None:
     args = parse_args(argv)
-    generate_dataset(args.root, args.samples_per_class, args.image_size, args.seed)
+    generate_dataset(args.root, args.samples_per_class, args.min_size, args.max_size, args.seed)
     total = len(CLASSES) * args.samples_per_class
     print(f"Wrote {total} images ({args.samples_per_class} per class) to '{args.root}' "
-          f"({args.image_size}x{args.image_size}, seed={args.seed}).")
+          f"(mixed resolutions in [{args.min_size}, {args.max_size}]^2, seed={args.seed}).")
 
 
 if __name__ == "__main__":

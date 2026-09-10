@@ -42,10 +42,15 @@ representation a custom `Dataset` documents for itself.
 ## Transforms
 `forge.data.Transform`/`Compose` (M5) are composable and focused on
 training-relevant preprocessing: `Normalize`, `Reshape`, `Flatten`,
-`ToTensor`, `Lambda`. A transform operates on one sample component
-(typically the features Tensor), not a whole `(features, target)` tuple --
-`TensorDataset` wires `transform`/`target_transform` to the feature/target
-positions separately so a feature transform cannot silently reach a label.
+`ToTensor`, `Resize` (M70), `Lambda`. A transform operates on one sample
+component (typically the features Tensor), not a whole `(features,
+target)` tuple -- `TensorDataset` wires `transform`/`target_transform` to
+the feature/target positions separately so a feature transform cannot
+silently reach a label. `Resize` (`forge/data/transforms.py`) resizes a
+`(C, H, W)` image Tensor to an explicit `(height, width)` via Pillow's
+bilinear filter -- added specifically so mixed-resolution `ImageFolder`
+datasets can be batched by the existing `DataLoader` unmodified; see
+`docs/development/m70-image-preprocessing.md`.
 
 ## DataLoader
 `forge.data.DataLoader` (M5) is responsible for batching, optional

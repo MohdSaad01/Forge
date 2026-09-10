@@ -3,7 +3,20 @@ import pytest
 
 from forge import Tensor
 from forge.exceptions import DataError
-from forge.data.transforms import Compose, Flatten, Lambda, Normalize, Reshape, ToTensor, Transform
+from forge.data.transforms import (
+    Compose,
+    Flatten,
+    Lambda,
+    Normalize,
+    Reshape,
+    Resize,
+    ToTensor,
+    Transform,
+)
+
+
+def _image_tensor(channels, height, width, fill=100.0):
+    return Tensor(np.full((channels, height, width), fill, dtype=np.float32))
 
 
 # -- base Transform / Compose -------------------------------------------
@@ -107,6 +120,124 @@ def test_flatten_transform():
 def test_flatten_rejects_non_tensor_sample():
     with pytest.raises(DataError):
         Flatten()([1, 2, 3])
+
+
+# -- Resize -----------------------------------------------------------------
+
+
+def test_resize_portrait_to_target():
+    sample = _image_tensor(3, 90, 40)  # H=90, W=40
+    resized = Resize((64, 64))(sample)
+    assert resized.shape == (3, 64, 64)
+
+
+def test_resize_landscape_to_target():
+    sample = _image_tensor(3, 40, 90)  # H=40, W=90
+    resized = Resize((64, 64))(sample)
+    assert resized.shape == (3, 64, 64)
+
+
+def test_resize_square_to_target():
+    sample = _image_tensor(3, 50, 50)
+    resized = Resize((64, 64))(sample)
+    assert resized.shape == (3, 64, 64)
+
+
+def test_resize_non_square_target():
+    sample = _image_tensor(3, 50, 80)
+    resized = Resize((32, 96))(sample)
+    assert resized.shape == (3, 32, 96)
+
+
+def test_resize_rgb_input_preserves_channel_count():
+    sample = _image_tensor(3, 20, 30)
+    resized = Resize((10, 10))(sample)
+    assert resized.shape[0] == 3
+
+
+def test_resize_grayscale_input_preserves_channel_count():
+    sample = _image_tensor(1, 20, 30)
+    resized = Resize((10, 10))(sample)
+    assert resized.shape[0] == 1
+
+
+def test_resize_output_dtype_matches_input():
+    sample = _image_tensor(3, 20, 30)
+    resized = Resize((10, 10))(sample)
+    assert resized.dtype == sample.dtype
+
+
+def test_resize_output_value_range_stays_within_uint8_bounds():
+    sample = _image_tensor(3, 20, 30, fill=255.0)
+    resized = Resize((10, 10))(sample)
+    array = resized.numpy()
+    assert array.min() >= 0.0
+    assert array.max() <= 255.0
+
+
+def test_resize_uniform_fill_is_preserved_by_bilinear_interpolation():
+    sample = _image_tensor(3, 20, 30, fill=128.0)
+    resized = Resize((10, 10))(sample)
+    np.testing.assert_allclose(resized.numpy(), 128.0, atol=1.0)
+
+
+def test_resize_is_deterministic():
+    sample = Tensor(np.arange(3 * 20 * 30, dtype=np.float32).reshape(3, 20, 30) % 255.0)
+    a = Resize((16, 16))(sample)
+    b = Resize((16, 16))(sample)
+    np.testing.assert_array_equal(a.numpy(), b.numpy())
+
+
+def test_resize_rejects_non_tensor_sample():
+    with pytest.raises(DataError):
+        Resize((10, 10))(np.zeros((3, 10, 10)))
+
+
+def test_resize_rejects_wrong_ndim():
+    with pytest.raises(DataError):
+        Resize((10, 10))(Tensor(np.zeros((10, 10), dtype=np.float32)))
+
+
+def test_resize_rejects_unsupported_channel_count():
+    with pytest.raises(DataError):
+        Resize((10, 10))(_image_tensor(4, 20, 30))
+
+
+def test_resize_rejects_malformed_size_tuple():
+    with pytest.raises(DataError):
+        Resize((10, 10, 10))
+
+
+def test_resize_rejects_non_tuple_size():
+    with pytest.raises(DataError):
+        Resize(10)
+
+
+def test_resize_rejects_zero_dimension():
+    with pytest.raises(DataError):
+        Resize((0, 10))
+
+
+def test_resize_rejects_negative_dimension():
+    with pytest.raises(DataError):
+        Resize((10, -5))
+
+
+def test_resize_rejects_non_integer_dimension():
+    with pytest.raises(DataError):
+        Resize((10.5, 10))
+
+
+def test_resize_repr():
+    assert repr(Resize((64, 64))) == "Resize(size=(64, 64))"
+
+
+def test_resize_composes_with_lambda():
+    sample = _image_tensor(3, 20, 30, fill=255.0)
+    pipeline = Compose([Resize((8, 8)), Lambda(lambda t: t * (1.0 / 255.0))])
+    result = pipeline(sample)
+    assert result.shape == (3, 8, 8)
+    np.testing.assert_allclose(result.numpy(), 1.0, atol=1.0 / 255.0)
 
 
 # -- Lambda -------------------------------------------------------------------

@@ -50,7 +50,7 @@ See `docs/architecture/architecture.md` for the full design rules and
 - **`forge.optim`** -- `SGD`, `Adam`.
 - **`forge.data`** -- `Dataset`/`TensorDataset`, `ImageFolder` (directory-
   per-class image classification, via Pillow decoding), transforms
-  (`Normalize`, `Compose`, `Reshape`, ...), `DataLoader` (batching,
+  (`Normalize`, `Compose`, `Reshape`, `Resize`, ...), `DataLoader` (batching,
   shuffling, `random_split`), and `CUDAPrefetchLoader` for overlapped
   host-to-device transfer.
 - **`forge.training`** -- `Trainer` (`fit`/`evaluate`/checkpoint resume),

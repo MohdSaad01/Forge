@@ -17,7 +17,7 @@ from PIL import Image
 from forge import DType, Tensor
 from forge.data import DataLoader, ImageFolder
 from forge.data.image_folder import IMAGE_EXTENSIONS
-from forge.data.transforms import Compose, Lambda, Normalize
+from forge.data.transforms import Compose, Lambda, Normalize, Resize
 from forge.exceptions import DataError
 
 
@@ -338,3 +338,66 @@ def test_dataloader_feeds_conv2d_compatible_batches(tmp_path):
     bx, by = next(iter(loader))
     out = model(bx)
     assert out.shape == (4, 2)
+
+
+# -- mixed-resolution ImageFolder + Resize (Milestone 70) --------------------
+
+
+def _make_mixed_resolution_root(tmp_path: Path) -> Path:
+    """Mirror the M70 brief's own example: a root of differently-sized files."""
+    root = tmp_path / "data"
+    sizes = {
+        "circles": [(43, 61), (80, 72), (128, 96)],
+        "squares": [(55, 70), (91, 64), (120, 110)],
+        "triangles": [(64, 45), (96, 128), (72, 90)],
+    }
+    for cls, dims in sizes.items():
+        class_dir = root / cls
+        class_dir.mkdir(parents=True)
+        for i, (w, h) in enumerate(dims):
+            _make_image(class_dir / f"{cls}_{i}.png", size=(w, h))
+    return root
+
+
+def test_mixed_resolution_dataset_has_varying_sample_shapes_without_resize(tmp_path):
+    root = _make_mixed_resolution_root(tmp_path)
+    ds = ImageFolder(str(root))
+    shapes = {ds[i][0].shape for i in range(len(ds))}
+    assert len(shapes) > 1
+
+
+def test_mixed_resolution_dataset_batching_fails_without_resize(tmp_path):
+    root = _make_mixed_resolution_root(tmp_path)
+    ds = ImageFolder(str(root))
+    loader = DataLoader(ds, batch_size=2)
+    with pytest.raises(DataError):
+        list(loader)
+
+
+def test_resize_transform_normalizes_mixed_resolution_samples_to_one_shape(tmp_path):
+    root = _make_mixed_resolution_root(tmp_path)
+    ds = ImageFolder(str(root), transform=Resize((32, 32)))
+    shapes = {ds[i][0].shape for i in range(len(ds))}
+    assert shapes == {(3, 32, 32)}
+
+
+def test_dataloader_batches_mixed_resolution_dataset_after_resize(tmp_path):
+    root = _make_mixed_resolution_root(tmp_path)
+    ds = ImageFolder(str(root), transform=Resize((16, 16)))
+    loader = DataLoader(ds, batch_size=3, shuffle=False)
+    batches = list(loader)
+    assert len(batches) == 3  # 9 samples / batch_size 3
+    for bx, by in batches:
+        assert bx.shape == (3, 3, 16, 16)
+        assert by.shape == (3,)
+
+
+def test_resize_composes_with_pixel_scaling_transform(tmp_path):
+    root = _make_mixed_resolution_root(tmp_path)
+    transform = Compose([Resize((16, 16)), Lambda(lambda x: x * (1.0 / 255.0))])
+    ds = ImageFolder(str(root), transform=transform)
+    loader = DataLoader(ds, batch_size=9, shuffle=False)
+    bx, by = next(iter(loader))
+    assert bx.shape == (9, 3, 16, 16)
+    assert bx.numpy().min() >= 0.0
+    assert bx.numpy().max() <= 1.0
