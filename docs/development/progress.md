@@ -4373,3 +4373,58 @@ here). The one failure is the same pre-existing
 `test_dataloader_prefetch.py` allocator-measurement flake documented since
 M63 -- reproduced passing cleanly in isolation, no M73 regression.
 Full report: `docs/development/m73-reusable-training-workflow.md`.
+
+### M74 — `forge.data.sequential_split`
+
+Brief required investigating the current data layer for a real, repeated
+data-preparation problem and implementing the smallest reusable capability
+that closes it, forbidding a generic data framework or another readiness
+assessment. Investigation found most of the brief's own candidate areas
+already built and in production use -- `Subset`/`random_split` (both since
+the original M5 data pipeline), `ImageFolder` with class metadata (M69/M72),
+and the full `Compose`/`Resize`/`Normalize` transform set (M70/M71) are all
+already exercised end-to-end by `examples/image_folder_classification/
+train.py`. Grepping every `examples/*/dataset.py` for split/slicing logic
+found the real gap: `examples/regression/dataset.py::make_datasets` and
+`examples/waveform_classification/dataset.py::make_datasets` each
+independently hand-rolled identical contiguous-block array-slicing
+arithmetic (`X[:n_train]` / `X[n_train:n_train+n_val]` /
+`X[n_train+n_val:]`) to partition an i.i.d.-generated dataset, rather than
+using a `Dataset`/`Subset`-based primitive the way `image_folder_
+classification` already uses `random_split`. `forge.data.random_split`
+itself doesn't fit -- it requires a permutation/generator neither dataset
+needs, since sample order there already carries no meaning.
+
+Added `forge.data.sequential_split(dataset, lengths) -> list[Subset]`
+(`forge/data/dataset.py`) -- `random_split` without the permutation: slices
+`range(len(dataset))` directly into consecutive `Subset`s, needs no
+`generator`, and is deterministic by construction. Shares `random_split`'s
+length-validation logic via a new `_split_lengths()` helper (avoiding a
+second copy of the same check) and its `Subset` return type. Retrofitted
+both real consumers -- `regression`/`waveform_classification`'s
+`make_datasets()` now build one `TensorDataset` over the full generated
+array and call `sequential_split()` instead of hand-slicing three separate
+arrays into three separate `TensorDataset`s; `regression`'s one remaining
+array slice (`X[:n_train]`, to fit `Normalize`'s mean/std on training data
+only) is a legitimate modeling concern the splitting primitive has no
+reason to own. Both examples' existing signatures/return shapes are
+unchanged, so `train.py` in each needed zero changes. `segmentation/
+dataset.py` was correctly left alone (its train/test come from two
+independent RNG streams, not one array to slice) -- preserving a real
+difference rather than forcing every dataset onto one abstraction.
+
+6 new tests (`tests/test_dataset.py`, mirroring the existing `random_split`
+block exactly, including one asserting byte-for-byte equivalence with the
+exact three-way slice the two examples used to compute by hand). Both
+examples' existing integration test suites (`tests/
+test_regression_example_integration.py`, `tests/
+test_waveform_classification_example_integration.py`, 22 tests) passed
+**unmodified** against the refactor, proving behavioral equivalence, the
+same validation pattern M73 used for `regression/train.py`'s own retrofit.
+CUDA-hardware-gated variants plus `image_folder_classification`'s CPU/CUDA
+integration suites re-run together on the 940MX: 21 passed (176.6s, real
+training runs). Full suite: **2,221 collected, 2,220 passed, 1 failed**
+(2,215 + 6 new) -- the one failure is the same pre-existing
+`test_dataloader_prefetch.py` allocator-measurement flake documented since
+M63, reproduced passing cleanly in isolation, no M74 regression.
+Full report: `docs/development/m74-data-workflow.md`.

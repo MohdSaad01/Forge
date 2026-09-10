@@ -4,7 +4,7 @@ import pytest
 from forge import Tensor
 from forge.exceptions import DataError
 from forge.nn import Linear
-from forge.data import Dataset, Subset, TensorDataset, random_split
+from forge.data import Dataset, Subset, TensorDataset, random_split, sequential_split
 
 # -- base Dataset -------------------------------------------------------
 
@@ -202,6 +202,72 @@ def test_random_split_rejects_negative_length():
     ds = TensorDataset(x)
     with pytest.raises(DataError):
         random_split(ds, [-1, 6])
+
+
+# -- sequential_split ---------------------------------------------------------
+
+
+def test_sequential_split_sizes_and_contiguous_blocks_in_order():
+    x = Tensor(np.arange(10.0).reshape(10, 1))
+    ds = TensorDataset(x)
+    train, test = sequential_split(ds, [7, 3])
+    assert len(train) == 7
+    assert len(test) == 3
+
+    train_values = [float(train[i].numpy()[0]) for i in range(len(train))]
+    test_values = [float(test[i].numpy()[0]) for i in range(len(test))]
+    assert train_values == [float(v) for v in range(7)]
+    assert test_values == [float(v) for v in range(7, 10)]
+
+
+def test_sequential_split_is_deterministic_with_no_generator_needed():
+    x = Tensor(np.arange(10.0).reshape(10, 1))
+    ds = TensorDataset(x)
+    a_train, a_test = sequential_split(ds, [6, 4])
+    b_train, b_test = sequential_split(ds, [6, 4])
+    assert a_train.indices == b_train.indices == list(range(6))
+    assert a_test.indices == b_test.indices == list(range(6, 10))
+
+
+def test_sequential_split_three_way_matches_manual_array_slicing():
+    """The exact pattern `examples/regression`/`waveform_classification` used to hand-roll."""
+    X = np.arange(20.0).reshape(20, 1)
+    n_train, n_val, n_test = 12, 5, 3
+    ds = TensorDataset(Tensor(X))
+    train, val, test = sequential_split(ds, [n_train, n_val, n_test])
+
+    np.testing.assert_allclose(
+        np.stack([train[i].numpy() for i in range(len(train))]), X[:n_train]
+    )
+    np.testing.assert_allclose(
+        np.stack([val[i].numpy() for i in range(len(val))]), X[n_train : n_train + n_val]
+    )
+    np.testing.assert_allclose(
+        np.stack([test[i].numpy() for i in range(len(test))]), X[n_train + n_val :]
+    )
+
+
+def test_sequential_split_rejects_mismatched_lengths():
+    x = Tensor(np.zeros((10, 1)))
+    ds = TensorDataset(x)
+    with pytest.raises(DataError):
+        sequential_split(ds, [6, 3])
+
+
+def test_sequential_split_rejects_negative_length():
+    x = Tensor(np.zeros((5, 1)))
+    ds = TensorDataset(x)
+    with pytest.raises(DataError):
+        sequential_split(ds, [-1, 6])
+
+
+def test_sequential_split_zero_length_split_is_allowed():
+    x = Tensor(np.arange(5.0).reshape(5, 1))
+    ds = TensorDataset(x)
+    train, empty, test = sequential_split(ds, [3, 0, 2])
+    assert len(train) == 3
+    assert len(empty) == 0
+    assert len(test) == 2
 
 
 # -- integration smoke: dataset item feeds a model ---------------------------

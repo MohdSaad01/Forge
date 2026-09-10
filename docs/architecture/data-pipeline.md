@@ -31,7 +31,12 @@ representation a custom `Dataset` documents for itself.
 ## Built-in sources
 - NumPy/array-backed data: `forge.data.TensorDataset` (M5).
 - `forge.data.Subset` / `forge.data.random_split` for deterministic dataset
-  splitting (M5).
+  splitting (M5); `forge.data.sequential_split` (M74) is the same shape
+  without a permutation -- a contiguous, no-RNG-needed split for a dataset
+  whose order already carries no meaning, replacing the manual
+  `X[:n_train]`/`X[n_train:n_train+n_val]`/`X[n_train+n_val:]` array-slicing
+  `examples/regression`/`examples/waveform_classification` used to duplicate
+  independently. See `docs/development/m74-data-workflow.md`.
 - Directory-based image classification: `forge.data.ImageFolder` (M69) --
   discovers `(image, label)` samples from a `root/class_x/*.jpg` directory
   tree. See `docs/development/m69-image-folder.md` and

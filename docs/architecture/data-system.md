@@ -56,7 +56,7 @@ only to the first tensor's sample (the conventional "features" position) and
 `target_transform` only to the second tensor's sample (the conventional
 "target" position) -- see Transforms below for why these are kept separate.
 
-### Subset / random_split
+### Subset / random_split / sequential_split
 `Subset(dataset, indices)` is a read-only view over a subset of another
 dataset's indices, in the given order; `dataset[Subset's index]` maps back
 through `indices` first. `random_split(dataset, lengths, generator=None)`
@@ -66,6 +66,15 @@ permutes `range(len(dataset))` once (via `generator`, defaulting to
 single permutation (rather than sampling each subset independently)
 guarantees the subsets are disjoint and jointly cover every original index
 exactly once, preserving feature/target correspondence.
+
+`sequential_split(dataset, lengths)` (Milestone 74) is `random_split` without
+the permutation: it slices `range(len(dataset))` directly into consecutive
+`Subset`s, so it needs no `generator` and is deterministic by construction.
+Prefer it over hand-slicing a dataset's backing arrays for an
+already-order-independent dataset (e.g. i.i.d.-generated rows); prefer
+`random_split` when sample order carries meaning (e.g. `ImageFolder`, sorted
+by class then filename) and every split needs a representative mix. See
+`docs/development/m74-data-workflow.md`.
 
 ### ImageFolder (Milestone 69)
 `forge.data.ImageFolder(root, transform=None, target_transform=None,

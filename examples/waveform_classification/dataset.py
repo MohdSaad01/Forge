@@ -44,11 +44,14 @@ model parameter initialization -- see `train.py`'s Determinism section).
 ## Splits
 
 `make_datasets()` draws `n_train + n_val + n_test` samples in one
-`generate_raw()` call and slices them into contiguous train/val/test blocks,
-exactly like `examples/regression/dataset.py::make_datasets`. No feature
-normalization is applied -- the signal is already zero-centered with a
-bounded, comparable-to-1 amplitude, unlike `regression`'s raw `Uniform(-2, 2)`
-features.
+`generate_raw()` call, wraps them in a single `TensorDataset`, then carves
+train/val/test blocks out with `forge.data.sequential_split` (Milestone 74)
+-- exactly like `examples/regression/dataset.py::make_datasets`, which used
+to duplicate this same `X[:n_train]`/`X[n_train:n_train+n_val]`/
+`X[n_train+n_val:]` slicing independently; see
+`docs/development/m74-data-workflow.md`. No feature normalization is
+applied -- the signal is already zero-centered with a bounded, comparable-
+to-1 amplitude, unlike `regression`'s raw `Uniform(-2, 2)` features.
 """
 
 from __future__ import annotations
@@ -58,7 +61,7 @@ from typing import Any
 import numpy as np
 
 from forge import Tensor
-from forge.data import TensorDataset
+from forge.data import TensorDataset, sequential_split
 
 LENGTH = 64
 NUM_CLASSES = 4
@@ -122,13 +125,8 @@ def make_datasets(
     total = n_train + n_val + n_test
     X, y = generate_raw(total, seed, length=length)
 
-    X_train, y_train = X[:n_train], y[:n_train]
-    X_val, y_val = X[n_train : n_train + n_val], y[n_train : n_train + n_val]
-    X_test, y_test = X[n_train + n_val :], y[n_train + n_val :]
-
-    train_ds = TensorDataset(Tensor(X_train), Tensor(y_train))
-    val_ds = TensorDataset(Tensor(X_val), Tensor(y_val))
-    test_ds = TensorDataset(Tensor(X_test), Tensor(y_test))
+    full_ds = TensorDataset(Tensor(X), Tensor(y))
+    train_ds, val_ds, test_ds = sequential_split(full_ds, [n_train, n_val, n_test])
 
     stats = {
         "num_classes": NUM_CLASSES,

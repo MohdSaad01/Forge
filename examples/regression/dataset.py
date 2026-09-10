@@ -36,15 +36,23 @@ initialization -- see `train.py`'s Determinism section).
 ## Splits and preprocessing
 
 `make_datasets()` draws `n_train + n_val + n_test` samples in one
-`generate_raw()` call and slices them into contiguous train/val/test blocks.
-Because every row is an independent identically-distributed draw, slicing by
-position is equivalent to a random split (no separate shuffle is needed here,
-unlike `forge.data.random_split`'s use in `examples/trainer_demo.py` for a
-dataset with meaningful sample order). Feature standardization
-(`forge.data.Normalize`) is fit on the *training* split's mean/std only, then
-applied identically to all three splits -- validation/test statistics never
-leak into the transform. The target `y` is left in its natural scale (not
-normalized), so reported MSE/RMSE are directly interpretable.
+`generate_raw()` call, wraps them in a single `TensorDataset`, then carves
+train/val/test blocks out with `forge.data.sequential_split` (Milestone 74)
+rather than hand-slicing the underlying NumPy arrays -- this example and
+`examples/waveform_classification/dataset.py` used to duplicate the same
+`X[:n_train]` / `X[n_train:n_train+n_val]` / `X[n_train+n_val:]` bookkeeping
+independently; see `docs/development/m74-data-workflow.md`. Because every row
+is an independent identically-distributed draw, a contiguous block is
+equivalent to a random split (no shuffling is needed here, unlike
+`forge.data.random_split`'s use in `examples/trainer_demo.py` for a dataset
+with meaningful sample order). Feature standardization (`forge.data.
+Normalize`) is fit on the *training* split's mean/std only (still a direct
+`X[:n_train]` slice of the raw array -- computing train-only statistics is a
+modeling concern `sequential_split` itself has no reason to know about),
+then applied identically to all three splits via the shared `TensorDataset`'s
+one `transform` -- validation/test statistics never leak into the transform.
+The target `y` is left in its natural scale (not normalized), so reported
+MSE/RMSE are directly interpretable.
 """
 
 from __future__ import annotations
@@ -54,7 +62,7 @@ from typing import Any
 import numpy as np
 
 from forge import Tensor
-from forge.data import Normalize, TensorDataset
+from forge.data import Normalize, TensorDataset, sequential_split
 
 N_FEATURES = 8
 
@@ -110,17 +118,13 @@ def make_datasets(
     X, y = generate_raw(total, seed)
 
     X_train, y_train = X[:n_train], y[:n_train]
-    X_val, y_val = X[n_train : n_train + n_val], y[n_train : n_train + n_val]
-    X_test, y_test = X[n_train + n_val :], y[n_train + n_val :]
-
     mean = X_train.mean(axis=0)
     std = X_train.std(axis=0)
     std = np.where(std == 0, 1.0, std)
     transform = Normalize(mean=mean, std=std)
 
-    train_ds = TensorDataset(Tensor(X_train), Tensor(y_train), transform=transform)
-    val_ds = TensorDataset(Tensor(X_val), Tensor(y_val), transform=transform)
-    test_ds = TensorDataset(Tensor(X_test), Tensor(y_test), transform=transform)
+    full_ds = TensorDataset(Tensor(X), Tensor(y), transform=transform)
+    train_ds, val_ds, test_ds = sequential_split(full_ds, [n_train, n_val, n_test])
 
     stats = {
         "mean": mean,

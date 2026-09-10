@@ -148,6 +148,20 @@ class Subset(Dataset):
         return f"Subset(size={len(self)})"
 
 
+def _split_lengths(dataset: Dataset, lengths: Iterable[int], owner: str) -> list[int]:
+    lengths = [int(n) for n in lengths]
+    if any(n < 0 for n in lengths):
+        raise DataError(f"{owner} lengths must be non-negative, got {lengths}.")
+
+    total = len(dataset)
+    if sum(lengths) != total:
+        raise DataError(
+            f"{owner} lengths must sum to the dataset size ({total}), "
+            f"got {lengths} summing to {sum(lengths)}."
+        )
+    return lengths
+
+
 def random_split(
     dataset: Dataset,
     lengths: Iterable[int],
@@ -162,19 +176,10 @@ def random_split(
     Deterministic for a given generator/seed, matching `forge.random`'s
     reproducibility model (see `docs/architecture/modules.md`).
     """
-    lengths = [int(n) for n in lengths]
-    if any(n < 0 for n in lengths):
-        raise DataError(f"random_split lengths must be non-negative, got {lengths}.")
-
-    total = len(dataset)
-    if sum(lengths) != total:
-        raise DataError(
-            f"random_split lengths must sum to the dataset size ({total}), "
-            f"got {lengths} summing to {sum(lengths)}."
-        )
+    lengths = _split_lengths(dataset, lengths, "random_split")
 
     rng = generator if generator is not None else forge_random.default_generator()
-    permutation = rng.permutation(total)
+    permutation = rng.permutation(len(dataset))
 
     subsets = []
     offset = 0
@@ -184,4 +189,29 @@ def random_split(
     return subsets
 
 
-__all__ = ["Dataset", "TensorDataset", "Subset", "random_split"]
+def sequential_split(dataset: Dataset, lengths: Iterable[int]) -> list[Subset]:
+    """Split `dataset` into disjoint `Subset`s of the given sizes, in original order.
+
+    Like `random_split`, but takes consecutive index blocks directly (`[0,
+    n0)`, `[n0, n0+n1)`, ...) instead of permuting first -- there is no
+    shuffling and no RNG involved, so the result depends only on `lengths`.
+    Useful for a dataset whose sample order already carries no meaning (e.g.
+    i.i.d.-generated rows, as in `examples/regression/dataset.py` and
+    `examples/waveform_classification/dataset.py`, both of which used to
+    slice their raw NumPy arrays into train/val/test blocks by hand before
+    wrapping each block in its own `TensorDataset`); for a dataset whose
+    order *does* carry meaning (e.g. `ImageFolder`, sorted by class then
+    filename), prefer `random_split` so every split gets a representative
+    mix rather than `sequential_split`'s first/middle/last blocks.
+    """
+    lengths = _split_lengths(dataset, lengths, "sequential_split")
+
+    subsets = []
+    offset = 0
+    for n in lengths:
+        subsets.append(Subset(dataset, range(offset, offset + n)))
+        offset += n
+    return subsets
+
+
+__all__ = ["Dataset", "TensorDataset", "Subset", "random_split", "sequential_split"]
