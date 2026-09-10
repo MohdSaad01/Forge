@@ -194,11 +194,12 @@ python -m examples.regression.train --resume artifacts/regression_checkpoint.for
 ```
 
 `--resume` restores the model, Adam state, and epoch/global_step counters
-via `forge.load_checkpoint()` + `Trainer.resume()`, then continues training
-exactly as `docs/architecture/persistence.md` documents -- verified on this
-repository (resuming a 40-epoch checkpoint for 5 more epochs continued train
-MSE from `0.2938 -> 0.2877`, global step `5000 -> 5625`) and by
-`tests/test_regression_example_integration.py::test_checkpoint_save_and_resume_restores_state_and_continues_training`.
+via `forge.training.start_training_session(..., resume=...)` (Milestone 73;
+internally `forge.load_checkpoint()` + `Trainer.resume()`), then continues
+training exactly as `docs/architecture/persistence.md` documents -- verified
+on this repository (resuming a 40-epoch checkpoint for 5 more epochs
+continued train MSE from `0.2938 -> 0.2877`, global step `5000 -> 5625`) and
+by `tests/test_regression_example_integration.py::test_checkpoint_save_and_resume_restores_state_and_continues_training`.
 
 **Resume equivalence.** Continuous `N+M`-epoch training and `N` epochs ->
 checkpoint -> reload -> `M` more epochs produce parameters matching within
@@ -208,8 +209,12 @@ of Milestone 65 -- before this milestone, a resumed run re-seeded a *fresh*
 interrupted run's shuffle stream, and measurably diverged (see
 `docs/development/m65-reproducible-training.md`'s baseline investigation).
 The `data_loader_rng_state` saved into `save_checkpoint(..., extra=...)`
-closes this gap, using only the existing `extra` mechanism -- no
-`forge/` framework change was needed.
+closes this gap; as of Milestone 73 this save/restore is
+`forge.training.TrainingSession`'s own behavior
+(`session.save_checkpoint()`/`start_training_session(..., resume=...)`),
+extracted from this script into `forge/training/session.py` since six other
+examples independently needed the identical fix -- see
+`docs/development/m73-reusable-training-workflow.md`.
 `tests/test_regression_example_integration.py::test_resume_equivalence_matches_continuous_training`
 (`shuffle=False`, Milestone 60) and
 `tests/test_regression_reproducible_training.py::test_full_training_matches_partial_then_resume_with_shuffle`

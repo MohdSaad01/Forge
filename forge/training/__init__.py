@@ -9,6 +9,7 @@ logic of its own. See `docs/architecture/training-engine.md`.
 
 from .inference import ClassificationPrediction, interpret_classification, predict
 from .metrics import Accuracy, MeanAbsoluteError, MeanSquaredError, Metric
+from .session import TrainingSession, start_training_session
 from .trainer import EpochResult, EvaluationResult, Trainer, TrainingHistory
 
 __all__ = [
@@ -23,4 +24,6 @@ __all__ = [
     "predict",
     "interpret_classification",
     "ClassificationPrediction",
+    "TrainingSession",
+    "start_training_session",
 ]

@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73)
 
 ## Package layout
 ```
@@ -7,6 +7,7 @@ forge/
         trainer.py     Trainer, EpochResult, EvaluationResult, TrainingHistory
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
         inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72)
+        session.py     TrainingSession, start_training_session() (Milestone 73)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
 ```
 `forge.training` is exposed as a submodule of `forge` (`forge.training.Trainer`),
@@ -515,6 +516,99 @@ why the check "does `output`'s width match `len(classes)`" belongs here
 model's actual output width is not yet knowable from a class list alone).
 `examples/image_folder_classification/train.py`/`infer.py` and `forge model
 predict` (`forge/cli/model.py`) are its real consumers.
+
+## Reusable training sessions: `start_training_session()` (Milestone 73)
+By Milestone 72, seven of Forge's checkpoint-capable examples (`mnist`,
+`regression`, `resnet`, `segmentation`, `autoencoder`,
+`waveform_classification`, `image_folder_classification`) each hand-rolled
+an identical ~10-line branch in their own `train.py`:
+```python
+if args.resume:
+    checkpoint = load_checkpoint(args.resume, device=args.device)
+    model, optimizer = checkpoint.model, checkpoint.optimizer
+    trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device=args.device, metrics=[...])
+    trainer.resume(checkpoint)
+else:
+    model = build_model().to(args.device)
+    optimizer = Adam(model.parameters(), lr=args.lr)
+    trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device=args.device, metrics=[...])
+```
+`forge.training.start_training_session()` (`forge/training/session.py`) is
+that branch, written once, returning a `TrainingSession(trainer,
+data_loader_rng, resumed, checkpoint)`:
+```python
+session = start_training_session(
+    build_model=lambda: build_model(num_classes=...),
+    build_optimizer=lambda params: Adam(params, lr=args.lr),
+    loss_fn=CrossEntropyLoss(),
+    seed=args.seed,
+    device=args.device,
+    metrics=[Accuracy()],
+    resume=args.resume,
+)
+train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
+                           generator=session.data_loader_rng)
+history = session.trainer.fit(train_loader, epochs=args.epochs, validation_loader=test_loader)
+session.save_checkpoint(str(checkpoint_path))
+```
+`build_model`/`build_optimizer` are factories (`build_optimizer` receives
+`model.parameters()`) called only on the fresh-run path -- a resumed session
+takes its model/optimizer from the checkpoint instead, exactly as the
+hand-written branch above did. `loss_fn`/`device`/`metrics`/`verbose`/
+`prefetch`/`prefetch_size` pass straight through to `Trainer(...)`; this
+function adds no configuration surface of its own beyond what `Trainer`
+already validates.
+
+**Closing a second, latent bug.** Milestone 65 found and fixed a real
+reproducibility gap in `regression/train.py`: with `shuffle=True` (every
+example's actual default), resuming re-seeded a *fresh* `--seed`-derived
+`DataLoader` generator instead of continuing the interrupted run's shuffle
+stream, silently diverging from what continuous training would have
+produced. The fix -- save `data_rng.bit_generator.state` into
+`save_checkpoint(..., extra=...)`, restore it on resume -- was copied by
+hand into `resnet` but never into `mnist`, `segmentation`, `autoencoder`,
+`waveform_classification`, or `image_folder_classification`, each of which
+carried the same latent bug M65 had already diagnosed once.
+`TrainingSession.data_loader_rng` is built the same way
+(`numpy.random.default_rng(seed)`), and `TrainingSession.save_checkpoint()`
+folds its current `bit_generator.state` into the checkpoint's `extra` dict
+automatically (raising `TrainerError` if the caller's own `extra` already
+defines that key) -- restored automatically by the next
+`start_training_session(..., resume=path)` call. An example that builds its
+training `DataLoader` from `session.data_loader_rng` and saves through
+`session.save_checkpoint()` gets M65's fix for free, with nothing to
+remember per example. A checkpoint saved via plain `Trainer.
+save_checkpoint()` (bypassing `TrainingSession`) has no
+`"data_loader_rng_state"` key -- resuming from one leaves `data_loader_rng`
+at its freshly-`seed`-derived state, matching every example's pre-Milestone-
+73 behavior when no such key was ever saved.
+
+This reuses Milestone 65's existing mechanism (a JSON-safe `numpy.random.
+Generator` state living in `save_checkpoint(..., extra=...)`'s pre-existing
+caller-defined dict) rather than building a second reproducibility system --
+see `forge/serialization/checkpoint.py`'s **RNG / determinism policy**
+section for what a checkpoint's own `forge.random` state does and does not
+cover (exactly the gap `data_loader_rng` closes).
+
+**What this does not do.** `start_training_session()` never constructs a
+`DataLoader`, never calls `fit()`/`evaluate()`, and never reads a dataset --
+it returns a ready `Trainer` (already `.resume()`d, when resuming) plus a
+`data_loader_rng`; the caller still builds its own `DataLoader`s and drives
+training itself. It is not a config object or a YAML-driven system -- every
+argument is a plain keyword matching an existing `Trainer`/`load_checkpoint`
+parameter, not a new configuration surface. `forge/training/trainer.py`
+itself is unmodified.
+
+**Real consumers.** `examples/image_folder_classification/train.py` (this
+milestone's primary, required consumer per its own brief) and
+`examples/regression/train.py` (retrofitted second consumer, chosen because
+it already had the hand-written `data_loader_rng_state` logic this function
+absorbs -- its existing dedicated reproducibility test suite,
+`tests/test_regression_reproducible_training.py`, passes unmodified against
+the refactored script, proving behavioral equivalence). `mnist`, `resnet`,
+`segmentation`, `autoencoder`, and `waveform_classification` were not
+retrofitted this milestone (mechanical, low-risk, and left as a natural
+follow-up) but `regression`'s retrofit demonstrates the identical pattern.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

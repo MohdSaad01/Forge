@@ -4321,3 +4321,55 @@ isolation, no M72 regression. No regressions in the directly affected
 suites either (`test_preprocessing_persistence.py`, `test_cli.py`,
 `test_serialization.py`, `test_image_folder_classification_integration.py`:
 116/116). Full report: `docs/development/m72-classification-metadata.md`.
+
+### M73 — Reusable Training Workflow: `start_training_session()`
+
+Brief required investigating the actual repository for a genuinely
+duplicated piece of training orchestration and implementing the smallest
+justified abstraction, forbidding another capability survey. Grepping
+every `examples/*/train.py` for `if args.resume:` found the identical
+~10-line "load checkpoint + Trainer + resume(), else build_model()+Adam+
+Trainer" branch duplicated verbatim across all seven checkpoint-capable
+examples (`mnist`, `regression`, `resnet`, `segmentation`, `autoencoder`,
+`waveform_classification`, `image_folder_classification`). A second grep
+(`data_loader_rng_state`) found real collateral evidence this duplication
+already causes: only `regression` (M65's own fix) and `resnet` (copied by
+hand) carry M65's `DataLoader`-shuffle resume-equivalence fix -- the other
+five silently carry the same latent resume-with-`shuffle=True` divergence
+bug M65 diagnosed and fixed once.
+
+Added `forge.training.start_training_session()` / `TrainingSession`
+(`forge/training/session.py`, new file) -- a single function replacing the
+duplicated branch, returning a ready `Trainer` (already `.resume()`d when
+resuming) plus a `data_loader_rng`. `TrainingSession.save_checkpoint()`
+automatically folds `data_loader_rng.bit_generator.state` into the
+checkpoint's `extra` dict (M65's existing mechanism, no new persistence
+format), restored automatically on the next `resume=` call -- generalizing
+M65's fix so every consumer gets it for free instead of needing to copy it
+by hand again. `forge/training/trainer.py`, `forge/data/dataloader.py`,
+and `forge/serialization/checkpoint.py` are all unmodified; no CLI
+training command was added (Section 7 of the brief: current examples still
+require Python code to define model/dataset/optimizer, with no
+CLI-expressible convention to build one around, unlike `forge model
+predict`'s single-file-input case).
+
+Retrofitted `examples/image_folder_classification/train.py` (required
+primary consumer, and the first time this script gained
+resume-equivalence for its own `shuffle=True` default) and
+`examples/regression/train.py` (second consumer: its own hand-written
+`data_loader_rng_state` logic was deleted in favor of the shared function
+-- its existing dedicated M65 reproducibility test suite,
+`tests/test_regression_reproducible_training.py`, passed unmodified
+against the refactor, proving behavioral equivalence). 16 new tests (14
+CPU -- `tests/test_training_session.py`: fresh/resumed construction,
+`data_loader_rng_state` round trip, the no-saved-state fallback, a
+resume-equivalence integration test at `atol=1e-6`; 2 CUDA --
+`tests/test_training_session_cuda.py`, hardware-verified on the 940MX).
+Ran the full `image_folder_classification` workflow end-to-end via its own
+`main()` (generate -> train -> save -> reload -> predict -> interpret,
+then `--resume` continuing epoch 2 -> 3 correctly). Full suite: **2,215
+tests collected, 2,214 passed, 1 failed** (2,199 + 14 CPU + 2 CUDA new
+here). The one failure is the same pre-existing
+`test_dataloader_prefetch.py` allocator-measurement flake documented since
+M63 -- reproduced passing cleanly in isolation, no M73 regression.
+Full report: `docs/development/m73-reusable-training-workflow.md`.

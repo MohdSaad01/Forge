@@ -16,9 +16,12 @@ Public subpackages:
   transforms, and CUDA-prefetching (`CUDAPrefetchLoader`).
 - `forge.training` -- `Trainer`, metrics, `TrainingHistory`, `predict()`
   -- the standalone post-training inference path (no `Loss`/`Optimizer`
-  required, unlike `Trainer`) -- and `interpret_classification()` (Milestone
+  required, unlike `Trainer`) -- `interpret_classification()` (Milestone
   72), which turns `predict()`'s raw output plus a saved class vocabulary
-  into a human-readable `ClassificationPrediction`.
+  into a human-readable `ClassificationPrediction`, and
+  `start_training_session()` (Milestone 73), which builds a fresh `Trainer`
+  or resumes one from a checkpoint -- including the `DataLoader` shuffle-
+  generator state needed for exact resume equivalence -- in one call.
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a

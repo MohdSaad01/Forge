@@ -14,25 +14,27 @@ model persistence from this one entry point.
 
 ## Determinism
 
-`forge.random.seed(args.seed)` governs every draw from Forge's own default
-generator: `Linear` parameter initialization at model construction.
-`examples.regression.dataset.generate_raw()` uses its own explicit
-`numpy.random.default_rng(args.seed)` for the synthetic data, and
-`DataLoader` shuffling uses a third, independent `numpy.random.Generator`
-(`--seed`-derived) -- three separate deterministic streams, matching
+`forge.training.start_training_session(..., seed=args.seed)` calls
+`forge.random.seed(args.seed)` (governing `Linear` parameter initialization
+at model construction) and builds `session.data_loader_rng` -- the generator
+`DataLoader` shuffling uses below. `examples.regression.dataset.
+generate_raw()` uses its own explicit `numpy.random.default_rng(args.seed)`
+for the synthetic data -- three separate deterministic streams, matching
 `examples/mnist/train.py`'s documented policy (see
 `docs/architecture/persistence.md`'s checkpoint RNG policy).
 
 **Milestone 65**: the `DataLoader` shuffle generator's exact position in its
-stream is now saved into `save_checkpoint(..., extra=...)` and restored on
+stream is saved into `save_checkpoint(..., extra=...)` and restored on
 `--resume`, closing the one reproducibility gap Milestone 65's baseline
 investigation found (a resumed run previously re-seeded a *fresh*
 `--seed`-derived generator rather than continuing the interrupted run's
-shuffle stream -- see `docs/development/m65-reproducible-training.md`).
-Every run also writes a JSON "run record" (config + per-epoch metrics
-history + final evaluation + runtime) next to its checkpoint -- see
-`experiment.py` -- so two runs can be compared with `compare.py` without
-parsing terminal output.
+shuffle stream -- see `docs/development/m65-reproducible-training.md`). As of
+**Milestone 73**, this save/restore is `forge.training.TrainingSession`'s own
+behavior (`session.save_checkpoint()`), not code local to this script -- see
+`docs/development/m73-reusable-training-workflow.md`. Every run also writes a
+JSON "run record" (config + per-epoch metrics history + final evaluation +
+runtime) next to its checkpoint -- see `experiment.py` -- so two runs can be
+compared with `compare.py` without parsing terminal output.
 
 ## Usage
 
@@ -60,12 +62,11 @@ from pathlib import Path
 
 import numpy as np
 
-import forge
 from forge.data import DataLoader
 from forge.nn import MSELoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_model, save_model
-from forge.training import MeanAbsoluteError, Trainer, predict
+from forge.serialization import load_model, save_model
+from forge.training import MeanAbsoluteError, predict, start_training_session
 
 try:
     from .dataset import N_FEATURES, make_datasets
@@ -100,47 +101,42 @@ def main(argv=None) -> None:
     checkpoint_path = output_dir / "regression_checkpoint.forge"
     history_path = output_dir / "regression_history.json"
 
-    forge.random.seed(args.seed)
-    data_rng = np.random.default_rng(args.seed)
-
     print(f"Generating synthetic tabular regression data (seed={args.seed}) ...")
     train_ds, val_ds, test_ds, stats = make_datasets(args.n_train, args.n_val, args.n_test, seed=args.seed)
     print(f"train: {len(train_ds)} samples, val: {len(val_ds)} samples, test: {len(test_ds)} samples, features: 8")
     baseline_mse = stats["y_train_var"]
     print(f"Trivial baseline (predict train mean): MSE = {baseline_mse:.4f}, RMSE = {math.sqrt(baseline_mse):.4f}")
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, generator=data_rng)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size)
-
-    loss_fn = MSELoss()
-
-    if args.resume:
-        print(f"Resuming from checkpoint '{args.resume}' ...")
-        checkpoint = load_checkpoint(args.resume, device=args.device)
-        model = checkpoint.model
-        optimizer = checkpoint.optimizer
-        trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device=args.device, metrics=[MeanAbsoluteError()])
-        trainer.resume(checkpoint)
-        print(f"Resumed at epoch={trainer.epoch}, global_step={trainer.global_step}")
-        # Milestone 65: restore the DataLoader shuffle generator to exactly
-        # where the interrupted run left off, instead of restarting its
-        # stream from --seed -- see this module's Determinism section.
-        saved_rng_state = checkpoint.extra.get("data_loader_rng_state")
-        if saved_rng_state is not None:
-            data_rng.bit_generator.state = saved_rng_state
+    # Milestone 73: start_training_session() replaces this script's own
+    # hand-rolled "--resume ? load_checkpoint()+Trainer.resume() :
+    # build_model()+Adam+Trainer" branch, including the Milestone 65
+    # data_loader_rng_state save/restore this script pioneered by hand --
+    # both now live once in forge/training/session.py.
+    session = start_training_session(
+        build_model=build_model,
+        build_optimizer=lambda params: Adam(params, lr=args.lr),
+        loss_fn=MSELoss(),
+        seed=args.seed,
+        device=args.device,
+        metrics=[MeanAbsoluteError()],
+        resume=args.resume,
+    )
+    if session.resumed:
+        print(f"Resumed from checkpoint '{args.resume}' at epoch={session.trainer.epoch}, "
+              f"global_step={session.trainer.global_step}")
         run_record = load_run_record(history_path)
         if run_record is None:
             print(f"(no existing run record at '{history_path}' -- starting a new one)")
             run_record = new_run_record(vars(args))
     else:
-        model = build_model().to(args.device)
-        optimizer = Adam(model.parameters(), lr=args.lr)
-        trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device=args.device, metrics=[MeanAbsoluteError()])
         run_record = new_run_record(vars(args))
 
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, generator=session.data_loader_rng)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size)
+
     start = time.perf_counter()
-    history = trainer.fit(train_loader, epochs=args.epochs, validation_loader=val_loader)
+    history = session.trainer.fit(train_loader, epochs=args.epochs, validation_loader=val_loader)
     duration = time.perf_counter() - start
 
     samples_per_sec = (len(train_ds) * args.epochs) / duration if duration > 0 else float("inf")
@@ -150,16 +146,18 @@ def main(argv=None) -> None:
     print(f"val MSE:   {history[-1].val_loss:.4f}  (RMSE {math.sqrt(history[-1].val_loss):.4f})")
     print(f"val MAE:   {history[-1].val_metrics['mae']:.4f}")
 
-    final_eval = trainer.evaluate(test_loader)
+    final_eval = session.trainer.evaluate(test_loader)
     test_mse = final_eval.loss
     print(f"\nFinal test evaluation: MSE={test_mse:.4f}, RMSE={math.sqrt(test_mse):.4f}, "
           f"MAE={final_eval.metrics['mae']:.4f}")
     print(f"Trivial baseline MSE was {baseline_mse:.4f} -- "
           f"model achieves a {(1 - test_mse / baseline_mse):.1%} reduction over predicting the mean.")
 
-    trainer.save_checkpoint(str(checkpoint_path), extra={"data_loader_rng_state": data_rng.bit_generator.state})
+    # Milestone 73: session.save_checkpoint() folds data_loader_rng_state in
+    # automatically -- see forge/training/session.py.
+    session.save_checkpoint(str(checkpoint_path))
     print(f"\nSaved checkpoint -> {checkpoint_path}")
-    save_model(model, str(model_path))
+    save_model(session.trainer.model, str(model_path))
     print(f"Saved model -> {model_path}")
 
     extend_run_record(run_record, history=history, final_eval=final_eval, duration_seconds=duration)
@@ -178,7 +176,7 @@ def main(argv=None) -> None:
     # changes) fixed here using the same pattern
     # `examples/waveform_classification/train.py` uses for the same reason.
     query_x = query_x.to(args.device).reshape(1, N_FEATURES)
-    pre_save_pred = predict(model, query_x).numpy()
+    pre_save_pred = predict(session.trainer.model, query_x).numpy()
     reloaded = load_model(str(model_path), device=args.device)
     post_load_pred = predict(reloaded, query_x).numpy()
     assert np.allclose(pre_save_pred, post_load_pred, atol=1e-5), "reloaded model prediction diverged"

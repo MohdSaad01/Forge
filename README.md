@@ -54,9 +54,13 @@ See `docs/architecture/architecture.md` for the full design rules and
   shuffling, `random_split`), and `CUDAPrefetchLoader` for overlapped
   host-to-device transfer.
 - **`forge.training`** -- `Trainer` (`fit`/`evaluate`/checkpoint resume),
-  metrics (`Accuracy`, `MeanAbsoluteError`, ...), `TrainingHistory`, and
+  metrics (`Accuracy`, `MeanAbsoluteError`, ...), `TrainingHistory`,
   `predict()` -- standalone post-training inference (`forge.predict(model,
-  x)`), no `Loss`/`Optimizer` required.
+  x)`), no `Loss`/`Optimizer` required -- and `start_training_session()`,
+  which builds a fresh `Trainer` or resumes one from a checkpoint (including
+  the `DataLoader` shuffle-generator state needed for exact resume
+  equivalence) from one call, replacing the resume-or-fresh-start branch
+  every checkpoint-capable example used to hand-roll.
 - **`forge.serialization`** -- `save_model`/`load_model` (architecture +
   parameters, via an explicit module registry -- never arbitrary code
   execution) and `save_checkpoint`/`load_checkpoint` (adds optimizer state,

@@ -1,6 +1,7 @@
-"""Forge Milestone 69/70/71/72: an end-to-end directory-based image
+"""Forge Milestone 69/70/71/72/73: an end-to-end directory-based image
 classification example, now with mixed-resolution source images, *persisted*
-preprocessing, and a *self-describing* class vocabulary.
+preprocessing, a *self-describing* class vocabulary, and a reusable
+fresh-or-resumed training session.
 
 ```text
 generate_dataset() [mixed H, W] -> ImageFolder -> Resize+Normalize -> random_split -> DataLoader
@@ -29,7 +30,13 @@ in the same file, and `forge.training.interpret_classification()` turns a
 raw prediction `Tensor` plus that vocabulary into a human-readable
 `"dog"`/confidence result -- no more hand-written `classes.json` sidecar a
 caller had to remember to keep next to the model file. See
-`docs/development/m72-classification-metadata.md`.
+`docs/development/m72-classification-metadata.md`. Milestone 73 replaced
+this script's own hand-rolled `--resume`-or-fresh-start `Trainer`
+construction with `forge.training.start_training_session()` -- shared with
+`examples/regression/train.py` and five other checkpoint-capable examples
+that independently duplicated the identical branch -- which also gave this
+script `DataLoader`-shuffle resume-equivalence for the first time (see
+`docs/development/m73-reusable-training-workflow.md`).
 
 Every step below uses only public Forge APIs (`forge`, `forge.data`,
 `forge.nn`, `forge.optim`, `forge.training`, `forge.save_model`/
@@ -72,8 +79,8 @@ from forge import Tensor
 from forge.data import Compose, DataLoader, ImageFolder, Normalize, Resize, random_split
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_classes, load_model, load_preprocessing, save_model
-from forge.training import Accuracy, Trainer, interpret_classification, predict
+from forge.serialization import load_classes, load_model, load_preprocessing, save_model
+from forge.training import Accuracy, interpret_classification, predict, start_training_session
 
 try:
     from .generate_dataset import _render_image, generate_dataset
@@ -158,35 +165,45 @@ def main(argv=None) -> None:
         generate_dataset(args.data_root, samples_per_class=args.samples_per_class,
                           min_size=args.min_size, max_size=args.max_size, seed=args.seed)
 
-    forge.random.seed(args.seed)
-
+    # Milestone 73: dataset loading/splitting is independent of both
+    # forge.random and DataLoader shuffling (ImageFolder/random_split use
+    # their own args.seed-derived numpy.random.Generator), so it can safely
+    # run before start_training_session() below seeds forge.random itself.
     print(f"Loading images from '{args.data_root}' ...")
     full_dataset, train_ds, test_ds = build_datasets(args.data_root, split_seed=args.seed)
     print(f"classes: {full_dataset.classes}  class_to_idx: {full_dataset.class_to_idx}")
     print(f"train: {len(train_ds)} samples, test: {len(test_ds)} samples, "
           f"resized to (3, {_RESIZE_SIZE[0]}, {_RESIZE_SIZE[1]}) via forge.data.transforms.Resize")
 
+    # Milestone 73: start_training_session() replaces this script's own
+    # hand-rolled "--resume ? load_checkpoint()+Trainer.resume() :
+    # build_model()+Adam+Trainer" branch (see
+    # forge/training/session.py) -- and, as a direct consequence, also
+    # closes a latent M65-class reproducibility gap this script never had a
+    # fix for: session.data_loader_rng's shuffle-stream position is now
+    # saved/restored automatically across --resume (previously, resuming
+    # this script's shuffle=True train_loader silently diverged from
+    # continuous training, exactly the bug M65 fixed for
+    # examples/regression/train.py alone).
+    session = start_training_session(
+        build_model=lambda: build_model(num_classes=len(full_dataset.classes)),
+        build_optimizer=lambda params: Adam(params, lr=args.lr),
+        loss_fn=CrossEntropyLoss(),
+        seed=args.seed,
+        device=args.device,
+        metrics=[Accuracy()],
+        resume=args.resume,
+    )
+    if session.resumed:
+        print(f"Resumed from checkpoint '{args.resume}' at epoch={session.trainer.epoch}, "
+              f"global_step={session.trainer.global_step}")
+
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                               generator=np.random.default_rng(args.seed + 1))
+                               generator=session.data_loader_rng)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size)
 
-    loss_fn = CrossEntropyLoss()
-
-    if args.resume:
-        print(f"Resuming from checkpoint '{args.resume}' ...")
-        checkpoint = load_checkpoint(args.resume, device=args.device)
-        model = checkpoint.model
-        optimizer = checkpoint.optimizer
-        trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device=args.device, metrics=[Accuracy()])
-        trainer.resume(checkpoint)
-        print(f"Resumed at epoch={trainer.epoch}, global_step={trainer.global_step}")
-    else:
-        model = build_model(num_classes=len(full_dataset.classes)).to(args.device)
-        optimizer = Adam(model.parameters(), lr=args.lr)
-        trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device=args.device, metrics=[Accuracy()])
-
     start = time.perf_counter()
-    history = trainer.fit(train_loader, epochs=args.epochs, validation_loader=test_loader)
+    history = session.trainer.fit(train_loader, epochs=args.epochs, validation_loader=test_loader)
     duration = time.perf_counter() - start
 
     samples_per_sec = (len(train_ds) * args.epochs) / duration if duration > 0 else float("inf")
@@ -195,10 +212,13 @@ def main(argv=None) -> None:
     print(f"loss: {history[0].train_loss:.4f} -> {history[-1].train_loss:.4f}")
     print(f"val accuracy: {history[-1].val_metrics['accuracy']:.2%}")
 
-    final_eval = trainer.evaluate(test_loader)
+    final_eval = session.trainer.evaluate(test_loader)
     print(f"\nFinal test evaluation: loss={final_eval.loss:.4f}, accuracy={final_eval.metrics['accuracy']:.2%}")
 
-    trainer.save_checkpoint(str(checkpoint_path))
+    # Milestone 73: TrainingSession.save_checkpoint() automatically folds
+    # session.data_loader_rng's current stream position into the
+    # checkpoint's extra dict -- see this function's earlier comment.
+    session.save_checkpoint(str(checkpoint_path))
     print(f"\nSaved checkpoint -> {checkpoint_path}")
     # Milestone 71: `preprocessing=` saves the exact `Resize`/`Normalize`
     # pipeline used above as a sibling metadata entry in the same model
@@ -211,13 +231,13 @@ def main(argv=None) -> None:
     # to remember to keep next to it -- is enough to turn a predicted index
     # back into a class name later. See `load_classes()` and
     # `forge.training.interpret_classification()`.
-    save_model(model, str(model_path), preprocessing=build_transform(), classes=full_dataset.classes)
+    save_model(session.trainer.model, str(model_path), preprocessing=build_transform(), classes=full_dataset.classes)
     print(f"Saved model + preprocessing + classes ({full_dataset.classes}) -> {model_path}")
 
     # Model-persistence round trip: save -> reload -> predict() must agree.
     query_x, query_y = test_ds[0]
     query_x_batch = query_x.to(args.device).reshape(1, *query_x.shape)
-    pre_save_pred = predict(model, query_x_batch).numpy()
+    pre_save_pred = predict(session.trainer.model, query_x_batch).numpy()
     reloaded = load_model(str(model_path), device=args.device)
     post_load_pred = predict(reloaded, query_x_batch).numpy()
     assert np.allclose(pre_save_pred, post_load_pred, atol=1e-5), "reloaded model prediction diverged"
