@@ -220,6 +220,15 @@ with `forge.load_model()`, and asserts the reloaded model reproduces the
 same prediction -- printed as `Verified: reloaded model reproduces the
 pre-save prediction.` at the end of every run.
 
+## Viewing a predicted mask
+
+Every run also writes `segmentation_input.png`, `segmentation_predicted_mask.png`,
+and `segmentation_ground_truth_mask.png` into `--output-dir` (Milestone 76,
+via `forge.data.save_image`) -- the same query image `Model persistence`
+above already runs through the model, rendered as real files instead of only
+reported as scalar `pixel_accuracy`/`iou` numbers. Open all three to see what
+the model actually segmented.
+
 ## CLI inspection
 
 ```bash

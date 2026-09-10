@@ -4489,3 +4489,61 @@ one failure is the same pre-existing `test_dataloader_prefetch.py`
 allocator-measurement flake documented since M63, reproduced passing
 cleanly in isolation, no M75 regression.
 Full report: `docs/development/m75-sequence-generation.md`.
+
+### M76 — `forge.data.save_image()`: rendering image-shaped model output
+
+Brief required investigating the full dataset -> preprocessing -> model ->
+train -> evaluate -> persistence -> inference -> "useful application
+output" lifecycle and every example, then implementing the single smallest
+capability that materially closes remaining friction -- forbidding another
+readiness assessment, a generic evaluation framework, or symmetry-only
+feature addition. Investigation confirmed `Trainer.evaluate()` +
+`forge.training.Metric` already provide a genuinely reusable evaluation
+abstraction (used by 7 of 9 examples, extended locally without framework
+changes by `examples/segmentation/metrics.py`'s `PixelAccuracy`/`IoU`) --
+Outcome A's evaluation-framework path did not clear the evidence bar, since
+no real duplication remained outside it. The genuine gap was found in
+investigation area 5 (Inference/application workflow): `predict()` (M68),
+`interpret_classification()` (M72), and `forge model predict` all turn a
+classification model's raw output Tensor into something a person can use
+(a label string), but `examples/autoencoder/train.py` (image reconstruction)
+and `examples/segmentation/train.py` (predicted binary mask) each produce
+an *image-shaped* Tensor output with no equivalent step -- both scripts only
+ever printed a scalar metric (MSE, pixel_accuracy/IoU); the actual
+reconstruction/mask was never rendered anywhere a person could look at it.
+
+Added `forge.data.save_image(tensor, path)` (`forge/data/image_folder.py`,
+alongside `ImageFolder`'s existing Pillow-based `_load_image` decoder) --
+its write-side counterpart: a `(C, H, W)` Tensor with `C` in `(1, 3)`,
+values assumed `[0, 1]` (clipped, not rejected, since neither real
+consumer's final layer has an activation bounding its output), transferred
+to CPU automatically (mirrors `forge.training.metrics._as_numpy`'s existing
+read-only-transfer-for-reporting precedent), scaled to `[0, 255]` uint8, and
+written via `Image.fromarray(...).save()`. Not a new `Transform` or
+`Dataset` -- a terminal, non-differentiable reporting operation, exported
+from `forge.data` only (not top-level `forge.*`, matching `ImageFolder`/
+`Resize`'s own non-training-package placement). Retrofitted both real
+consumers: `examples/autoencoder/train.py` now writes
+`reconstruction_input.png`/`reconstruction_output.png`, and
+`examples/segmentation/train.py` now writes `segmentation_input.png`/
+`segmentation_predicted_mask.png`/`segmentation_ground_truth_mask.png`,
+both at the existing model-persistence-round-trip query sample (`query_x`)
+already computed for the pre-existing `assert np.allclose(pre_save_pred,
+post_load_pred, ...)` check -- no new query sample, no new evaluation pass.
+
+12 new tests (`tests/test_save_image.py`: RGB/grayscale round-trip via a
+real Pillow re-read, `Path`/`str` path acceptance, clipping above/below
+`[0, 1]`, non-Tensor/wrong-ndim/unsupported-channel-count/missing-parent
+-directory errors, a 1x1 shape edge case; `tests/test_save_image_cuda.py`:
+a CUDA-resident Tensor is transferred and written correctly, hardware
+-verified on the 940MX). Both real consumers were run end-to-end on CPU
+(`python -m examples.segmentation.train --n-train 40 --n-test 20 --epochs 1`
+and `python -m examples.autoencoder.train --epochs 1` against real MNIST)
+and the written PNGs inspected directly (correct mode/size, non-degenerate
+pixel content, predicted-mask/reconstruction statistics consistent with the
+run's own reported metrics) -- not just asserted by unit test. Full suite:
+**2,246 collected, 2,245 passed, 1 failed** (2,234 + 12 new) -- the one
+failure is the same pre-existing `test_dataloader_prefetch.py`
+allocator-measurement flake documented since M63, reproduced passing
+cleanly in isolation, no M76 regression.
+Full report: `docs/development/m76-visualize-image-output.md`.

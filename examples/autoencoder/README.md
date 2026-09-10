@@ -252,6 +252,14 @@ covered by
 `tests/test_autoencoder_example_cuda_integration.py::test_model_persistence_preserves_predictions_on_cuda`
 (CUDA).
 
+## Viewing a reconstruction
+
+Every run also writes `reconstruction_input.png` and `reconstruction_output.png`
+into `--output-dir` (Milestone 76, via `forge.data.save_image`) -- the same
+query image `Model persistence` above already runs through the model,
+rendered as real files instead of only reported as a scalar MSE. Open both
+to see what the model actually reconstructed.
+
 ## CLI inspection
 
 Every `train.py` run prints the exact commands to inspect its own output

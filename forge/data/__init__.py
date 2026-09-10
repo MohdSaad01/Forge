@@ -11,7 +11,7 @@ know about gradients. See `docs/architecture/data-system.md`.
 
 from .dataloader import DataLoader
 from .dataset import Dataset, Subset, TensorDataset, random_split, sequential_split
-from .image_folder import IMAGE_EXTENSIONS, ImageFolder
+from .image_folder import IMAGE_EXTENSIONS, ImageFolder, save_image
 from .prefetch import CUDAPrefetchLoader
 from .transforms import Compose, Flatten, Lambda, Normalize, Reshape, Resize, ToTensor, Transform
 
@@ -23,6 +23,7 @@ __all__ = [
     "sequential_split",
     "ImageFolder",
     "IMAGE_EXTENSIONS",
+    "save_image",
     "DataLoader",
     "CUDAPrefetchLoader",
     "Transform",

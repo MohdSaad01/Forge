@@ -47,7 +47,7 @@ import numpy as np
 
 import forge
 from forge import no_grad
-from forge.data import Compose, DataLoader, Lambda
+from forge.data import Compose, DataLoader, Lambda, save_image
 from forge.nn import MSELoss
 from forge.optim import Adam
 from forge.serialization import load_checkpoint, load_model, save_model
@@ -222,6 +222,16 @@ def main(argv=None) -> None:
     post_load_pred = predict(reloaded, query_x).numpy()
     assert np.allclose(pre_save_pred, post_load_pred, atol=1e-5), "reloaded model prediction diverged"
     print("Verified: reloaded model reproduces the pre-save reconstruction.")
+
+    # Milestone 76: the reconstruction is the whole point of an autoencoder,
+    # but until now nothing ever rendered it -- every prior run only printed
+    # a scalar MSE. Write the input and its reconstruction out as real PNGs
+    # so a person can actually look at what the model produced.
+    input_image_path = output_dir / "reconstruction_input.png"
+    output_image_path = output_dir / "reconstruction_output.png"
+    save_image(query_x.reshape(1, 28, 28), str(input_image_path))
+    save_image(forge.Tensor(pre_save_pred.reshape(1, 28, 28)), str(output_image_path))
+    print(f"Saved reconstruction input/output -> {input_image_path}, {output_image_path}")
 
     print("\nInspect the generated artifacts with the Milestone 19 CLI:")
     print(f"  python -m forge model inspect {model_path}")

@@ -197,4 +197,64 @@ class ImageFolder(Dataset):
         return f"ImageFolder(root={str(self.root)!r}, classes={self.classes}, size={len(self)})"
 
 
-__all__ = ["ImageFolder", "IMAGE_EXTENSIONS"]
+def save_image(tensor: Tensor, path: "str | Path") -> None:
+    """Write a `(C, H, W)` Tensor to `path` as an image file, via Pillow (Milestone 76).
+
+    The write-side counterpart to `_load_image` above: where `ImageFolder`
+    turns an image file into a Tensor a model can train on, `save_image`
+    turns a model's Tensor *output* back into a file a person can actually
+    look at. This closes a real gap -- `examples/autoencoder/train.py`
+    (image reconstruction) and `examples/segmentation/train.py` (predicted
+    masks) each produce an image-shaped Tensor result, but until now neither
+    had any way to render it; both only ever printed a scalar metric (MSE,
+    pixel accuracy, IoU). See `docs/development/m76-visualize-image-output.md`.
+
+    `tensor` must be a `(C, H, W)` Tensor with `C` of 1 (grayscale) or 3
+    (RGB) -- the same shape contract `Resize` already established for this
+    package. Unlike `Resize` (which operates on `ImageFolder`'s own raw
+    `[0, 255]` pixel representation), `save_image` assumes `tensor`'s values
+    are already scaled to `[0, 1]` -- the convention every current image
+    -shaped model output in Forge already uses (`examples/autoencoder/
+    train.py`'s `_PIXEL_SCALE` input scaling with no final activation on the
+    decoder, and `examples/segmentation/dataset.py`'s `[0, 1]`-scaled images/
+    `{0, 1}`-valued masks). Values outside `[0, 1]` are clipped, not
+    rejected: a model's raw, unbounded regression-style output (neither
+    example's final layer has an activation -- see `model.py`'s own
+    docstrings) routinely overshoots the target range slightly, exactly the
+    same "clip before display" step any image-producing model needs.
+
+    A CUDA-resident `tensor` is transferred to CPU automatically (`.to(
+    "cpu")`, mirroring `forge.training.metrics._as_numpy`'s existing
+    read-only-transfer-for-reporting precedent) -- this never touches
+    `CPUBackend`'s compute methods and is not part of any differentiable
+    path.
+
+    Raises `DataError` for a non-Tensor input, a shape other than `(C, H,
+    W)` with `C` in `(1, 3)`, or a `path` whose parent directory does not
+    exist.
+    """
+    if not isinstance(tensor, Tensor):
+        raise DataError(f"save_image expects a Tensor, got {type(tensor).__name__}.")
+    if tensor.ndim != 3 or tensor.shape[0] not in (1, 3):
+        raise DataError(
+            f"save_image expects a (C, H, W) Tensor with C in (1, 3), got shape {tensor.shape}."
+        )
+
+    target = Path(path)
+    parent = target.parent
+    if not parent.is_dir():
+        raise DataError(f"save_image cannot write to '{target}': directory '{parent}' does not exist.")
+
+    array = tensor.to("cpu").numpy().astype(np.float64)
+    clipped = np.clip(array, 0.0, 1.0)
+    scaled = np.round(clipped * 255.0).astype(np.uint8)
+    hwc = np.ascontiguousarray(scaled.transpose(1, 2, 0))
+
+    if tensor.shape[0] == 1:
+        image = Image.fromarray(hwc[:, :, 0], mode="L")
+    else:
+        image = Image.fromarray(hwc, mode="RGB")
+    image.save(target)
+
+
+__all__ = ["ImageFolder", "IMAGE_EXTENSIONS", "save_image"]

@@ -40,7 +40,7 @@ from pathlib import Path
 import numpy as np
 
 import forge
-from forge.data import DataLoader
+from forge.data import DataLoader, save_image
 from forge.nn import MSELoss
 from forge.optim import Adam
 from forge.serialization import load_checkpoint, load_model, save_model
@@ -158,13 +158,28 @@ def main(argv=None) -> None:
 
     # Model-persistence round trip: reload fresh and confirm predictions
     # match, the same property every other Forge example demonstrates.
-    query_x, _ = test_ds[0]
+    query_x, query_mask = test_ds[0]
     query_x = query_x.to(args.device).reshape(1, 3, IMAGE_SIZE, IMAGE_SIZE)
     pre_save_pred = predict(model, query_x).numpy()
     reloaded = load_model(str(model_path), device=args.device)
     post_load_pred = predict(reloaded, query_x).numpy()
     assert np.allclose(pre_save_pred, post_load_pred, atol=1e-5), "reloaded model prediction diverged"
     print("Verified: reloaded model reproduces the pre-save prediction.")
+
+    # Milestone 76: a segmentation model's real output is the predicted
+    # mask, but until now nothing ever rendered it -- every prior run only
+    # printed scalar pixel_accuracy/iou numbers. Write the input image, the
+    # thresholded predicted mask, and the ground-truth mask out as real
+    # PNGs so a person can actually see what the model segmented.
+    input_image_path = output_dir / "segmentation_input.png"
+    predicted_mask_path = output_dir / "segmentation_predicted_mask.png"
+    ground_truth_mask_path = output_dir / "segmentation_ground_truth_mask.png"
+    predicted_mask = (pre_save_pred.reshape(1, IMAGE_SIZE, IMAGE_SIZE) >= _THRESHOLD).astype(np.float32)
+    save_image(query_x.reshape(3, IMAGE_SIZE, IMAGE_SIZE), str(input_image_path))
+    save_image(forge.Tensor(predicted_mask), str(predicted_mask_path))
+    save_image(query_mask, str(ground_truth_mask_path))
+    print(f"Saved segmentation input/predicted-mask/ground-truth-mask -> "
+          f"{input_image_path}, {predicted_mask_path}, {ground_truth_mask_path}")
 
     print("\nInspect the generated artifacts with the Milestone 19 CLI:")
     print(f"  python -m forge model inspect {model_path}")

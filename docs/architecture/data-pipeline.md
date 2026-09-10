@@ -43,6 +43,15 @@ representation a custom `Dataset` documents for itself.
   `forge/data/image_folder.py`'s module docstring for the full contract.
 - Practical file-backed datasets (beyond `ImageFolder`): not yet implemented.
 - Tabular data conveniences: not yet implemented.
+- `forge.data.save_image` (M76) -- the write-side counterpart to
+  `ImageFolder`'s Pillow-based decode: renders a `(C, H, W)`, `[0, 1]`-scaled
+  Tensor (the convention every current image-shaped model output already
+  uses -- `examples/autoencoder`'s reconstruction, `examples/segmentation`'s
+  predicted mask) to a real image file. Not a `Dataset`/`Transform` itself --
+  a terminal, non-differentiable reporting operation, the same "tensor
+  output -> useful application output" step `interpret_classification()`
+  (M72) already provides for classification. See
+  `docs/development/m76-visualize-image-output.md`.
 
 ## Transforms
 `forge.data.Transform`/`Compose` (M5) are composable and focused on
