@@ -47,10 +47,11 @@ reason to own for pure inference, and attaching `.predict()` directly to
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 import numpy as np
 
+from .. import random as forge_random
 from ..autograd import no_grad
 from ..backend.device import Device
 from ..exceptions import DataError, TrainerError
@@ -130,6 +131,109 @@ def predict(
         raise DataError("predict() received an empty iterable of inputs (no batches to run).")
     combined = np.concatenate(chunks, axis=0)
     return Tensor(combined, dtype=out_dtype, device="cpu")
+
+
+def generate_sequence(
+    model: Module,
+    seed: "Sequence[Any]",
+    encode: "Callable[[Any], Tensor]",
+    decode: "Callable[[int], Any]",
+    length: int,
+    device: "str | Device | None" = None,
+    rng: "np.random.Generator | None" = None,
+) -> list:
+    """Autoregressively sample `length` tokens from a stepwise sequence model (Milestone 75).
+
+    ```python
+    text = generate_sequence(
+        model, seed=list("a tensor"),
+        encode=lambda ch: Tensor(one_hot(vocab.encode(ch), vocab.size)),
+        decode=lambda idx: vocab.decode([idx]),
+        length=200,
+    )
+    ```
+
+    `examples/char_rnn/train.py` and `examples/word_rnn/train.py` each
+    independently hand-wrote the identical "prime a hidden state over a seed
+    sequence, then repeatedly sample a next token from the model's own
+    output distribution and feed it back in" loop -- this is that loop,
+    extracted once both examples' `generate()` functions turned out to be
+    structurally identical (see `docs/development/m75-sequence-generation.md`).
+
+    `model` must implement the informal stepwise-recurrence protocol every
+    Forge sequence example already follows (`RNNCell`/`LSTMCell`-based
+    models via `examples/char_rnn/model.py`/`examples/word_rnn/model.py`):
+
+    - `model.init_hidden(batch_size, device=...) -> state` -- a fresh
+      initial hidden state.
+    - `model.step(x, state) -> (logits, state)` -- one recurrence step for a
+      single-timestep, batch-size-1 input `x`, returning per-class logits
+      `(1, num_classes)` and the next state.
+
+    This is deliberately duck-typed, not a new base class or `Protocol` --
+    the same "no abstraction based on one weak consumer" discipline this
+    codebase already applies elsewhere, except here two independent, already
+    -existing consumers share the exact same shape, which is what justifies
+    extracting it at all.
+
+    `seed` is a non-empty sequence of already-tokenized items (characters,
+    word strings, token ids -- whatever `encode`/`decode` agree on). The
+    returned list always starts with `list(seed)` followed by `length` newly
+    sampled tokens, mirroring both examples' existing "seed text is part of
+    the output" behavior. `encode(token) -> Tensor` builds one timestep's
+    model input from a single token (any leading batch dimension `encode`
+    produces is used as-is, matching `model.step`'s own batch-size-1
+    convention); `decode(index) -> token` turns one sampled class index back
+    into a token of the same kind `seed` holds.
+
+    Sampling draws from the model's own output distribution (a host-side
+    softmax over `model.step`'s logits, via `rng.choice`) rather than always
+    taking the argmax -- greedy decoding was never what either example did,
+    and averaging over a whole distribution is what makes repeated calls
+    with different `rng` states produce varied continuations. `rng` defaults
+    to `forge.random.default_generator()` (Forge's existing process-global
+    generator, e.g. `Metric`/`random_split`'s own default-argument
+    convention) when omitted.
+
+    Runs under eval mode and `forge.no_grad()`, restoring whatever
+    training/eval mode `model` was in before the call, exactly like
+    `predict()`. Raises `TrainerError` if `model` is not a `forge.nn.Module`,
+    and `DataError` if `seed` is empty or `length` is negative.
+    """
+    if not isinstance(model, Module):
+        raise TrainerError(f"generate_sequence() requires a forge.nn.Module model, got {type(model).__name__}.")
+    seed_tokens = list(seed)
+    if not seed_tokens:
+        raise DataError("generate_sequence() requires a non-empty seed sequence.")
+    if length < 0:
+        raise DataError(f"generate_sequence() requires length >= 0, got {length}.")
+
+    target_device = _resolve_device(model, device)
+    sample_rng = rng if rng is not None else forge_random.default_generator()
+
+    was_training = model.training
+    model.eval()
+    try:
+        with no_grad():
+            state = model.init_hidden(1, device=target_device)
+            for token in seed_tokens[:-1]:
+                x_t = encode(token).to(target_device)
+                _, state = model.step(x_t, state)
+
+            generated = list(seed_tokens)
+            current = seed_tokens[-1]
+            for _ in range(length):
+                x_t = encode(current).to(target_device)
+                logits, state = model.step(x_t, state)
+                probs = np.exp(logits.to("cpu").numpy()[0])
+                probs = probs / probs.sum()
+                next_index = int(sample_rng.choice(probs.shape[0], p=probs))
+                current = decode(next_index)
+                generated.append(current)
+    finally:
+        model.train(was_training)
+
+    return generated
 
 
 @dataclass(frozen=True)
@@ -221,4 +325,4 @@ def interpret_classification(output: Tensor, classes: "Sequence[str]") -> "list[
     ]
 
 
-__all__ = ["predict", "interpret_classification", "ClassificationPrediction"]
+__all__ = ["predict", "generate_sequence", "interpret_classification", "ClassificationPrediction"]

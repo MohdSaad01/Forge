@@ -59,6 +59,7 @@ from forge.data import DataLoader
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
 from forge.serialization import load_model, save_model
+from forge.training import generate_sequence
 
 try:
     from .corpus import TEXT
@@ -134,27 +135,20 @@ def train_one_epoch(
 def generate(model: CharRNN, vocab: Vocab, seed_text: str, length: int, device: str, rng: np.random.Generator) -> str:
     """Sample `length` characters, seeded with `seed_text`, from the trained model.
 
-    Inference-only: runs under `forge.no_grad()`, and softmax/sampling happen
-    in plain NumPy on the materialized logits (`.numpy()`) -- Forge has no
-    differentiable softmax primitive and none is needed for this
-    non-differentiable, post-training sampling loop.
+    A thin wrapper over `forge.training.generate_sequence()` (Milestone 75):
+    this example's own `encode`/`decode` are just one-hot encoding and
+    single-character decoding, the only parts of the sampling loop that
+    aren't shared with `examples/word_rnn/train.py::generate`.
     """
-    with no_grad():
-        h = model.init_hidden(1, device=device)
-        generated = list(seed_text)
-        for ch in seed_text[:-1]:
-            x_t = Tensor(_one_hot(vocab.encode(ch), model.vocab_size), device=device)
-            _, h = model.step(x_t, h)
-
-        current = seed_text[-1]
-        for _ in range(length):
-            x_t = Tensor(_one_hot(vocab.encode(current), model.vocab_size), device=device)
-            logits, h = model.step(x_t, h)
-            probs = np.exp(logits.to("cpu").numpy()[0])
-            probs = probs / probs.sum()
-            next_idx = rng.choice(model.vocab_size, p=probs)
-            current = vocab.decode([next_idx])
-            generated.append(current)
+    generated = generate_sequence(
+        model,
+        seed=list(seed_text),
+        encode=lambda ch: Tensor(_one_hot(vocab.encode(ch), model.vocab_size), device=device),
+        decode=lambda idx: vocab.decode([idx]),
+        length=length,
+        device=device,
+        rng=rng,
+    )
     return "".join(generated)
 
 

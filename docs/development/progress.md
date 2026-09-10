@@ -4428,3 +4428,64 @@ training runs). Full suite: **2,221 collected, 2,220 passed, 1 failed**
 `test_dataloader_prefetch.py` allocator-measurement flake documented since
 M63, reproduced passing cleanly in isolation, no M74 regression.
 Full report: `docs/development/m74-data-workflow.md`.
+
+### M75 — `forge.training.generate_sequence()`
+
+Brief required inspecting the full dataset -> preprocessing -> model ->
+train -> evaluate -> save -> load -> predict pipeline and every example,
+then implementing the single smallest capability that materially improves
+a real developer workflow -- forbidding another readiness assessment.
+Investigation found `examples/char_rnn/train.py::generate()` and
+`examples/word_rnn/train.py::generate()` were structurally identical
+autoregressive sampling loops (prime a hidden state over a seed sequence,
+then repeatedly sample a next token from `model.step()`'s own output
+distribution and feed it back in), independently hand-written by two real
+consumers that already share an informal `model.step(x, h) -> (logits, h)`
+/ `model.init_hidden(batch_size, device)` protocol (`word_rnn`'s own
+docstring cites `char_rnn`'s pattern directly). Every other candidate area
+surveyed (device-selection boilerplate, per-example trivial-baseline
+metrics, a generic evaluation framework, CLI evaluate/train commands, a
+formal `SequenceModel` base class) was rejected: each either lacked a
+second real consumer, would generalize past a genuinely task-specific
+concern (baselines differ per workload), or had no CLI-expressible
+single-file-input convention the way `forge model predict` does for images.
+
+Added `forge.training.generate_sequence(model, seed, encode, decode,
+length, device=None, rng=None) -> list` (`forge/training/inference.py`,
+alongside `predict()`) -- the shared autoregressive loop, extracted once:
+eval-mode + `no_grad()` + training-mode restoration exactly like
+`predict()`, host-side softmax + `rng.choice` sampling (never greedy
+argmax, matching both examples' prior behavior), defaulting `rng` to
+`forge.random.default_generator()` (`random_split()`'s own convention).
+`encode`/`decode` stay caller-supplied callables rather than new framework
+machinery -- one-hot-vs-embedding-index encoding and char-vs-word decoding
+are genuinely per-model concerns, not a missing abstraction. The
+`model.step()`/`init_hidden()` protocol itself stays informal duck-typing
+(no new base class/`Protocol`): two independent pre-existing consumers
+already share the shape, which justifies extracting the loop, but not
+inventing a third-consumer-free formal interface. Re-exported as
+`forge.generate_sequence`/`forge.training.generate_sequence`, mirroring
+`predict()`'s and `interpret_classification()`'s own top-level re-export.
+`examples/char_rnn/train.py::generate()` and `examples/word_rnn/
+train.py::generate()` are now thin wrappers supplying only their own
+`encode`/`decode`.
+
+13 new tests (`tests/test_inference.py`: re-export identity, output
+length/seed-prefix, vocab-index validity, RNG determinism (explicit and
+`forge.random`-default), train/eval-mode restoration, non-Module/empty-seed/
+negative-length validation errors, zero-length behavior, and a byte-for-byte
+match against a hand-written reference loop; `tests/test_inference_cuda.py`:
+automatic CPU-built-input-to-CUDA-model transfer, and CPU/CUDA agreement
+given identical weights (via `Module.to()`'s in-place move) and RNG state
+-- both hardware-verified on the 940MX). Both real examples' existing
+integration suites (`tests/test_char_rnn_example_integration.py`, `tests/
+test_word_rnn_example_integration.py`, both CPU and CUDA variants) passed
+**unmodified** against the refactor, proving behavioral equivalence; both
+examples' real `train.py` scripts were also run end-to-end (`python -m
+examples.char_rnn.train --epochs 3`, `python -m examples.word_rnn.train
+--epochs 2`) confirming unchanged sample-generation output shape. Full
+suite: **2,234 collected, 2,233 passed, 1 failed** (2,221 + 13 new) -- the
+one failure is the same pre-existing `test_dataloader_prefetch.py`
+allocator-measurement flake documented since M63, reproduced passing
+cleanly in isolation, no M75 regression.
+Full report: `docs/development/m75-sequence-generation.md`.

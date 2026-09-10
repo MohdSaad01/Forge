@@ -86,7 +86,9 @@ existing generic parameter save/load path.
 `--seed` governs `forge.random` (model parameter initialization) and
 `DataLoader` shuffling (its own derived `numpy.random.Generator`), matching
 the two-separate-streams convention `examples/mnist/train.py` documents.
-Sampling (`generate()`) uses a third, independent `numpy.random.Generator`
+Sampling (`generate()`, now a thin wrapper over `forge.training.
+generate_sequence()` -- Milestone 75, shared with `examples/char_rnn/
+train.py::generate()`) uses a third, independent `numpy.random.Generator`
 seeded from `--seed + 1`.
 
 ## Framework additions this example required

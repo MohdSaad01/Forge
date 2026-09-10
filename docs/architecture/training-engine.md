@@ -495,11 +495,65 @@ x)` exactly as anyone else would.
 model-persistence round-trip check (`mnist`, `regression`, `resnet`,
 `segmentation`, `autoencoder`, `waveform_classification`) now calls
 `predict()` instead of hand-rolling the block above -- see each example's
-`train.py`. The two hand-written-training-loop examples (`char_rnn`,
-`word_rnn`, `long_range_recall`) are unchanged: their per-timestep `.step()`
-inference does not fit `predict()`'s single-forward-call shape, and forcing
-it to would be exactly the kind of speculative generalization
+`train.py`. The three hand-written-training-loop examples (`char_rnn`,
+`word_rnn`, `long_range_recall`) do not use `predict()`: their per-timestep
+`.step()` inference does not fit `predict()`'s single-forward-call shape,
+and forcing it to would be exactly the kind of speculative generalization
 `docs/product/scope.md` warns against building without a real consumer.
+`char_rnn`/`word_rnn` do share a different, purpose-built inference helper
+for their own multi-step shape -- see **Sequence generation** below.
+
+## Sequence generation: `generate_sequence()` (Milestone 75)
+`predict()` covers one forward pass per call; a stepwise recurrent language
+model's actual inference need is *autoregressive generation* -- prime a
+hidden state over a seed sequence, then repeatedly sample a next token from
+the model's own output distribution and feed it back in as the next input.
+`examples/char_rnn/train.py` and `examples/word_rnn/train.py` each
+independently hand-wrote this exact loop (`generate()`); once `nn.Embedding`
+made `word_rnn` a real second consumer, the two functions turned out
+structurally identical except for how a single token is encoded into a
+model input and decoded back out of a sampled class index. `forge.training.
+generate_sequence()` (`forge/training/inference.py`) is that shared loop,
+extracted once:
+```python
+generated = forge.generate_sequence(
+    model, seed=list("a tensor"),
+    encode=lambda ch: Tensor(one_hot(vocab.encode(ch), vocab.size)),
+    decode=lambda idx: vocab.decode([idx]),
+    length=200,
+)
+```
+`model` must implement the informal stepwise-recurrence protocol every
+Forge sequence example already follows: `model.init_hidden(batch_size,
+device=...) -> state` and `model.step(x, state) -> (logits, state)` for a
+single timestep, batch size 1. This is deliberately duck-typed rather than a
+new base class or `typing.Protocol` -- two independent, pre-existing
+consumers already share the exact shape, which is what justifies extracting
+it at all, not a new formalized interface no third consumer has asked for.
+
+`encode`/`decode` stay caller-supplied callables rather than framework
+machinery: `char_rnn` one-hot-encodes a character and joins characters back
+into a string, `word_rnn` looks up a word's embedding index and returns a
+single decoded word -- genuinely different per model, and composition
+(passing two small functions) is simpler than inventing a vocabulary
+abstraction neither example's own `Vocab` class needs replacing. Sampling
+softmaxes `model.step()`'s logits on the host (plain NumPy, mirroring
+`interpret_classification()`'s and `Metric`'s own non-differentiable
+host-side reductions) and draws from that distribution via `rng.choice`
+-- greedy argmax decoding was never what either example did. `rng` defaults
+to `forge.random.default_generator()` (the same default-argument convention
+`random_split()` already uses) when omitted. Runs under eval mode and
+`forge.no_grad()`, restoring the model's prior training mode afterward,
+exactly like `predict()`.
+
+`examples/char_rnn/train.py::generate()` and
+`examples/word_rnn/train.py::generate()` are now both thin wrappers over
+`generate_sequence()` -- their existing test suites
+(`tests/test_char_rnn_example_integration.py`,
+`tests/test_word_rnn_example_integration.py`) pass unmodified against the
+refactor, and both examples' real end-to-end runs (`python -m
+examples.char_rnn.train` / `python -m examples.word_rnn.train`) produce the
+same shape of output as before.
 
 ## Prediction interpretation: `interpret_classification()` (Milestone 72)
 `predict()` deliberately stops at a raw `Tensor` -- it has no way to know

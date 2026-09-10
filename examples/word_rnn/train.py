@@ -37,6 +37,7 @@ from forge.data import DataLoader
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
 from forge.serialization import load_model, save_model
+from forge.training import generate_sequence
 
 try:
     from .corpus import TEXT, VOCAB_WORDS
@@ -97,27 +98,20 @@ def train_one_epoch(
 def generate(model: WordRNN, vocab: Vocab, seed_words: "list[str]", length: int, device: str, rng: np.random.Generator) -> "list[str]":
     """Sample `length` words, seeded with `seed_words`, from the trained model.
 
-    Inference-only: runs under `forge.no_grad()`, softmax/sampling happen in
-    plain NumPy on the materialized logits -- the same pattern
-    `examples/char_rnn/train.py::generate` already uses.
+    A thin wrapper over `forge.training.generate_sequence()` (Milestone 75)
+    -- the same shared sampling loop
+    `examples/char_rnn/train.py::generate` also wraps; only `encode`/
+    `decode` (word-index lookup instead of one-hot/char lookup) differ.
     """
-    with no_grad():
-        h = model.init_hidden(1, device=device)
-        generated = list(seed_words)
-        for w in seed_words[:-1]:
-            x_t = Tensor(vocab.encode([w]), device=device)
-            _, h = model.step(x_t, h)
-
-        current = seed_words[-1]
-        for _ in range(length):
-            x_t = Tensor(vocab.encode([current]), device=device)
-            logits, h = model.step(x_t, h)
-            probs = np.exp(logits.to("cpu").numpy()[0])
-            probs = probs / probs.sum()
-            next_idx = rng.choice(model.vocab_size, p=probs)
-            current = vocab.decode([next_idx])[0]
-            generated.append(current)
-    return generated
+    return generate_sequence(
+        model,
+        seed=list(seed_words),
+        encode=lambda w: Tensor(vocab.encode([w]), device=device),
+        decode=lambda idx: vocab.decode([idx])[0],
+        length=length,
+        device=device,
+        rng=rng,
+    )
 
 
 def parse_args(argv=None) -> argparse.Namespace:

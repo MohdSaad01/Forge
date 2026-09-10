@@ -16,8 +16,9 @@ import forge
 from forge import Tensor, no_grad
 from forge.data import DataLoader, TensorDataset
 from forge.exceptions import DataError, TrainerError
-from forge.nn import Dropout, Linear, Module, ReLU
-from forge.training import Trainer, predict
+from forge.nn import Dropout, Linear, Module, ReLU, RNNCell
+from forge.training import Trainer, generate_sequence, predict
+from forge.training.inference import generate_sequence as generate_sequence_direct
 from forge.training.inference import predict as predict_direct
 
 
@@ -196,3 +197,176 @@ def test_predict_matches_trainer_evaluate_predictions_on_same_data():
     with no_grad():
         after = model(x).numpy()
     np.testing.assert_allclose(trainer_forward, after, atol=1e-6)
+
+
+# -- generate_sequence() (Milestone 75) --------------------------------------
+
+
+class TinyStepModel(Module):
+    """A minimal stepwise recurrent model: `RNNCell` -> `Linear`, one-hot input.
+
+    Mirrors `examples/char_rnn/model.py::CharRNN`'s `step()`/`init_hidden()`
+    shape exactly (the protocol `generate_sequence()` documents), without
+    depending on the `examples` package.
+    """
+
+    def __init__(self, vocab_size=5, hidden_size=6):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.cell = RNNCell(vocab_size, hidden_size)
+        self.output = Linear(hidden_size, vocab_size)
+
+    def step(self, x, h):
+        h = self.cell(x, h)
+        return self.output(h), h
+
+    def init_hidden(self, batch_size, device="cpu"):
+        return self.cell.init_hidden(batch_size, device=device)
+
+
+def _one_hot(index: int, size: int) -> np.ndarray:
+    row = np.zeros((1, size), dtype=np.float32)
+    row[0, index] = 1.0
+    return row
+
+
+def _step_model(seed=0, vocab_size=5, hidden_size=6):
+    forge.random.seed(seed)
+    return TinyStepModel(vocab_size=vocab_size, hidden_size=hidden_size)
+
+
+def _encode(token, vocab_size):
+    return Tensor(_one_hot(token, vocab_size))
+
+
+def test_generate_sequence_is_reexported_consistently():
+    assert forge.generate_sequence is generate_sequence
+    assert forge.training.generate_sequence is generate_sequence
+    assert generate_sequence is generate_sequence_direct
+
+
+def test_generate_sequence_output_length_includes_seed():
+    model = _step_model()
+    rng = np.random.default_rng(0)
+    result = generate_sequence(
+        model,
+        seed=[0, 1],
+        encode=lambda t: _encode(t, model.vocab_size),
+        decode=lambda idx: idx,
+        length=7,
+        rng=rng,
+    )
+    assert result[:2] == [0, 1]
+    assert len(result) == 2 + 7
+
+
+def test_generate_sequence_only_produces_valid_indices():
+    model = _step_model()
+    rng = np.random.default_rng(1)
+    result = generate_sequence(
+        model,
+        seed=[2],
+        encode=lambda t: _encode(t, model.vocab_size),
+        decode=lambda idx: idx,
+        length=25,
+        rng=rng,
+    )
+    assert all(0 <= t < model.vocab_size for t in result)
+
+
+def test_generate_sequence_deterministic_given_same_rng_state():
+    model = _step_model()
+    kwargs = dict(seed=[0], encode=lambda t: _encode(t, model.vocab_size), decode=lambda idx: idx, length=10)
+    first = generate_sequence(model, rng=np.random.default_rng(42), **kwargs)
+    second = generate_sequence(model, rng=np.random.default_rng(42), **kwargs)
+    assert first == second
+
+
+def test_generate_sequence_defaults_to_forge_default_generator():
+    model = _step_model()
+    forge.random.seed(123)
+    kwargs = dict(seed=[0], encode=lambda t: _encode(t, model.vocab_size), decode=lambda idx: idx, length=5)
+    forge.random.seed(7)
+    first = generate_sequence(model, **kwargs)
+    forge.random.seed(7)
+    second = generate_sequence(model, **kwargs)
+    assert first == second
+
+
+def test_generate_sequence_restores_training_mode():
+    model = _step_model()
+    model.train()
+    kwargs = dict(seed=[0], encode=lambda t: _encode(t, model.vocab_size), decode=lambda idx: idx, length=3)
+    generate_sequence(model, rng=np.random.default_rng(0), **kwargs)
+    assert model.training is True
+
+    model.eval()
+    generate_sequence(model, rng=np.random.default_rng(0), **kwargs)
+    assert model.training is False
+
+
+def test_generate_sequence_rejects_non_module():
+    with pytest.raises(TrainerError):
+        generate_sequence("not a module", seed=[0], encode=lambda t: t, decode=lambda i: i, length=1)
+
+
+def test_generate_sequence_rejects_empty_seed():
+    model = _step_model()
+    with pytest.raises(DataError):
+        generate_sequence(model, seed=[], encode=lambda t: t, decode=lambda i: i, length=1)
+
+
+def test_generate_sequence_rejects_negative_length():
+    model = _step_model()
+    with pytest.raises(DataError):
+        generate_sequence(
+            model, seed=[0], encode=lambda t: _encode(t, model.vocab_size), decode=lambda idx: idx, length=-1
+        )
+
+
+def test_generate_sequence_zero_length_returns_only_seed():
+    model = _step_model()
+    result = generate_sequence(
+        model,
+        seed=[0, 1, 2],
+        encode=lambda t: _encode(t, model.vocab_size),
+        decode=lambda idx: idx,
+        length=0,
+        rng=np.random.default_rng(0),
+    )
+    assert result == [0, 1, 2]
+
+
+def test_generate_sequence_matches_manual_reference_loop():
+    """generate_sequence()'s sampling loop must match a hand-written reference exactly."""
+    model = _step_model(seed=5)
+    vocab_size = model.vocab_size
+    seed_tokens = [1, 3]
+    length = 6
+
+    def run_manual(rng):
+        with no_grad():
+            h = model.init_hidden(1)
+            for token in seed_tokens[:-1]:
+                _, h = model.step(_encode(token, vocab_size), h)
+            generated = list(seed_tokens)
+            current = seed_tokens[-1]
+            for _ in range(length):
+                logits, h = model.step(_encode(current, vocab_size), h)
+                probs = np.exp(logits.numpy()[0])
+                probs = probs / probs.sum()
+                next_idx = int(rng.choice(vocab_size, p=probs))
+                current = next_idx
+                generated.append(current)
+        return generated
+
+    expected = run_manual(np.random.default_rng(99))
+    actual = generate_sequence(
+        model,
+        seed=seed_tokens,
+        encode=lambda t: _encode(t, vocab_size),
+        decode=lambda idx: idx,
+        length=length,
+        rng=np.random.default_rng(99),
+    )
+    assert actual == expected
