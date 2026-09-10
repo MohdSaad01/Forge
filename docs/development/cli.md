@@ -1,4 +1,4 @@
-# Forge Command-Line Interface (Milestone 19)
+# Forge Command-Line Interface (Milestone 19, extended in 72)
 
 ## Purpose
 A thin command-line adapter over Forge's existing public persistence and
@@ -28,6 +28,7 @@ forge --help
 forge model --help
 forge model inspect --help
 forge model convert --help
+forge model predict --help
 forge checkpoint --help
 forge checkpoint inspect --help
 forge checkpoint convert --help
@@ -40,8 +41,10 @@ forge model inspect PATH [--json]
 ```
 Reports the saved format version, the module hierarchy (types and dotted
 names), every parameter's name/shape/dtype, total parameter count, the
-recorded device, and the saved training/eval mode. Never prints tensor
-values.
+recorded device, the saved training/eval mode, whether a preprocessing
+pipeline was saved (`forge.save_model(..., preprocessing=...)`, Milestone
+71), and the saved class-name vocabulary if any (`forge.save_model(...,
+classes=...)`, Milestone 72). Never prints tensor values.
 
 **Never requires CUDA, regardless of the model's recorded device**, and
 never reconstructs a live `Module` or runs any computation: it reads only
@@ -83,6 +86,36 @@ if convenient" behavior; requesting `--device cuda` with no CUDA backend
 available fails with a clear error and a non-zero exit status rather than
 silently falling back to CPU.
 
+## Model prediction (Milestone 72)
+```bash
+forge model predict MODEL --image IMAGE [--device {cpu,cuda}]
+```
+Classifies one image file against a saved model, using only what the `.forge`
+file itself already carries: `forge.load_preprocessing(MODEL)` (Milestone 71)
+to prepare `IMAGE` the same way training did, then `forge.load_model()` +
+`forge.predict()` + `forge.load_classes(MODEL)` (Milestone 72) +
+`forge.interpret_classification()` to turn the raw output into a label +
+confidence:
+```text
+Predicted class: dog
+Confidence: 94.2%
+```
+Requires `MODEL` to have been saved with `preprocessing=...` -- there is
+nothing to reproduce automatically otherwise, and this command never
+guesses or silently skips preprocessing; it fails with a clear error
+instead. A model saved without `classes=...` still predicts, falling back to
+`Predicted class index: N` (no confidence is claimed either, since there is
+no label to attach it to). This is a thin adapter over exactly the same
+Python sequence `examples/image_folder_classification/infer.py` demonstrates
+as a standalone script -- no new inference logic lives here. Scoped to a
+single image file: unlike `model inspect`/`convert`, this is the CLI's first
+command that actually runs model computation, and image classification is
+currently the only Forge workflow where a saved artifact fully describes how
+to turn one input *file* into a prediction end to end (tabular/sequence
+workloads have no equivalent single-file input convention yet -- see
+`docs/development/m72-classification-metadata.md`'s **Rejected
+alternatives**).
+
 ## Checkpoint conversion
 ```bash
 forge checkpoint convert CHECKPOINT --device {cpu,cuda} --output OUTPUT
@@ -111,10 +144,14 @@ package with no `benchmarks/` directory alongside it, it fails with a clear
 "benchmark suite is not available" error rather than a raw `ImportError`.
 
 ## Device behavior
-Every device-affecting command (`model convert`, `checkpoint convert`)
-requires an explicit `--device {cpu,cuda}` -- Forge's existing "no implicit
-device fallback" policy (`docs/architecture/persistence.md`), unchanged by
-the CLI. Inspection commands never touch a device or a backend at all.
+Every device-affecting command that changes a model's device (`model
+convert`, `checkpoint convert`) requires an explicit `--device {cpu,cuda}`
+-- Forge's existing "no implicit device fallback" policy
+(`docs/architecture/persistence.md`), unchanged by the CLI. `model predict`'s
+`--device` is optional, matching `forge.load_model()`'s/`forge.predict()`'s
+own default (the device the model was saved from) -- prediction does not
+*convert* the file, so there is no ambiguity to force an explicit choice
+about. Inspection commands never touch a device or a backend at all.
 
 ## CUDA requirements
 - `model inspect` / `checkpoint inspect`: never require CUDA, for any input.
@@ -123,6 +160,10 @@ the CLI. Inspection commands never touch a device or a backend at all.
 - `model convert` / `checkpoint convert` with `--device cuda`: require a
   real CUDA backend; if unavailable, fail with a clear error and exit
   status 1 (never a silent CPU fallback).
+- `model predict`: requires CUDA only if `--device cuda` is passed explicitly,
+  or if omitted and the model was saved from `"cuda"` -- identical policy to
+  `forge.load_model()`'s own (**Device semantics**,
+  `docs/architecture/persistence.md`).
 - `benchmark`: CUDA-dependent categories (`transfer`, and the CUDA half of
   `forward`/`backward`/`training`) produce no results when CUDA is
   unavailable, exactly as `python -m benchmarks` already behaves
@@ -158,3 +199,10 @@ never silently swallowed.
   distributed-training commands, cloud storage, dataset downloading, job
   scheduling, daemon/server mode, model serving, or REST API -- all
   explicitly out of scope for this milestone.
+- **`model predict` is image-classification-only** (Milestone 72): it always
+  decodes `--image` via `ImageFolder._load_image` and always interprets the
+  model's output as per-class classification scores. There is no generic
+  `forge predict` command spanning every Forge workload (tabular regression,
+  autoencoders, sequence models, ...) -- each has a different natural input
+  shape with no single saved-artifact-describable file convention yet; see
+  `docs/development/m72-classification-metadata.md`.

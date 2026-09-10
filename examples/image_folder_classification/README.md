@@ -1,29 +1,32 @@
-# Forge Image-Folder Classification Example (Milestone 69, extended in 70/71)
+# Forge Image-Folder Classification Example (Milestone 69, extended in 70/71/72)
 
 An end-to-end validation of `forge.data.ImageFolder` -- Forge's first
 dataset that discovers labeled samples from **ordinary image files on
 disk**, rather than a bundled binary format (`examples/mnist/`'s IDX files)
 or in-memory arrays -- extended (Milestone 70) so the source images are
 genuinely **mixed-resolution**, made batchable via
-`forge.data.transforms.Resize`, and extended again (Milestone 71) so the
+`forge.data.transforms.Resize`, extended again (Milestone 71) so the
 saved model file carries the exact preprocessing configuration a new image
 must go through, reconstructed automatically in a *separate inference
-process* -- no more manually remembering or re-implementing `Resize`/pixel
-scaling at inference time:
+process*, and extended once more (Milestone 72) so the saved model file
+*also* carries the class-name vocabulary its predicted indices refer to --
+no more manually remembering or re-implementing `Resize`/pixel scaling, and
+no more a hand-written `classes.json` sidecar file, at inference time:
 
 ```text
 generate_dataset() [mixed H, W] -> ImageFolder -> Resize+Normalize -> random_split -> DataLoader
     -> Trainer -> CNN (Conv2d/BatchNorm2d/MaxPool2d/Dropout) -> CrossEntropyLoss
-    -> Adam -> save (model + preprocessing) -> forge.predict()
-                                                     ^
-                                    infer.py: fresh process, loads both from one file
+    -> Adam -> save (model + preprocessing + classes) -> forge.predict() -> interpret_classification()
+                                                                ^
+                                infer.py / `forge model predict`: fresh process, everything from one file
 ```
 
 Every step uses only public Forge APIs (`forge`, `forge.data`, `forge.nn`,
 `forge.optim`, `forge.training`, `forge.save_model`/`save_checkpoint`/
-`load_model`/`load_checkpoint`/`load_preprocessing`). Nothing here is new
-framework logic -- this example only generates a small synthetic image
-dataset and assembles a small CNN from existing `forge.nn` layers.
+`load_model`/`load_checkpoint`/`load_preprocessing`/`load_classes`/
+`interpret_classification`). Nothing here is new framework logic -- this
+example only generates a small synthetic image dataset and assembles a
+small CNN from existing `forge.nn` layers.
 
 ## Files
 
@@ -36,14 +39,18 @@ dataset and assembles a small CNN from existing `forge.nn` layers.
   input, matching `train.py`'s `Resize((64, 64))`).
 - `train.py` -- the runnable example: dataset generation, `Resize`/
   `Normalize` preprocessing, training, evaluation, checkpointing, resume,
-  model + preprocessing persistence, and standalone single-image inference
-  on both a held-out test sample and a brand-new image at a resolution
-  never seen in training.
-- `infer.py` (Milestone 71) -- a **separate, standalone script**: given only
-  a saved model path and an image path, reconstructs the exact preprocessing
-  used during training from the model file itself (`forge.load_preprocessing()`)
-  and produces a prediction. Does not import `train.py`'s `build_transform()`
-  or any other in-memory training-time state -- see its own module docstring.
+  model + preprocessing + classes persistence, and standalone single-image
+  inference on both a held-out test sample and a brand-new image at a
+  resolution never seen in training.
+- `infer.py` (Milestone 71, extended in 72) -- a **separate, standalone
+  script**: given only a saved model path and an image path, reconstructs
+  the exact preprocessing used during training from the model file itself
+  (`forge.load_preprocessing()`) and the class-name vocabulary
+  (`forge.load_classes()`), then produces a human-readable prediction. Does
+  not import `train.py`'s `build_transform()` or any other in-memory
+  training-time state -- see its own module docstring. (Before Milestone
+  72 this also needed a separate `--classes path/to/classes.json` argument;
+  the model file now carries that itself.)
 
 ## Prerequisites
 
@@ -168,20 +175,27 @@ Identical pattern to every other Forge example
 model + Adam state + epoch/global_step + RNG state, supports `--resume`, and
 after training verifies the save/load round trip reproduces the same
 prediction via `forge.predict()`. It also (Milestone 71) saves the model's
-`preprocessing=Compose([Resize(...), Normalize(...)])` pipeline as part of
-the same `.forge` model file (`save_model(model, path, preprocessing=...)`)
-and a plain `classes.json` class-name list alongside it -- see
-`docs/architecture/persistence.md`'s **Preprocessing metadata** section.
+`preprocessing=Compose([Resize(...), Normalize(...)])` pipeline, and
+(Milestone 72) the model's `classes=full_dataset.classes` vocabulary, as two
+sibling metadata entries in the same `.forge` model file
+(`save_model(model, path, preprocessing=..., classes=...)`) -- no separate
+sidecar file -- see `docs/architecture/persistence.md`'s **Preprocessing
+metadata** and **Class-label metadata** sections.
 
 ## Inference demonstration
 
 At the end of every run, `train.py` takes one held-out test-split image,
-runs it through `forge.predict()`, and maps the predicted class index back
-to a human-readable class name via `ImageFolder.classes`:
+runs it through `forge.predict()`, and turns the raw output into a
+human-readable class name + confidence via
+`forge.interpret_classification()`, using the class vocabulary reconstructed
+from the just-saved model file (`forge.load_classes()`) rather than the
+in-memory `ImageFolder.classes` this process still happens to have -- proving
+the file alone is enough:
 
 ```text
 Inference demo (test sample 0, true class: square):
 Prediction: triangle
+Confidence: 71.4%
 ```
 
 (A misclassification here is expected some fraction of the time at this
@@ -195,39 +209,57 @@ just-saved model file** via `forge.load_preprocessing()` (Milestone 71 --
 not the in-process `build_transform()` function), and predicts:
 
 ```text
-New mixed-resolution image (200x140, true class: circle, never seen during training), preprocessing reconstructed from '...image_folder_model.forge':
+New mixed-resolution image (200x140, true class: circle, never seen during training), preprocessing + classes reconstructed from '...image_folder_model.forge':
 Prediction: circle
+Confidence: 88.9%
 ```
 
-This demonstrates the milestone's core claim: a caller does not need to
-manually pre-resize a new image to the model's trained resolution, or even
-remember which transform was used -- it is reconstructed automatically from
-the saved file. Both demos use the same `forge.predict()` used by every
-other Forge example -- no separate hand-written inference implementation.
+This demonstrates the milestones' core claim: a caller does not need to
+manually pre-resize a new image to the model's trained resolution, remember
+which transform was used, or keep a separate class-name file next to the
+model -- everything is reconstructed automatically from the one saved file.
+Both demos use the same `forge.predict()`/`forge.interpret_classification()`
+used by every other Forge classification workflow -- no separate
+hand-written inference implementation.
 
-### Fresh-process inference (`infer.py`, Milestone 71)
+### Fresh-process inference (`infer.py`, Milestone 71/72; `forge model predict` CLI, Milestone 72)
 
-`train.py` prints the exact command at the end of its run. It works from
-nothing but the saved model file, the saved `classes.json`, and a path to
-any image:
+`train.py` prints the exact commands at the end of its run. Both work from
+nothing but the saved model file and a path to any image -- no separate
+`classes.json` sidecar file to keep track of:
 
 ```bash
 python -m examples.image_folder_classification.infer \
     --model examples/image_folder_classification/artifacts/image_folder_model.forge \
-    --classes examples/image_folder_classification/artifacts/classes.json \
     --image examples/image_folder_classification/artifacts/new_mixed_resolution_query.png
 ```
 
 ```text
 Prediction: circle
+Confidence: 88.9%
+```
+
+Or, equivalently, via Forge's own CLI (`forge/cli/model.py`'s `predict`
+subcommand -- no Python script needed at all):
+
+```bash
+python -m forge model predict examples/image_folder_classification/artifacts/image_folder_model.forge \
+    --image examples/image_folder_classification/artifacts/new_mixed_resolution_query.png
+```
+
+```text
+Predicted class: circle
+Confidence: 88.9%
 ```
 
 `infer.py` never imports `train.py`'s `build_transform()` or reuses any
-in-memory object from the training run -- it calls `forge.load_model()` and
-`forge.load_preprocessing()` against the same file and nothing else,
-demonstrating the workflow across a genuine process boundary. Passing the
-path to a model saved *without* `preprocessing=` raises a clear
-`PersistenceError` rather than guessing or silently skipping preprocessing.
+in-memory object from the training run -- it calls `forge.load_model()`,
+`forge.load_preprocessing()`, and `forge.load_classes()` against the same
+file and nothing else, demonstrating the workflow across a genuine process
+boundary. Passing the path to a model saved *without* `preprocessing=`
+raises a clear `PersistenceError` rather than guessing or silently skipping
+preprocessing; a model saved without `classes=` still predicts, falling back
+to printing the raw class index (see `run()`'s own docstring).
 
 ## Integration tests (no dataset download required, generated on the fly)
 
@@ -245,8 +277,11 @@ python -m pytest tests/test_image_folder_classification_integration.py tests/tes
 
 Also see `tests/test_image_folder.py` for `forge.data.ImageFolder`'s own
 unit tests (discovery, image conversion, dataset behavior, `DataLoader`
-integration) -- independent of this example -- and `tests/
+integration) -- independent of this example -- `tests/
 test_preprocessing_persistence.py` (Milestone 71) for the preprocessing-
 persistence mechanism's own tests, including a real `ImageFolder` ->
 train -> save -> reload -> `forge.predict()` round trip against files on
-disk.
+disk -- and `tests/test_classification_metadata.py` (Milestone 72) for
+`save_model(..., classes=...)`/`load_classes()`/`interpret_classification()`,
+the `forge model predict` CLI command, and this example's own
+`infer.py`/`train.py` fresh-process workflow.

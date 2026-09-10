@@ -46,7 +46,8 @@ reason to own for pure inference, and attaching `.predict()` directly to
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from dataclasses import dataclass
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 
@@ -131,4 +132,93 @@ def predict(
     return Tensor(combined, dtype=out_dtype, device="cpu")
 
 
-__all__ = ["predict"]
+@dataclass(frozen=True)
+class ClassificationPrediction:
+    """One row of `interpret_classification()`'s output: a human-readable result.
+
+    `label` is `classes[index]`; `confidence` is that class's softmax
+    probability under the row's raw output values (see
+    `interpret_classification()`'s docstring for why this is a legitimate,
+    not merely convenient, use of softmax).
+    """
+
+    label: str
+    index: int
+    confidence: float
+
+
+def interpret_classification(output: Tensor, classes: "Sequence[str]") -> "list[ClassificationPrediction]":
+    """Turn `predict()`'s raw per-class output into human-readable `ClassificationPrediction`s.
+
+    ```python
+    output = forge.predict(model, batch)                 # Tensor(batch, num_classes) -- raw logits
+    results = interpret_classification(output, classes)  # one ClassificationPrediction per row
+    print(f"Predicted class: {results[0].label}")
+    print(f"Confidence: {results[0].confidence:.1%}")
+    ```
+
+    This is Milestone 72's "tensor output" -> "useful prediction" step:
+    `predict()` deliberately stops at a raw `Tensor` (it has no way to know
+    what the output's indices *mean*), and `classes[i]` -- `forge.
+    save_model(..., classes=...)`'s own index convention (**Milestone 72**
+    in `docs/architecture/persistence.md`) -- is what supplies that meaning.
+
+    `output` must be 2-D, `(batch_size, num_classes)`, with `num_classes ==
+    len(classes)` -- exactly the shape `nn.CrossEntropyLoss` itself requires
+    of its `logits` argument (`forge/nn/loss.py`), since this function
+    interprets `output` the same way: as unnormalized per-class scores
+    (logits), not already-normalized probabilities. `confidence` is
+    therefore the row's softmax probability of its predicted class --
+    numerically stable (max-subtracted before `exp`, mirroring `Cross
+    EntropyLoss`'s own log-sum-exp trick), computed here in plain host-side
+    NumPy rather than through the `Tensor`/autograd graph (this runs after
+    `no_grad()` inference, on data that is about to be printed, not
+    differentiated -- the same non-differentiable-host-reduction precedent
+    `Metric`/`predict()`'s own batch-concatenation already use). This is a
+    legitimate probability reading of `output`, not an unjustified
+    confidence claim: every classification model in Forge is trained with
+    `CrossEntropyLoss`, which is defined in terms of `log_softmax(logits)`
+    -- softmax is the same transform its own training objective already
+    assumes.
+
+    Raises `TrainerError` if `output` is not 2-D, if `classes` is empty, or
+    if `output.shape[1] != len(classes)` (**"output dimension inconsistent
+    with class count"**) -- this is the one place that check can honestly be
+    made: at save time, `save_model()` never introspects a model's
+    architecture to learn its output width (see that function's own
+    docstring), but here `output` is already the model's *actual* produced
+    shape, so a mismatch is unambiguous.
+    """
+    classes = list(classes)
+    if not classes:
+        raise TrainerError("interpret_classification() requires a non-empty classes list.")
+    if output.ndim != 2:
+        raise TrainerError(
+            f"interpret_classification() expects a 2-D (batch_size, num_classes) output, "
+            f"got shape {output.shape}."
+        )
+    num_classes = output.shape[1]
+    if num_classes != len(classes):
+        raise TrainerError(
+            f"interpret_classification() output dimension inconsistent with class count: "
+            f"output has {num_classes} class score(s) but {len(classes)} class label(s) "
+            f"were given ({classes!r})."
+        )
+
+    array = output.to("cpu").numpy()
+    shifted = array - array.max(axis=1, keepdims=True)
+    exp = np.exp(shifted)
+    probabilities = exp / exp.sum(axis=1, keepdims=True)
+    predicted_indices = np.argmax(array, axis=1)
+
+    return [
+        ClassificationPrediction(
+            label=classes[int(idx)],
+            index=int(idx),
+            confidence=float(probabilities[row, idx]),
+        )
+        for row, idx in enumerate(predicted_indices)
+    ]
+
+
+__all__ = ["predict", "interpret_classification", "ClassificationPrediction"]

@@ -79,8 +79,10 @@ class TrainerError(ForgeError):
     device; a non-positive epoch count; a DataLoader that yields no batches;
     a batch that is not a `(features, target)` tuple; a metric given
     mismatched prediction/target shapes; a metric's `compute()` called with
-    no samples seen; or `forge.predict()` given a `model` that is not a
-    `forge.nn.Module`.
+    no samples seen; `forge.predict()` given a `model` that is not a
+    `forge.nn.Module`; or `forge.training.interpret_classification()` given
+    a non-2-D output, an empty class list, or an output whose class-score
+    dimension does not match the given class count.
     """
 
 

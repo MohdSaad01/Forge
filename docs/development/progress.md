@@ -4248,3 +4248,76 @@ prior `train.py` run and reproducing the same prediction. 28 new tests
 (26 CPU incl. two real `ImageFolder`-file end-to-end round trips, 2 CUDA,
 hardware-verified on the 940MX). Full report:
 `docs/development/m71-preprocessing-persistence.md`.
+
+### M72 — Class-Label Metadata: `save_model(..., classes=...)` / `interpret_classification()` / `forge model predict`
+
+M71 closed preprocessing as a hidden training-time assumption; M72's brief
+asked to find and close the *next* remaining blocker to a normal developer
+using a trained Forge model, forbidding another readiness assessment.
+Investigation confirmed `docs/architecture/persistence.md`'s own M71-era
+"Class-index-to-name vocabularies" note was still exactly true: a saved
+`.forge` file could not answer "what classes does this model predict" --
+`examples/image_folder_classification/train.py` wrote the mapping to a
+hand-maintained `classes.json` sidecar file, and `infer.py` needed a
+separate `--classes` argument pointing at it (silently falling back to a
+bare integer index if omitted). This was also the one piece explicitly
+named as a strong candidate in the brief itself, confirmed (not assumed)
+against the actual repository before implementing.
+
+Added a narrow, explicit two-part mechanism, deliberately not a
+generalized metadata blob: `save_model(model, path, classes=[...])` saves
+an ordered list of class-name strings as a new optional `"classes"`
+sibling metadata key (same pattern as M71's `"preprocessing"` key -- no
+`FORMAT_VERSION` bump, forward/backward-compatible, verified against a
+hand-edited legacy archive with the key deleted), validated at save time
+(non-empty list of non-empty, unique strings) but deliberately *not*
+validated against the model's actual output width (Forge does not
+introspect an arbitrary module tree to guess an output-class count). A new
+`forge.training.interpret_classification(output, classes)` closes the
+"tensor output" -> "useful prediction" gap the brief named directly: it
+turns `predict()`'s raw per-class `Tensor` into a `ClassificationPrediction`
+(`label`, `index`, `confidence`) per row, raising `TrainerError` for the one
+place a size mismatch can honestly be checked (interpretation time, not
+save time) -- a real "wrong number of class labels" failure mode. The
+`confidence` field is a numerically stable softmax probability computed in
+plain host-side NumPy (no new `Tensor.softmax()` primitive) -- justified
+because every Forge classification model is trained against
+`CrossEntropyLoss`, which already treats raw output as logits, so softmax is
+the same transform the training objective assumes, not an invented display
+value. A new `forge model predict MODEL --image IMAGE` CLI command
+(`forge/cli/model.py`) was also added -- Forge's CLI was mature enough
+(`model inspect`/`convert`, `checkpoint inspect`/`convert`) and the
+underlying artifact now carries everything the command needs, but it is
+deliberately scoped to image classification only (the one workflow with a
+concrete, artifact-describable single-file input convention), not a
+generic `forge predict` spanning every Forge model family. `forge model
+inspect` also now reports whether preprocessing was saved and the class
+vocabulary if any.
+
+`examples/image_folder_classification/train.py`/`infer.py` were updated to
+be the real end-to-end consumer: `classes.json` was removed entirely --
+`train.py` now saves `classes=full_dataset.classes` in the same `.forge`
+file, and `infer.py` (and the new CLI command) reconstruct it purely from
+that file via `load_classes()`, printing `Prediction: dog` /
+`Confidence: 94.2%` instead of a bare index. In passing, fixed a real
+pre-existing gap in `forge model convert`: it silently dropped
+`preprocessing`/`classes` metadata across a device conversion (untested
+since M71 introduced `preprocessing=`) -- now carries both through via
+`load_preprocessing()`/`load_classes()` on the input. 32 new tests (30 CPU --
+`tests/test_classification_metadata.py`: save/load round trip, all
+documented validation failures, backward compatibility against a
+hand-edited legacy archive, `interpret_classification()` correctness
+including a manual-softmax cross-check and the output-dimension-mismatch
+error, the full `forge model predict`/`inspect`/`convert` CLI surface, and
+a real `ImageFolder` -> train -> save -> fresh-process `infer.py` + CLI
+workflow; 2 CUDA -- `tests/test_classification_metadata_cuda_integration.py`,
+hardware-verified on the 940MX, confirming CPU- and CUDA-loaded copies of
+the same model agree on the interpreted label). Full suite: **2,199 tests
+collected, 2,198 passed, 1 failed** (2,167 + 30 CPU + 2 CUDA new here, on
+this CUDA-equipped development machine -- 2,197 on a CPU-only one). The one
+failure is the same pre-existing `test_dataloader_prefetch.py` allocator-
+measurement flake documented since M63 -- reproduced passing cleanly in
+isolation, no M72 regression. No regressions in the directly affected
+suites either (`test_preprocessing_persistence.py`, `test_cli.py`,
+`test_serialization.py`, `test_image_folder_classification_integration.py`:
+116/116). Full report: `docs/development/m72-classification-metadata.md`.

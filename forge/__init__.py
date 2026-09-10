@@ -14,14 +14,17 @@ Public subpackages:
 - `forge.optim` -- `SGD`, `Adam`.
 - `forge.data` -- `Dataset`/`TensorDataset`/`ImageFolder`/`DataLoader`,
   transforms, and CUDA-prefetching (`CUDAPrefetchLoader`).
-- `forge.training` -- `Trainer`, metrics, `TrainingHistory`, and `predict()`
+- `forge.training` -- `Trainer`, metrics, `TrainingHistory`, `predict()`
   -- the standalone post-training inference path (no `Loss`/`Optimizer`
-  required, unlike `Trainer`).
+  required, unlike `Trainer`) -- and `interpret_classification()` (Milestone
+  72), which turns `predict()`'s raw output plus a saved class vocabulary
+  into a human-readable `ClassificationPrediction`.
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a
-  model, Milestone 71), and the module/optimizer/transform reconstruction
-  registries -- see `docs/architecture/persistence.md`.
+  model, Milestone 71), `load_classes` (a classification model's saved
+  class-name vocabulary, Milestone 72), and the module/optimizer/transform
+  reconstruction registries -- see `docs/architecture/persistence.md`.
 - `forge.backend` -- device/backend dispatch (`forge.backend.device.Device`);
   `forge.backend.cuda` holds the real CUDA execution backend.
 - `forge.cuda` -- the public CUDA API: `is_cuda_available()`, streams,
@@ -58,9 +61,17 @@ from .exceptions import (
     UnsupportedDeviceError,
     UnsupportedDTypeError,
 )
-from .serialization import Checkpoint, load_checkpoint, load_model, load_preprocessing, save_checkpoint, save_model
+from .serialization import (
+    Checkpoint,
+    load_checkpoint,
+    load_classes,
+    load_model,
+    load_preprocessing,
+    save_checkpoint,
+    save_model,
+)
 from .tensor import DEFAULT_DTYPE, DType, Tensor
-from .training import predict
+from .training import ClassificationPrediction, interpret_classification, predict
 
 __version__ = "0.1.0"
 
@@ -93,8 +104,11 @@ __all__ = [
     "save_model",
     "load_model",
     "load_preprocessing",
+    "load_classes",
     "save_checkpoint",
     "load_checkpoint",
     "Checkpoint",
     "predict",
+    "interpret_classification",
+    "ClassificationPrediction",
 ]

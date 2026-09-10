@@ -44,7 +44,28 @@ from .transforms import deserialize_transform, serialize_transform
 FORMAT_VERSION = 2
 
 
-def save_model(model: Module, path: str, preprocessing: "Any | None" = None) -> None:
+def _validate_classes(classes: "list[str] | None") -> None:
+    if classes is None:
+        return
+    if not isinstance(classes, list) or not classes:
+        raise PersistenceError(
+            f"save_model() classes= must be a non-empty list of strings, got {classes!r}."
+        )
+    for label in classes:
+        if not isinstance(label, str) or not label.strip():
+            raise PersistenceError(
+                f"save_model() classes= must contain only non-empty strings, got {label!r} "
+                f"in {classes!r}."
+            )
+    if len(set(classes)) != len(classes):
+        raise PersistenceError(
+            f"save_model() classes= must not contain duplicate labels, got {classes!r}."
+        )
+
+
+def save_model(
+    model: Module, path: str, preprocessing: "Any | None" = None, classes: "list[str] | None" = None
+) -> None:
     """Save `model`'s architecture, configuration, and parameter state to `path`.
 
     `model` must be built entirely from module types registered with
@@ -81,9 +102,24 @@ def save_model(model: Module, path: str, preprocessing: "Any | None" = None) -> 
     71 and files saved with no preprocessing configured are byte-for-byte
     equivalent in this respect and remain loadable by `load_model()`
     unchanged -- see `load_preprocessing()`.
+
+    `classes` (Milestone 72) optionally records the ordered list of
+    human-readable class names a classification model's output indices
+    refer to -- `output[..., i]` means `classes[i]`, matching
+    `forge.data.ImageFolder.classes`'s own index convention exactly, so a
+    caller can pass `some_image_folder.classes` directly. Must be a
+    non-empty list of non-empty, unique strings; anything else raises
+    `PersistenceError` before anything is written. Stored as a plain
+    JSON-safe list, a sibling metadata entry alongside `"preprocessing"` --
+    never inferred from `model`'s architecture (Forge does not introspect a
+    module tree to guess an output-class count), and never merged into
+    `preprocessing` (a class vocabulary is not "how to prepare an input",
+    it is how to interpret an output). See `load_classes()` and
+    `forge.training.interpret_classification()`.
     """
     if not isinstance(model, Module):
         raise PersistenceError(f"save_model() requires a forge.nn.Module, got {type(model).__name__}.")
+    _validate_classes(classes)
 
     model_device = model.device
     device_str = model_device.type if model_device is not None else "cpu"
@@ -98,6 +134,7 @@ def save_model(model: Module, path: str, preprocessing: "Any | None" = None) -> 
         "device": device_str,
         "root": root_node,
         "preprocessing": preprocessing_node,
+        "classes": list(classes) if classes is not None else None,
     }
     prefixed_arrays = {f"{PARAMETERS_DIR}/{name}": array for name, array in arrays.items()}
     write_archive(path, metadata, prefixed_arrays)
@@ -437,4 +474,35 @@ def load_preprocessing(path: str) -> "Any | None":
     return deserialize_transform(node)
 
 
-__all__ = ["save_model", "load_model", "load_preprocessing", "FORMAT_VERSION", "SUPPORTED_DEVICE_TYPES"]
+def load_classes(path: str) -> "list[str] | None":
+    """Reconstruct the class-name vocabulary saved alongside a model at `path`, or `None`.
+
+    Mirrors `load_preprocessing()` exactly: reads only the `"classes"`
+    metadata entry a `save_model(..., classes=...)` call wrote, independent
+    of `load_model()`. Returns `None` when `path` was saved with no
+    `classes` (including every file saved before Milestone 72, or a
+    Milestone-72-or-later file saved with `classes=None`) -- an ordinary,
+    expected outcome, not an error.
+
+    Raises `PersistenceError` for a corrupt/unreadable file or a
+    `"classes"` entry that is present but not a JSON list of strings
+    (a malformed/tampered file, since `save_model()` itself never writes
+    anything else there).
+    """
+    metadata, _ = read_archive(path, kind="model")
+    if not isinstance(metadata, dict):
+        raise PersistenceError(f"Cannot load classes from '{path}': metadata is not a JSON object.")
+    classes = metadata.get("classes")
+    if classes is None:
+        return None
+    if not isinstance(classes, list) or not all(isinstance(c, str) for c in classes):
+        raise PersistenceError(
+            f"Cannot load classes from '{path}': malformed 'classes' metadata (expected a list "
+            f"of strings, got {classes!r})."
+        )
+    return classes
+
+
+__all__ = [
+    "save_model", "load_model", "load_preprocessing", "load_classes", "FORMAT_VERSION", "SUPPORTED_DEVICE_TYPES",
+]

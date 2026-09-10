@@ -1,10 +1,11 @@
-"""Forge Milestone 69/70/71: an end-to-end directory-based image
-classification example, now with mixed-resolution source images and
-*persisted* preprocessing.
+"""Forge Milestone 69/70/71/72: an end-to-end directory-based image
+classification example, now with mixed-resolution source images, *persisted*
+preprocessing, and a *self-describing* class vocabulary.
 
 ```text
 generate_dataset() [mixed H, W] -> ImageFolder -> Resize+Normalize -> random_split -> DataLoader
-    -> Trainer -> CNN -> CrossEntropyLoss -> Adam -> save (model + preprocessing) -> forge.predict()
+    -> Trainer -> CNN -> CrossEntropyLoss -> Adam
+    -> save (model + preprocessing + classes) -> forge.predict() -> interpret_classification()
 ```
 
 This is the first Forge example whose data source is **ordinary image files
@@ -21,7 +22,14 @@ preprocessing pipeline is now `Compose([Resize(...), Normalize(...)])`
 `save_model(model, path, preprocessing=...)`, so a separate, later process
 (`infer.py`) can reconstruct it without re-running or re-importing any of
 this script's own code. See `docs/development/m71-preprocessing-
-persistence.md`.
+persistence.md`. Milestone 72 closed the *next* gap M71 explicitly left open
+(`docs/architecture/persistence.md`'s old "Class-index-to-name vocabularies"
+note): `full_dataset.classes` is now saved via `save_model(..., classes=...)`
+in the same file, and `forge.training.interpret_classification()` turns a
+raw prediction `Tensor` plus that vocabulary into a human-readable
+`"dog"`/confidence result -- no more hand-written `classes.json` sidecar a
+caller had to remember to keep next to the model file. See
+`docs/development/m72-classification-metadata.md`.
 
 Every step below uses only public Forge APIs (`forge`, `forge.data`,
 `forge.nn`, `forge.optim`, `forge.training`, `forge.save_model`/
@@ -54,18 +62,18 @@ python -m examples.image_folder_classification.train --generate --epochs 8 --dev
 from __future__ import annotations
 
 import argparse
-import json
 import time
 from pathlib import Path
 
 import numpy as np
 
 import forge
+from forge import Tensor
 from forge.data import Compose, DataLoader, ImageFolder, Normalize, Resize, random_split
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_model, load_preprocessing, save_model
-from forge.training import Accuracy, Trainer, predict
+from forge.serialization import load_checkpoint, load_classes, load_model, load_preprocessing, save_model
+from forge.training import Accuracy, Trainer, interpret_classification, predict
 
 try:
     from .generate_dataset import _render_image, generate_dataset
@@ -196,15 +204,15 @@ def main(argv=None) -> None:
     # pipeline used above as a sibling metadata entry in the same model
     # file -- see `forge/serialization/model.py`'s `save_model()` docstring
     # and `docs/architecture/persistence.md`'s **Preprocessing metadata**
-    # section. `classes.json` is deliberately *not* part of that mechanism
-    # (a model's class-index vocabulary is not "input preprocessing"); it is
-    # ordinary example-level bookkeeping, written the same way this script
-    # already writes `new_mixed_resolution_query.png` below.
-    save_model(model, str(model_path), preprocessing=build_transform())
-    classes_path = output_dir / "classes.json"
-    classes_path.write_text(json.dumps(full_dataset.classes))
-    print(f"Saved model + preprocessing -> {model_path}")
-    print(f"Saved class names -> {classes_path}")
+    # section. Milestone 72: `classes=` saves `full_dataset.classes` (the
+    # same ordered vocabulary `ImageFolder` already computed from the
+    # directory layout) as a second sibling metadata entry, so the model
+    # file alone -- not a hand-written `classes.json` sidecar a caller had
+    # to remember to keep next to it -- is enough to turn a predicted index
+    # back into a class name later. See `load_classes()` and
+    # `forge.training.interpret_classification()`.
+    save_model(model, str(model_path), preprocessing=build_transform(), classes=full_dataset.classes)
+    print(f"Saved model + preprocessing + classes ({full_dataset.classes}) -> {model_path}")
 
     # Model-persistence round trip: save -> reload -> predict() must agree.
     query_x, query_y = test_ds[0]
@@ -216,13 +224,17 @@ def main(argv=None) -> None:
     print("Verified: reloaded model reproduces the pre-save prediction.")
 
     # Section 11: standalone single-image inference through forge.predict(),
-    # mapping the predicted class index back to a human-readable class name.
-    predicted_idx = int(np.argmax(post_load_pred, axis=1)[0])
+    # interpreted into a human-readable class name + confidence via Milestone
+    # 72's interpret_classification() -- using `load_classes()`'s own
+    # reconstructed vocabulary, not the in-memory `full_dataset.classes`
+    # this process still happens to have, to prove the file alone is enough.
+    reloaded_classes = load_classes(str(model_path))
+    result = interpret_classification(Tensor(post_load_pred), reloaded_classes)[0]
     true_idx = int(query_y.numpy())
-    predicted_name = full_dataset.classes[predicted_idx]
     true_name = full_dataset.classes[true_idx]
     print(f"\nInference demo (test sample 0, true class: {true_name}):")
-    print(f"Prediction: {predicted_name}")
+    print(f"Prediction: {result.label}")
+    print(f"Confidence: {result.confidence:.1%}")
 
     # Section 12 (Milestone 70, preprocessing reloaded from disk since
     # Milestone 71): inference on a brand-new image that was never part of
@@ -231,8 +243,10 @@ def main(argv=None) -> None:
     # preprocessing, reconstructed from the saved file via
     # `load_preprocessing()` rather than reused from this process's own
     # `build_transform()` call, makes an arbitrary new image usable by the
-    # saved model. This is the in-process half of the M71 proof; `infer.py`
-    # (run as a genuinely separate process below) is the other half.
+    # saved model. This is the in-process half of the M71/M72 proof;
+    # `infer.py` (run as a genuinely separate process below) is the other
+    # half, and now needs only `--model` and `--image` -- no separate
+    # `--classes` sidecar file (Milestone 72).
     reloaded_preprocessing = load_preprocessing(str(model_path))
 
     new_image_shape = full_dataset.classes[0]
@@ -245,18 +259,20 @@ def main(argv=None) -> None:
     preprocessed_query = reloaded_preprocessing(raw_query)
     assert preprocessed_query.shape == (3, *_RESIZE_SIZE), "Resize did not normalize the new image's shape"
     new_query_batch = preprocessed_query.to(args.device).reshape(1, *preprocessed_query.shape)
-    new_pred = predict(reloaded, new_query_batch).numpy()
-    new_predicted_name = full_dataset.classes[int(np.argmax(new_pred, axis=1)[0])]
+    new_pred = predict(reloaded, new_query_batch)
+    new_result = interpret_classification(new_pred, reloaded_classes)[0]
     print(f"\nNew mixed-resolution image (200x140, true class: {new_image_shape}, "
-          f"never seen during training), preprocessing reconstructed from '{model_path}':")
-    print(f"Prediction: {new_predicted_name}")
+          f"never seen during training), preprocessing + classes reconstructed from '{model_path}':")
+    print(f"Prediction: {new_result.label}")
+    print(f"Confidence: {new_result.confidence:.1%}")
 
-    print("\nInspect the generated artifacts with the M19 CLI:")
+    print("\nInspect the generated artifacts with the CLI:")
     print(f"  python -m forge model inspect {model_path}")
     print(f"  python -m forge checkpoint inspect {checkpoint_path}")
-    print("\nRun standalone inference in a fresh process (Milestone 71):")
+    print(f"  python -m forge model predict {model_path} --image {new_image_path}")
+    print("\nRun standalone inference in a fresh process (Milestone 71/72):")
     print(f"  python -m examples.image_folder_classification.infer --model {model_path} "
-          f"--classes {classes_path} --image {new_image_path}")
+          f"--image {new_image_path}")
 
 
 if __name__ == "__main__":

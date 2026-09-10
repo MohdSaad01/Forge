@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72)
 
 ## Package layout
 ```
@@ -6,7 +6,7 @@ forge/
     training/
         trainer.py     Trainer, EpochResult, EvaluationResult, TrainingHistory
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
-        inference.py   predict() (Milestone 68)
+        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
 ```
 `forge.training` is exposed as a submodule of `forge` (`forge.training.Trainer`),
@@ -499,6 +499,22 @@ model-persistence round-trip check (`mnist`, `regression`, `resnet`,
 inference does not fit `predict()`'s single-forward-call shape, and forcing
 it to would be exactly the kind of speculative generalization
 `docs/product/scope.md` warns against building without a real consumer.
+
+## Prediction interpretation: `interpret_classification()` (Milestone 72)
+`predict()` deliberately stops at a raw `Tensor` -- it has no way to know
+what a classification model's output *indices mean*. `forge.training.
+interpret_classification(output, classes)` is the next step in the pipeline,
+turning that raw `Tensor` plus a class-name vocabulary (`forge.
+load_classes()`, or any `list[str]` such as `ImageFolder.classes`) into
+`ClassificationPrediction(label, index, confidence)` per row -- see
+`docs/architecture/persistence.md`'s **Class-label metadata** section for
+the full contract, including why its `confidence` (a softmax probability) is
+a legitimate reading of `output` rather than an invented display value, and
+why the check "does `output`'s width match `len(classes)`" belongs here
+(interpretation time) rather than in `save_model()` (save time, when the
+model's actual output width is not yet knowable from a class list alone).
+`examples/image_folder_classification/train.py`/`infer.py` and `forge model
+predict` (`forge/cli/model.py`) are its real consumers.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

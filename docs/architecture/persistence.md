@@ -11,7 +11,7 @@ forge/
         transforms.py            TransformSpec, register_transform(), serialize_transform()/
                                  deserialize_transform() -- preprocessing-transform configuration (Milestone 71)
         archive.py               write_archive/read_archive -- the generic ZIP(json + .npy) file format
-        model.py                  save_model(), load_model(), load_preprocessing() -- tree walk, validation, reconstruction
+        model.py                  save_model(), load_model(), load_preprocessing(), load_classes() -- tree walk, validation, reconstruction
         checkpoint.py             save_checkpoint(), load_checkpoint() -- training-state persistence (Milestone 18)
 ```
 `forge.serialization` is exposed as a submodule of `forge`, alongside
@@ -464,10 +464,10 @@ What is explicitly **not** part of this mechanism:
   *transform* a `Dataset`'s samples were passed through is preprocessing
   in the sense this mechanism cares about.
 - **Class-index-to-name vocabularies.** A model's predicted index -> label
-  mapping is not "how to prepare an input tensor" -- it is model-adjacent
-  metadata a caller (an example, an application) may still want to persist
-  its own way (`examples/image_folder_classification/train.py` writes a
-  plain `classes.json` sidecar for this, not a framework feature).
+  mapping is not "how to prepare an input tensor" -- it is a separate,
+  output-side concept with its own mechanism, `save_model(...,
+  classes=...)` (**Milestone 72**, see **Class-label metadata** below), not
+  folded into `preprocessing`.
 - **`Module` state.** `preprocessing` is stored as a sibling top-level
   metadata entry alongside `"root"`/`"device"`, never as an attribute of
   the `Module` tree itself -- a model's parameters and its input
@@ -496,6 +496,79 @@ test_backward_compatible_file_has_no_preprocessing_key` verifies both
 directions directly (a `.forge` archive with the `"preprocessing"` key
 deleted entirely still loads through both `load_model()` and
 `load_preprocessing()`).
+
+## Class-label metadata (Milestone 72)
+`save_model()`/`load_model()`/`load_preprocessing()` together get a caller
+from a saved artifact to a raw prediction `Tensor` -- but for a
+classification model, a raw `Tensor` like `[0.02, 0.94, 0.04]` is not yet a
+*useful* prediction. Milestone 71 explicitly deferred this exact gap (see
+**Preprocessing metadata** above's "Class-index-to-name vocabularies" note,
+and `examples/image_folder_classification/train.py`'s pre-Milestone-72
+`classes.json` sidecar file): nothing in a saved model file recorded what a
+predicted index *meant*, so a caller had to keep a separate file (or
+in-memory list) in sync with the model by hand, with nothing to check
+consistency against.
+
+### Public API
+```python
+forge.save_model(model, path, classes=["cat", "dog"])  # optional kwarg, default None
+classes = forge.load_classes(path)                      # -> list[str], or None
+```
+`classes[i]` means the same thing `forge.data.ImageFolder.classes[i]`
+already means: `output[..., i]` is that class's score. This is a
+deliberate, narrow convention (not an arbitrary metadata blob) -- a caller
+training against `ImageFolder` passes `some_image_folder.classes` directly,
+with no manual index bookkeeping. `load_classes()` is a separate free
+function, not a second return value of `load_model()`, mirroring
+`load_preprocessing()`'s own shape exactly and for the same reason:
+`load_model()`'s signature and return type stay completely unchanged.
+
+### What is (and is not) saved
+Only a plain JSON list of strings -- never a dict, never per-class extra
+data, never an inferred count. `save_model()` validates `classes` itself,
+before writing anything: it must be a non-empty list, every element a
+non-empty string, and no duplicate labels -- violating any of these raises
+`PersistenceError` immediately (the same "fail before writing" behavior
+`preprocessing=`'s `Lambda` rejection already has). What `save_model()`
+deliberately does **not** do is validate `classes` against `model`'s actual
+output width: Forge does not introspect an arbitrary module tree to guess
+its output-class count (the same reasoning that keeps `save_model()` free
+of any other architecture-inference machinery), so a `classes` list of the
+wrong length is accepted at save time and only surfaces the first time it is
+actually used to interpret a real prediction -- see
+`forge.training.interpret_classification()`, which raises `TrainerError`
+for that mismatch, with the two failure modes deliberately separated:
+*malformed* class metadata fails at save time, *inconsistent-with-the-model*
+class metadata fails at first interpretation.
+
+### `forge.training.interpret_classification()`
+```python
+output = forge.predict(model, batch)                          # raw Tensor(batch, num_classes)
+results = forge.interpret_classification(output, classes)      # list[ClassificationPrediction]
+results[0].label        # "dog"
+results[0].index         # 1
+results[0].confidence    # 0.942
+```
+The "tensor output" -> "useful prediction" step: `output` is treated as
+unnormalized per-class scores (logits) -- the same assumption `nn.
+CrossEntropyLoss` already makes about its own `logits` argument
+(`forge/nn/loss.py`), since every Forge classification model is trained
+against exactly that loss. `confidence` is therefore that row's numerically
+stable softmax probability of the predicted class, computed in plain
+host-side NumPy on already-materialized (`no_grad()`-produced, about to be
+printed) data -- not a new differentiable `Tensor.softmax()` primitive, and
+not through the autograd graph. This is a legitimate probability reading of
+a real training-time-consistent quantity, not an unjustified confidence
+claim manufactured for display purposes.
+
+### Compatibility: no format-version change
+`"classes"` is a new, optional top-level metadata key -- `null`
+(equivalently, absent) when `save_model()` is called without `classes=`,
+exactly matching every pre-Milestone-72 call site and mirroring
+`"preprocessing"`'s own Milestone 71 compatibility story exactly:
+forward-compatible (an older Forge build never reads the key at all) and
+backward-compatible (`load_classes()` treats a missing key the same as an
+explicit `null`, returning `None`, not raising). No `FORMAT_VERSION` bump.
 
 ## Custom-module limitations
 See **Custom/composite modules** above: only module types registered via
@@ -605,7 +678,15 @@ transform type anywhere in the given `preprocessing` (most notably a
 `Lambda`, see **Preprocessing metadata** above), a malformed
 `"preprocessing"` metadata node, and invalid configuration for a registered
 transform type (e.g. a saved `Resize` config with a non-positive
-dimension). A mixed-device module tree passed to `save_model()` raises
+dimension). `save_model(..., classes=...)`/`load_classes()` (Milestone 72)
+raise the same `PersistenceError` for: a non-list `classes`, an empty list,
+a non-string or empty-string element, duplicate labels, and a malformed
+`"classes"` metadata entry on load (see **Class-label metadata** above);
+`forge.training.interpret_classification()` raises `TrainerError` instead,
+for a non-2-D output or an output whose class-score dimension does not
+match `len(classes)` (a *model/vocabulary* inconsistency discovered at
+interpretation time, not a persistence-format problem). A mixed-device
+module tree passed to `save_model()` raises
 `ModuleError` (from `Module.device`), not `PersistenceError` -- the same
 error that operation already raises everywhere else in Forge. Low-level
 exceptions (`zipfile.BadZipFile`, `json.JSONDecodeError`, raw `OSError`s)
@@ -656,6 +737,13 @@ never a raw exception surfaced to callers.
   custom `Module` subclass must be, or expressed using a registered
   transform instead; there is no reflection/pickle-based fallback, by the
   same design choice as the module registry.
+- Class-label metadata (Milestone 72) is a flat list of strings only -- no
+  hierarchical/multi-label taxonomy, no per-class extra data (e.g. a
+  description or color), and no task-type field (`"classes"` means the same
+  thing regardless of what kind of model produced the scores). It is also
+  never validated against `model`'s actual output width at save time (see
+  **Class-label metadata**'s own note on why) -- only at first
+  `interpret_classification()` call.
 - Checkpointing (Milestone 18) is itself further scoped down: only `SGD` and
   `Adam` are built-in registered optimizer types (any other type needs
   `register_optimizer()`, as `register_module()` requires for a custom
