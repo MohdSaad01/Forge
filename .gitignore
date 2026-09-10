@@ -67,3 +67,11 @@ examples/resnet/artifacts*/
 # `python -m examples.long_range_recall.train`; never committed. The
 # dataset is synthetic and generated in-process, so no data directory here.
 examples/long_range_recall/artifacts*/
+
+# Milestone 69 image_folder_classification example: generated synthetic
+# shape-image dataset (real PNG files on disk, unlike the in-process
+# synthetic datasets above) and run artifacts -- both machine-local and
+# reproducible via `python -m examples.image_folder_classification.train
+# --generate`; never committed.
+examples/image_folder_classification/data/
+examples/image_folder_classification/artifacts*/

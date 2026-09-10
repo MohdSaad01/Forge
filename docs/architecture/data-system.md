@@ -4,9 +4,10 @@
 ```
 forge/
     data/
-        dataset.py      Dataset, TensorDataset, Subset, random_split
-        dataloader.py   DataLoader, batch collation
-        transforms.py   Transform, Compose, ToTensor, Normalize, Reshape, Flatten, Lambda
+        dataset.py       Dataset, TensorDataset, Subset, random_split
+        dataloader.py    DataLoader, batch collation
+        transforms.py    Transform, Compose, ToTensor, Normalize, Reshape, Flatten, Lambda
+        image_folder.py  ImageFolder, IMAGE_EXTENSIONS (Milestone 69)
 ```
 `forge.data` is exposed as a submodule of `forge` (`forge.data.TensorDataset`,
 `forge.data.DataLoader`, ...), alongside `forge.nn`/`forge.optim`/`forge.random`.
@@ -65,6 +66,33 @@ permutes `range(len(dataset))` once (via `generator`, defaulting to
 single permutation (rather than sampling each subset independently)
 guarantees the subsets are disjoint and jointly cover every original index
 exactly once, preserving feature/target correspondence.
+
+### ImageFolder (Milestone 69)
+`forge.data.ImageFolder(root, transform=None, target_transform=None,
+extensions=IMAGE_EXTENSIONS)` discovers `(image, label)` samples from a
+directory-per-class image tree:
+```python
+dataset = ImageFolder("data/cats-dogs", transform=preprocess)
+image, label = dataset[0]        # image: Tensor(3, H, W) float32, [0, 255]
+dataset.classes                  # sorted class names, deterministic indices
+dataset.class_to_idx
+dataset.samples                  # [(Path, class_idx), ...], deterministic order
+```
+Each immediate subdirectory of `root` is one class (sorted by name for
+deterministic indices); only files directly inside a class directory are
+scanned (no recursion into further subdirectories) and only files whose
+suffix matches `extensions` (case-insensitive) count as samples. `root`
+must exist and contain at least one class with at least one matching image
+(`DataError` otherwise); an individual empty class directory is valid and
+just contributes zero samples. Every image is decoded via Pillow (the
+`Pillow` dependency `docs/architecture/data-pipeline.md`'s "Constraints"
+section anticipated) and converted to `(3, H, W)` float32, raw `[0, 255]`
+range, always RGB (grayscale replicated across channels, RGBA alpha
+discarded) -- decoded fresh on every `__getitem__`, no caching/preloading.
+`ImageFolder` does not resize -- every file under `root` must already share
+one `(H, W)`, or `transform=` must normalize that (no `Resize` transform
+exists yet; see `docs/development/m69-image-folder.md`'s Limitations).
+Full contract: `forge/data/image_folder.py`'s module docstring.
 
 ## DataLoader
 `DataLoader` (`forge/data/dataloader.py`) iterates a `Dataset` in batches:
@@ -147,7 +175,10 @@ empty `TensorDataset` tensor, an out-of-range or non-int dataset index, a
 `batch_size`/`shuffle`/`drop_last`, a dataset without `len()`, inconsistent
 sample structure/shape/dtype within a batch, `random_split` lengths that
 don't sum to the dataset size or that are negative, a zero `Normalize` std,
-and a non-callable `Compose`/`Lambda` member.
+and a non-callable `Compose`/`Lambda` member. As of Milestone 69,
+`ImageFolder` raises `DataError` for a missing/non-directory root, a root
+with no class subdirectories, a root with zero total discovered images, an
+out-of-range/non-int index, and an unreadable/corrupt image file.
 
 ## Device behavior
 `forge.data` (`Dataset`/`DataLoader`/transforms) remains CPU-only,
@@ -165,9 +196,11 @@ behavior (explicit Milestone 12 non-goals), regardless of what device the
 
 ## Known limitations
 - No multiprocessing workers or asynchronous prefetching.
-- No file-backed or image/tabular-convenience datasets yet -- only the
-  in-memory `TensorDataset` (see `docs/architecture/data-pipeline.md` for
-  what's deferred).
+- No tabular-convenience dataset yet (see `docs/architecture/
+  data-pipeline.md` for what's deferred); `ImageFolder` (M69) covers the
+  directory-based image case.
+- `ImageFolder` does not resize/augment -- every file under one root must
+  already share the same `(H, W)`; no `Resize` transform exists yet.
 - No custom `collate_fn`; batching always stacks same-shape/dtype Tensor
   components.
 - `Normalize`/`Reshape`/`Flatten` operate on a single Tensor component only,

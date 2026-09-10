@@ -48,10 +48,11 @@ See `docs/architecture/architecture.md` for the full design rules and
   `Embedding`, `Dropout`, `Sequential`, `ReLU`, `Tanh`; losses `MSELoss`,
   `CrossEntropyLoss`.
 - **`forge.optim`** -- `SGD`, `Adam`.
-- **`forge.data`** -- `Dataset`/`TensorDataset`, transforms (`Normalize`,
-  `Compose`, `Reshape`, ...), `DataLoader` (batching, shuffling,
-  `random_split`), and `CUDAPrefetchLoader` for overlapped host-to-device
-  transfer.
+- **`forge.data`** -- `Dataset`/`TensorDataset`, `ImageFolder` (directory-
+  per-class image classification, via Pillow decoding), transforms
+  (`Normalize`, `Compose`, `Reshape`, ...), `DataLoader` (batching,
+  shuffling, `random_split`), and `CUDAPrefetchLoader` for overlapped
+  host-to-device transfer.
 - **`forge.training`** -- `Trainer` (`fit`/`evaluate`/checkpoint resume),
   metrics (`Accuracy`, `MeanAbsoluteError`, ...), `TrainingHistory`, and
   `predict()` -- standalone post-training inference (`forge.predict(model,

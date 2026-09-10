@@ -32,8 +32,11 @@ representation a custom `Dataset` documents for itself.
 - NumPy/array-backed data: `forge.data.TensorDataset` (M5).
 - `forge.data.Subset` / `forge.data.random_split` for deterministic dataset
   splitting (M5).
-- Practical file-backed datasets: not yet implemented.
-- Image dataset conveniences: not yet implemented.
+- Directory-based image classification: `forge.data.ImageFolder` (M69) --
+  discovers `(image, label)` samples from a `root/class_x/*.jpg` directory
+  tree. See `docs/development/m69-image-folder.md` and
+  `forge/data/image_folder.py`'s module docstring for the full contract.
+- Practical file-backed datasets (beyond `ImageFolder`): not yet implemented.
 - Tabular data conveniences: not yet implemented.
 
 ## Transforms
@@ -52,4 +55,4 @@ iteration -- independent of `Module`/`Loss`/`Optimizer`. No multiprocessing
 workers or asynchronous prefetching yet.
 
 ## Constraints
-Avoid recreating pandas/scikit-learn/Pillow ecosystems. External libraries may handle specialized parsing/image decoding while Forge owns the dataset/transform/batching contracts.
+Avoid recreating pandas/scikit-learn/Pillow ecosystems. External libraries may handle specialized parsing/image decoding while Forge owns the dataset/transform/batching contracts -- `ImageFolder` (M69) is the first concrete instance of this: it depends on Pillow for image decoding only, not for anything dataset/transform/batching-shaped.

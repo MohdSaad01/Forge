@@ -12,8 +12,8 @@ Public subpackages:
   `MaxPool2d`, `Conv1d`, `MaxPool1d`, `BatchNorm2d`, `RNNCell`, `Embedding`,
   `Dropout`, `Sequential`, `ReLU`, `Tanh`; losses `MSELoss`, `CrossEntropyLoss`.
 - `forge.optim` -- `SGD`, `Adam`.
-- `forge.data` -- `Dataset`/`TensorDataset`/`DataLoader`, transforms, and
-  CUDA-prefetching (`CUDAPrefetchLoader`).
+- `forge.data` -- `Dataset`/`TensorDataset`/`ImageFolder`/`DataLoader`,
+  transforms, and CUDA-prefetching (`CUDAPrefetchLoader`).
 - `forge.training` -- `Trainer`, metrics, `TrainingHistory`, and `predict()`
   -- the standalone post-training inference path (no `Loss`/`Optimizer`
   required, unlike `Trainer`).
@@ -32,9 +32,10 @@ This module also re-exports `Tensor`, `DType`, `DEFAULT_DTYPE`, `Device`,
 `no_grad`, `predict`, the exception hierarchy, and the persistence/checkpoint
 functions above at the top level -- see `__all__`.
 
-Complete example workloads under `examples/` (image classification,
-character/word-level language modeling, tabular regression, and
-1D-convolutional sequence classification) exercise this entire public
+Complete example workloads under `examples/` (image classification, both
+from a bundled binary format and from ordinary directory-of-image-files via
+`ImageFolder`, character/word-level language modeling, tabular regression,
+and 1D-convolutional sequence classification) exercise this entire public
 surface end-to-end -- see `examples/README.md`.
 """
 

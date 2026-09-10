@@ -4070,3 +4070,83 @@ passed, 1 failed** (`test_dataloader_prefetch.py`'s pre-existing allocator
 -measurement flake, unchanged since M63 -- re-ran in isolation immediately
 afterward and it passed cleanly). Hardware-verified on the reference 940MX
 (CUDA 12.6). Full report: `docs/development/m68-standalone-inference.md`.
+
+### M69 — `forge.data.ImageFolder`: directory-based image classification, Forge's first real-world data-ingestion layer
+
+Investigated `forge/data/`, existing image loading (`examples/mnist/
+dataset.py`'s IDX-file parser -- the only prior precedent, and not an
+image-file decoder), transforms, `Dataset`/`DataLoader`/`TensorDataset`/
+`Subset`/`random_split`, packaging, and `docs/architecture/data-pipeline.md`
+(which had already explicitly anticipated this exact capability: "External
+libraries may handle specialized parsing/image decoding while Forge owns
+the dataset/transform/batching contracts") before writing any code. Added
+`ImageFolder(root, transform=None, target_transform=None,
+extensions=IMAGE_EXTENSIONS)` (`forge/data/image_folder.py`, re-exported
+`forge.data.ImageFolder`/`IMAGE_EXTENSIONS`) -- a `Dataset` that discovers
+`(image, label)` samples from a `root/class_x/*.jpg` directory tree: each
+immediate subdirectory is one class (sorted by name for deterministic
+indices in `classes`/`class_to_idx`), only files directly inside a class
+directory are scanned (no recursion), only files matching
+`IMAGE_EXTENSIONS` (case-insensitive) count as samples, `root` must exist
+and contain at least one class with at least one matching image
+(`DataError` otherwise), and an individually empty class directory is valid
+(a real class, zero samples). Every image decodes via Pillow (added as a
+core dependency, `pyproject.toml`) to `(3, H, W)` float32, raw `[0, 255]`
+range, always RGB (grayscale replicated across channels, RGBA alpha
+discarded, matching `MNISTDataset`'s own raw-range/leave-scaling-to-
+`transform` convention) -- decoded fresh on every `__getitem__`, no
+caching/preloading (simplest behavior; no measured need for more).
+`ImageFolder` does not resize -- Forge still has no `Resize` transform, and
+no real consumer has needed one yet (deliberately not added, per the
+milestone's own guardrail against speculative primitives).
+
+Built `examples/image_folder_classification/` end-to-end: a synthetic
+`circle`/`square`/`triangle` shape-image generator
+(`generate_dataset.py`, Pillow `ImageDraw` + NumPy, varying position,
+scale, rotation, per-image foreground color, and per-pixel noise -- no
+external dataset download, no MNIST reuse), a CNN
+(`model.py`: `Conv2d`/`BatchNorm2d`/`MaxPool2d` x2 -> `Flatten` ->
+`Linear`/`ReLU`/`Dropout`/`Linear`), and `train.py` wiring
+`ImageFolder` -> `random_split` (an existing primitive, reused rather than
+inventing a train/test-split convention) -> `DataLoader` -> `Trainer` ->
+`CrossEntropyLoss`/`Adam` -> checkpoint/model save -> reload -> standalone
+single-image inference via `forge.predict()`, mapping the predicted index
+back to a class name through `ImageFolder.classes`. **Honest finding, not
+smoothed over**: the first working version (plain `Conv2d`/`ReLU`/
+`MaxPool2d`, independently-random background *and* foreground colors per
+image) trained but did not generalize -- validation accuracy stayed at the
+33% chance baseline even as training loss fell, because a small 2-conv
+network could not learn a color-polarity-invariant edge detector from only
+a few hundred samples. Fixed by (1) constraining the synthetic generator to
+a consistent light-background/darker-foreground polarity (color still
+genuinely random per image, just not adversarially bidirectional) and (2)
+adding `BatchNorm2d` after each `Conv2d` and `Dropout(0.3)` before the
+final `Linear` -- both pre-existing `forge.nn` layers, zero new framework
+code. Final measured result (`--seed 0`, defaults: 300 images/class, 25
+epochs, `lr=4e-4`): training loss 1.098 -> 0.160, validation accuracy
+70.00% (final test evaluation 70.00%, loss 0.689) against the 3-class 33%
+chance baseline, 68.2s on the reference CPU. CUDA (940MX): loss curve
+closely tracked CPU's (1.090 -> 0.159), 71.11% validation accuracy, 23.1s
+(~3x CPU throughput).
+
+**Testing**: 38 new tests. `tests/test_image_folder.py` (29, CPU, no CUDA
+dependency): class discovery/deterministic ordering, extension filtering
+(case-insensitive, custom override), unsupported-file skipping, empty-
+class-directory and nested-subdirectory semantics, missing-root/no-classes/
+zero-samples error paths, RGB/grayscale/RGBA image-conversion shape/dtype/
+range/channel checks, a corrupt-file error path, indexing (including
+negative and out-of-range), transform/target_transform separation, and
+`DataLoader` integration (batching, reproducible shuffling, feeding a real
+`Conv2d` model). `tests/test_image_folder_classification_integration.py`
+(5, CPU) and `tests/test_image_folder_classification_cuda_integration.py`
+(4, CUDA hardware-gated): the full generated-dataset -> `ImageFolder` ->
+`Trainer` pipeline against real PNG files on disk (not in-memory arrays,
+unlike every prior example's synthetic-stand-in test), training-loss
+reduction and above-chance accuracy, checkpoint save/resume, CUDA
+residency of parameters/gradients/Adam state, and model persistence with
+class-index-to-name mapping through `forge.predict()`. Full suite: **2,113
+tests collected, 2,112 passed, 1 failed** (the same pre-existing
+`test_dataloader_prefetch.py` allocator-measurement flake documented since
+M63 -- re-ran in isolation immediately afterward and it passed cleanly, no
+M69 regression). Hardware-verified on the reference 940MX (CUDA 12.6).
+Full report: `docs/development/m69-image-folder.md`.
