@@ -1,4 +1,4 @@
-# Forge Image-Folder Classification Example (Milestone 69, extended in 70/71/72)
+# Forge Image-Folder Classification Example (Milestone 69, extended in 70/71/72/80)
 
 An end-to-end validation of `forge.data.ImageFolder` -- Forge's first
 dataset that discovers labeled samples from **ordinary image files on
@@ -15,11 +15,21 @@ no more a hand-written `classes.json` sidecar file, at inference time:
 
 ```text
 generate_dataset() [mixed H, W] -> ImageFolder -> Resize+Normalize -> random_split -> DataLoader
-    -> Trainer -> CNN (Conv2d/BatchNorm2d/MaxPool2d/Dropout) -> CrossEntropyLoss
+    -> forge.train() -> CNN (Conv2d/BatchNorm2d/MaxPool2d/Dropout) -> CrossEntropyLoss
     -> Adam -> save (model + preprocessing + classes) -> forge.predict() -> interpret_classification()
                                                                 ^
                                 infer.py / `forge model predict`: fresh process, everything from one file
 ```
+
+Milestone 80 retrofitted this script's fresh (non-`--resume`) path to train
+through `forge.train()` (Milestone 79's single-call high-level training
+entry point) instead of hand-assembling `Trainer(...)` + `trainer.fit(...)`
+itself -- the same retrofit Milestone 79 applied to `examples/mnist/
+train.py`. `--resume` still uses `forge.training.start_training_session()`
+(Milestone 73), preserving this example's exact `DataLoader`-shuffle
+resume-equivalence guarantee with zero regression -- see
+`docs/architecture/training-engine.md`'s **Single-call high-level training**
+section for exactly how the fresh path's checkpoint stays resumable.
 
 Every step uses only public Forge APIs (`forge`, `forge.data`, `forge.nn`,
 `forge.optim`, `forge.training`, `forge.save_model`/`save_checkpoint`/
@@ -183,7 +193,12 @@ confirms the reload's prediction matches the pre-save model, raising
 `forge.PersistenceError` instead if the reload ever disagrees -- see
 `docs/architecture/persistence.md`'s **Preprocessing metadata** and
 **Class-label metadata** sections, and `docs/architecture/training-engine.md`'s
-**Portable-artifact save + verify** section.
+**Portable-artifact save + verify** section. (Milestone 80: the fresh path
+trains via `forge.train()` and writes its checkpoint via plain
+`forge.save_checkpoint()`; `--resume` still goes through
+`start_training_session()` -- see the pipeline diagram above and
+`docs/architecture/training-engine.md`'s **Single-call high-level training**
+section for why this still preserves exact resume-equivalence.)
 
 ## Inference demonstration
 
@@ -272,7 +287,17 @@ cleanly without a working CUDA backend) exercise this exact pipeline against
 a smaller/faster generated dataset than the full example run above --
 covering dataset generation, model shape, training loss reduction and
 above-chance accuracy on real image files, checkpoint save/resume, and
-model save/load/predict consistency. Run them with:
+model save/load/predict consistency. Milestone 80 added three more: `train.
+main()`'s real fresh path (the exact `python -m examples.image_folder_
+classification.train` entry point, not a hand-built `Trainer`) produces a
+working artifact via `forge.train()`; a `forge.train()`-fresh-run ->
+`start_training_session()`-resume sequence matches one continuous run
+bit-for-bit at this script's real `shuffle=True` default (the
+resume-equivalence guarantee the retrofit had to preserve); and `infer.py`
+is launched as a genuine `subprocess` -- a real separate OS process, not
+just a fresh Python import -- and its stdout is cross-checked against
+`forge.predict()`/`interpret_classification()` computed independently
+against the same file. Run them with:
 
 ```bash
 python -m pytest tests/test_image_folder_classification_integration.py tests/test_image_folder_classification_cuda_integration.py

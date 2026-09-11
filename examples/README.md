@@ -51,28 +51,36 @@ If you're evaluating whether Forge can support a workload shaped like
 yours, read the closest match's own README first; the model/data code is
 designed to be a starting point you copy and adapt, not a fixed template.
 
-## The shared training workflow (Milestones 73/78/79)
+## The shared training workflow (Milestones 73/78/79/80)
 
 Every `Trainer`-based example above drives shared abstractions rather than
-hand-rolling its own plumbing: `regression` and `image_folder_classification`
-build their `Trainer` via `forge.training.start_training_session()`
-(Milestone 73), which builds a fresh `Trainer` or resumes one from a
-checkpoint -- including exact `DataLoader`-shuffle resume-equivalence -- in
-one call; `mnist` (Milestone 79) trains its common, non-`--resume` case
-through `forge.train()` instead (`forge/training/api.py`), the single-call
-high-level entry point that builds its own `DataLoader`(s) and drives
-`Trainer.fit()` underneath, falling back to a plain `Trainer` +
-`trainer.resume()` for `--resume` runs (`train()` itself has no
-checkpoint/resume concept -- see `docs/architecture/training-engine.md`'s
-**Single-call high-level training** section for why). Every `Trainer`-based
+hand-rolling its own plumbing: `regression` builds its `Trainer` entirely via
+`forge.training.start_training_session()` (Milestone 73), which builds a
+fresh `Trainer` or resumes one from a checkpoint -- including exact
+`DataLoader`-shuffle resume-equivalence -- in one call. `mnist` (Milestone
+79) and `image_folder_classification` (Milestone 80) both instead split
+into two branches: the common, non-`--resume` case trains through
+`forge.train()` (`forge/training/api.py`), the single-call high-level entry
+point that builds its own `DataLoader`(s) and drives `Trainer.fit()`
+underneath, while `--resume` keeps using the lower-level API each script
+already needed (`mnist`: a plain `Trainer` + `trainer.resume()`;
+`image_folder_classification`: `start_training_session()`, preserving its
+own Milestone 73 shuffle-resume-equivalence guarantee -- see
+`docs/architecture/training-engine.md`'s **Single-call high-level training**
+section for exactly how the fresh path keeps that guarantee without
+`forge.train()` itself needing to know about it). Every `Trainer`-based
 example's saved model, regardless of which of those it uses, goes through
 `forge.training.save_and_verify()` (Milestone 78), which saves the trained
 model as a portable artifact and immediately proves it by reloading it
 fresh and confirming a sample prediction agrees with the pre-save model --
 raising `forge.PersistenceError` (not a bare `assert`) if it ever doesn't.
-See `docs/architecture/training-engine.md`'s **Reusable training sessions**,
-**Single-call high-level training**, and **Portable-artifact save + verify**
-sections for the full contract.
+`mnist` and `image_folder_classification` additionally have automated,
+subprocess-based tests that launch their `infer.py` as a genuinely separate
+OS process (Milestone 80 -- see `docs/architecture/training-engine.md`'s
+**Fresh-process verification** section). See `docs/architecture/
+training-engine.md`'s **Reusable training sessions**, **Single-call
+high-level training**, and **Portable-artifact save + verify** sections for
+the full contract.
 
 ## Running the tests for these examples
 

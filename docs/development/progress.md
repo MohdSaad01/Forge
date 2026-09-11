@@ -4784,3 +4784,74 @@ new) -- the same pre-existing `test_dataloader_prefetch.py`
 allocator-measurement flake documented since M63, reproduced passing cleanly
 in isolation, no M79 regression.
 Full report: `docs/development/m79-high-level-training-api.md`.
+
+### M80 — Train-to-portable-artifact workflow: extending `forge.train()` and closing the fresh-process verification gap
+
+Brief demanded a real product milestone -- not a readiness assessment --
+answering whether an external developer can train a model with
+`forge.train()` and turn it into the same portable artifact M71/M72/M77
+established, end to end through a genuinely separate fresh process. A
+targeted inspection (not a broad survey) of `forge.train()`,
+`TrainingSession`, `save_and_verify()`, `load_classes()`/
+`load_preprocessing()`, `predict()`/`interpret_classification()`, and both
+`examples/mnist/` and `examples/image_folder_classification/` found the
+*mnist* example already demonstrates the complete workflow (M79's
+`forge.train()` retrofit already flows into `save_and_verify(...,
+preprocessing=..., classes=...)` -> fresh-process `infer.py`) -- but two
+concrete, evidence-backed gaps remained:
+
+1. **The richer, brief-preferred example never used `forge.train()`.**
+   `image_folder_classification` (real image files, persisted preprocessing,
+   persisted class vocabulary -- the closest thing Forge has to a realistic
+   workflow) still called `start_training_session()` for both its fresh and
+   `--resume` paths, because M79 found retrofitting it would have silently
+   dropped its Milestone 73 `data_loader_rng_state` shuffle-resume-equivalence
+   guarantee.
+2. **"Fresh process" was asserted, never enforced.** Every one of
+   M71/M72/M77/M78's own reports described `infer.py` as verified in "a
+   genuinely separate process" -- true of manual dev-session runs, but not of
+   anything the automated test suite checked: every existing `infer.py` test
+   (for both examples) imported `infer.run()` into the *same* test process.
+   No test anywhere in the repo had ever launched a real second OS process,
+   and no test called either example's actual `train.py::main()` entry point
+   -- the literal command every README documents.
+
+**Fix for (1):** split `image_folder_classification/train.py` into the same
+`--resume`-or-fresh two-branch shape `mnist/train.py` already has. The fresh
+branch now builds its own `data_loader_rng = numpy.random.default_rng(seed)`
+(exactly what `start_training_session()` built internally), trains via
+`forge.train(model, DataLoader(train_ds, generator=data_loader_rng), ...)`,
+and saves its checkpoint via plain `forge.save_checkpoint(..., extra=
+{"data_loader_rng_state": data_loader_rng.bit_generator.state})` -- the
+identical key `TrainingSession.save_checkpoint()` itself writes. The
+`--resume` branch is untouched (`start_training_session(resume=...)`), and
+its resume path reads that key regardless of which call site wrote it. Zero
+change to `forge.train()`, `TrainingSession`, or `Trainer` -- pure
+composition of already-public building blocks, verified by a new
+bit-for-bit resume-equivalence test at this example's real `shuffle=True`
+default (the exact case M65 originally found broken elsewhere).
+
+**Fix for (2):** added genuine `subprocess`-based fresh-process tests for
+both examples (`test_infer_cli_runs_in_a_genuinely_separate_process` in
+`tests/test_mnist_example_integration.py` and `tests/
+test_image_folder_classification_integration.py`) that launch `python -m
+examples.<name>.infer` as a real, separate OS process and cross-check its
+stdout against `predict()`/`interpret_classification()` computed
+independently in the test process against the same file. Added
+`test_main_fresh_path_uses_forge_train_and_produces_a_working_artifact`
+(CPU) and `test_main_fresh_path_uses_forge_train_on_cuda` (CUDA,
+hardware-verified on the 940MX) for `image_folder_classification`, calling
+the real `train.py::main()` entry point directly (not a hand-built
+`Trainer`) for the first time in this repository's test suite.
+
+Files changed: `examples/image_folder_classification/train.py` (fresh/resume
+split); `tests/test_image_folder_classification_integration.py` (+3),
+`tests/test_image_folder_classification_cuda_integration.py` (+1),
+`tests/test_mnist_example_integration.py` (+1); `README.md`/`examples/
+README.md`/`examples/image_folder_classification/README.md`/`examples/
+mnist/README.md`/`docs/architecture/training-engine.md` updated. No
+`forge/` framework file touched. 5 new tests. Full suite: **2,294 collected,
+2,293 passed, 1 failed** (2,289 + 5 new) -- the same pre-existing
+`test_dataloader_prefetch.py` allocator-measurement flake documented since
+M63, reproduced passing cleanly in isolation, no M80 regression.
+Full report: `docs/development/m80-train-to-artifact-workflow.md`.

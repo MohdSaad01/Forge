@@ -27,8 +27,8 @@ from forge.backend.cuda import CUDAStorage, is_cuda_available
 from forge.data import Compose, DataLoader, ImageFolder, Lambda, Resize, random_split
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_model, save_model
-from forge.training import Accuracy, Trainer, predict
+from forge.serialization import load_checkpoint, load_classes, load_model, load_preprocessing, save_model
+from forge.training import Accuracy, Trainer, interpret_classification, predict
 
 pytestmark = pytest.mark.skipif(not is_cuda_available(), reason="CUDA is not available on this machine")
 
@@ -36,6 +36,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from examples.image_folder_classification import train as train_module  # noqa: E402
 from examples.image_folder_classification.generate_dataset import CLASSES, generate_dataset  # noqa: E402
 from examples.image_folder_classification.model import build_model  # noqa: E402
 
@@ -146,3 +147,44 @@ def test_model_persistence_preserves_predictions_on_cuda(tmp_path):
 
     post_load = predict(reloaded, query_batch).to("cpu").numpy()
     np.testing.assert_allclose(pre_save, post_load, atol=1e-5)
+
+
+def test_main_fresh_path_uses_forge_train_on_cuda(tmp_path):
+    """Milestone 80: `train.py::main()`'s fresh (non-`--resume`) path now
+    calls `forge.train()` -- confirm it actually drives real CUDA training
+    (parameters CUDA-resident, checkpoint's `data_loader_rng_state` present)
+    when invoked with `--device cuda`, mirroring
+    `tests/test_image_folder_classification_integration.py::
+    test_main_fresh_path_uses_forge_train_and_produces_a_working_artifact`'s
+    CPU coverage of the same real `main()` entry point."""
+    train_module.main([
+        "--data-root", str(tmp_path / "data"),
+        "--generate",
+        "--samples-per-class", "15",
+        "--min-size", str(_MIN_SIZE),
+        "--max-size", str(_MAX_SIZE),
+        "--device", "cuda",
+        "--epochs", "2",
+        "--batch-size", "8",
+        "--seed", "0",
+        "--output-dir", str(tmp_path / "artifacts"),
+    ])
+
+    model_path = tmp_path / "artifacts" / "image_folder_model.forge"
+    checkpoint_path = tmp_path / "artifacts" / "image_folder_checkpoint.forge"
+    assert model_path.exists()
+
+    checkpoint = load_checkpoint(str(checkpoint_path), device="cuda")
+    assert "data_loader_rng_state" in checkpoint.extra
+    for _, param in checkpoint.model.named_parameters():
+        assert isinstance(param._data, CUDAStorage)
+
+    classes = load_classes(str(model_path))
+    preprocessing = load_preprocessing(str(model_path))
+    reloaded = load_model(str(model_path), device="cuda")
+    for _, param in reloaded.named_parameters():
+        assert isinstance(param._data, CUDAStorage)
+    query = forge.Tensor(np.zeros((1, 3, *_RESIZE_SIZE), dtype=np.float32)).to("cuda")
+    result = interpret_classification(predict(reloaded, query), classes)[0]
+    assert result.label in classes
+    assert preprocessing is not None

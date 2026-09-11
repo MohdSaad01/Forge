@@ -720,6 +720,27 @@ confirm the same call shape holds across every remaining architecture and
 persistence-metadata combination (with/without `preprocessing=`,
 with/without `classes=`, `Sequential` and custom-registered `Module` trees).
 
+**Fresh-process verification (Milestone 80).** `save_and_verify()` itself
+only proves an artifact survives a reload *within the same process*.
+Milestones 71/72/77/78's own reports additionally described `infer.py`
+(`mnist`/`image_folder_classification`) as verified in "a genuinely separate
+process" -- true of the manual runs recorded in each milestone's own
+session, but not, until Milestone 80, of anything the automated test suite
+itself enforced: every existing `infer.py` test imported `infer.run()` into
+the *same* test process rather than launching a real second one.
+`tests/test_mnist_example_integration.py::
+test_infer_cli_runs_in_a_genuinely_separate_process` and `tests/
+test_image_folder_classification_integration.py::
+test_infer_cli_runs_in_a_genuinely_separate_process` close that gap: each
+launches `python -m examples.<name>.infer` via `subprocess.run()` -- a real,
+separate OS process with no shared memory, module cache, or import state --
+and asserts its stdout matches `predict()`/`interpret_classification()`
+computed independently in the test process against the same file. The
+`image_folder_classification` version also drives the real `train.py::
+main()` entry point first (not a hand-built `Trainer`), so it additionally
+exercises the script's own argument parsing and wiring, which no prior test
+touched.
+
 ## Single-call high-level training: `train()` (Milestone 79)
 Every Trainer-based example's `train.py` still starts with the same
 hand-assembled sequence before it ever calls `.fit()`:
@@ -794,26 +815,13 @@ brief warns against building. `train()` therefore has no `checkpoint=`/
 `resume=` parameter at all: a resumable run still uses
 `start_training_session()` + `Trainer` directly.
 
-### Real consumer: `examples/mnist/train.py`
-Forge's flagship example is also `train()`'s first real consumer. A fresh
+### Real consumers: `examples/mnist/train.py` and `examples/image_folder_classification/train.py`
+Forge's flagship example is `train()`'s first real consumer. A fresh
 (non-`--resume`) run now trains through `forge.train()`; `--resume` keeps
 using a plain `Trainer` + `trainer.resume(checkpoint)` exactly as before --
 the two paths live side by side in one script, the clearest real
 demonstration of where the high-level and low-level training APIs each
-apply. `image_folder_classification` (the other candidate `train()`'s own
-milestone brief suggested) was deliberately **not** retrofitted: since
-Milestone 73 its `--resume` path already gets exact resume-equivalence via
-`start_training_session()`'s `data_loader_rng_state` checkpoint field
-(**Reusable training sessions** above), and `train()` cannot produce a
-checkpoint carrying that field without duplicating `TrainingSession`'s own
-mechanism -- retrofitting its fresh path would have silently downgraded a
-checkpoint written by a first (`--generate`) run, the first `--resume`
-after it losing exact shuffle-continuity. `mnist`'s fresh path never had
-that guarantee in the first place (it was one of the five examples Milestone
-73 explicitly left un-retrofitted to `TrainingSession`), so switching it to
-`train()` is a genuine simplification with no reproducibility regression --
-verified by direct inspection of both scripts' actual `--resume` code paths,
-not assumed.
+apply.
 
 Because `train()` does not track `epoch`/`global_step`, `examples/mnist/
 train.py`'s fresh branch derives them from the returned `TrainingHistory`
@@ -825,6 +833,41 @@ The script's final-evaluation print also now reads `history[-1].val_loss`/
 `val_metrics` (already computed once per epoch via `validation_dataset=
 test_loader`) instead of a second, redundant `trainer.evaluate(test_loader)`
 call recomputing the identical number.
+
+**Milestone 80 extended this to `image_folder_classification`** -- the other
+candidate `train()`'s own Milestone 79 brief suggested, and originally
+**not** retrofitted there because, since Milestone 73, its `--resume` path
+gets exact resume-equivalence via `start_training_session()`'s
+`data_loader_rng_state` checkpoint field (**Reusable training sessions**
+above), and a naive `train()` retrofit of the *whole* script (both branches,
+as `start_training_session()` handled them together) would have produced a
+checkpoint with no such field, silently downgrading the first `--resume`
+after a fresh run to lose exact shuffle-continuity -- exactly the M65-class
+regression this codebase has fixed once already and takes seriously.
+
+The resolution: split this script into the same `--resume`-or-fresh
+two-branch shape `mnist` already has, matching `mnist`'s finding that only
+the *fresh* half needs retrofitting. The fresh branch builds its own
+`data_loader_rng = numpy.random.default_rng(seed)` (exactly what
+`start_training_session()` would have built internally), trains via
+`forge.train(model, DataLoader(train_ds, generator=data_loader_rng), ...)`,
+and saves its checkpoint via plain `forge.save_checkpoint(..., extra=
+{"data_loader_rng_state": data_loader_rng.bit_generator.state})` -- the
+identical key `TrainingSession.save_checkpoint()` itself writes. The
+`--resume` branch is untouched: it still calls `start_training_session
+(resume=args.resume, ...)`, whose resume path reads
+`checkpoint.extra["data_loader_rng_state"]` regardless of which of the two
+call sites wrote it. This closes the fresh-path -> resume shuffle-continuity
+gap with **zero new persistence logic and zero change to `start_training_
+session()`/`Trainer`/`train()` themselves** -- a pure composition of already
+-public building blocks -- and is verified directly by
+`tests/test_image_folder_classification_integration.py::
+test_resume_after_a_forge_train_fresh_run_matches_continuous_training`,
+which trains a fresh run through `forge.train()`, resumes it through
+`start_training_session()`, and confirms the result is bit-for-bit
+equivalent (`atol=1e-5`) to one continuous run at `shuffle=True` -- this
+example's real default, and the specific case Milestone 65 originally found
+broken elsewhere. See `docs/development/m80-train-to-artifact-workflow.md`.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

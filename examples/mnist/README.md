@@ -205,7 +205,14 @@ MNIST-specific glue is decoding an arbitrary image file to a single grayscale
 28x28 channel (`infer.py::_load_digit_image`) -- `forge.data.ImageFolder`'s
 own single-image decode helper always produces 3-channel RGB, which does not
 match a grayscale MNIST model's expected input. Covered by
-`tests/test_mnist_example_integration.py::test_infer_run_classifies_a_fresh_process_style_png`.
+`tests/test_mnist_example_integration.py::test_infer_run_classifies_a_fresh_process_style_png`
+(imports `infer.run()` into the test process) and, since Milestone 80,
+`tests/test_mnist_example_integration.py::
+test_infer_cli_runs_in_a_genuinely_separate_process` (launches `python -m
+examples.mnist.infer` as a real `subprocess` -- a genuinely separate OS
+process, closing the gap between what earlier milestones' reports described
+as "verified in a separate process" and what the automated test suite
+actually enforced).
 
 Note: unlike `examples/image_folder_classification`, `forge model predict`
 (the CLI command) is **not** usable with an MNIST model -- that command

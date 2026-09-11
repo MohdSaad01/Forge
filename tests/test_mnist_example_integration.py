@@ -17,6 +17,7 @@ through `Trainer`).
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -377,3 +378,52 @@ def test_infer_run_without_preprocessing_raises_persistence_error(tmp_path):
 
     with pytest.raises(forge.PersistenceError):
         infer_module.run(str(model_path), str(tmp_path / "does_not_matter.png"))
+
+
+def test_infer_cli_runs_in_a_genuinely_separate_process(tmp_path):
+    """Milestone 80: every one of Milestone 71/72/77/78's reports describes
+    fresh-process inference as already "verified", but no test before this
+    one ever actually launched a second OS process --
+    `test_infer_run_classifies_a_fresh_process_style_png` above (like
+    `tests/test_classification_metadata.py`'s equivalent for
+    `image_folder_classification`) only imports `infer.run()` into *this*
+    test process. This launches `python -m examples.mnist.infer` as a
+    genuine `subprocess` -- a completely separate Python process with no
+    shared memory, module cache, or import state -- and cross-checks its
+    stdout against `infer_module.run()` computed directly in this process
+    against the same file, proving the subprocess doesn't merely "not
+    crash" but produces the exact documented result. See
+    `tests/test_image_folder_classification_integration.py::
+    test_infer_cli_runs_in_a_genuinely_separate_process` for the identical
+    treatment of Forge's other flagship classification example."""
+    from forge.data import save_image
+
+    from examples.mnist import infer as infer_module
+
+    forge.random.seed(65)
+    train_loader = DataLoader(_make_dataset(64, seed=66), batch_size=16, shuffle=True, generator=np.random.default_rng(67))
+
+    model = build_model()
+    optimizer = Adam(model.parameters(), lr=5e-3)
+    trainer = Trainer(model, CrossEntropyLoss(), optimizer, device="cpu", verbose=False)
+    trainer.fit(train_loader, epochs=3)
+
+    model_path = tmp_path / "mnist_for_subprocess_infer.forge"
+    classes = [str(d) for d in range(_NUM_CLASSES)]
+    save_model(model, str(model_path), preprocessing=build_transform(), classes=classes)
+
+    raw_image = Tensor(_make_raw_pixel_image(label=7, seed=68))
+    image_path = tmp_path / "digit_for_subprocess_infer.png"
+    save_image(Tensor(raw_image.numpy() / 255.0), str(image_path))
+
+    result = subprocess.run(
+        [sys.executable, "-m", "examples.mnist.infer", "--model", str(model_path), "--image", str(image_path)],
+        cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, f"infer.py subprocess failed:\n{result.stderr}"
+    assert "Prediction: digit" in result.stdout
+    assert "Confidence:" in result.stdout
+
+    expected = infer_module.run(str(model_path), str(image_path))
+    assert f"Prediction: digit {expected.label}" in result.stdout
+    assert f"Confidence: {expected.confidence:.1%}" in result.stdout

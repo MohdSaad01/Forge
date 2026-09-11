@@ -13,6 +13,7 @@ image files, not a toy unit test). See
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -24,13 +25,14 @@ from forge import Tensor
 from forge.data import Compose, DataLoader, ImageFolder, Lambda, Resize, random_split
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_model, save_model
-from forge.training import Accuracy, Trainer, predict
+from forge.serialization import load_checkpoint, load_classes, load_model, load_preprocessing, save_model
+from forge.training import Accuracy, Trainer, interpret_classification, predict, start_training_session
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from examples.image_folder_classification import train as train_module  # noqa: E402
 from examples.image_folder_classification.generate_dataset import CLASSES, generate_dataset  # noqa: E402
 from examples.image_folder_classification.model import build_model  # noqa: E402
 
@@ -191,3 +193,138 @@ def test_model_persistence_and_predict_map_back_to_class_name(tmp_path):
     assert predicted_name in CLASSES
     true_name = full_ds.classes[int(query_y.numpy())]
     assert true_name in CLASSES
+
+
+# -- Milestone 80: forge.train() fresh path + train->artifact->fresh-process --
+
+
+def _tiny_main_args(tmp_path: Path, epochs: int, seed: int = 0) -> list:
+    return [
+        "--data-root", str(tmp_path / "data"),
+        "--generate",
+        "--samples-per-class", "15",
+        "--min-size", str(_MIN_SIZE),
+        "--max-size", str(_MAX_SIZE),
+        "--device", "cpu",
+        "--epochs", str(epochs),
+        "--batch-size", "8",
+        "--seed", str(seed),
+        "--output-dir", str(tmp_path / "artifacts"),
+    ]
+
+
+def test_main_fresh_path_uses_forge_train_and_produces_a_working_artifact(tmp_path):
+    """`train.py::main()`'s fresh (non-`--resume`) path now calls `forge.train()`
+    (Milestone 80) instead of hand-assembling `Trainer`. This calls the real
+    `main()` entry point -- the exact thing `python -m examples.
+    image_folder_classification.train` runs -- not a hand-built `Trainer`,
+    so it also exercises argument parsing and the script's own wiring, which
+    every other test in this file (all of which call `Trainer`/`build_model`
+    directly) does not."""
+    train_module.main(_tiny_main_args(tmp_path, epochs=2))
+
+    model_path = tmp_path / "artifacts" / "image_folder_model.forge"
+    checkpoint_path = tmp_path / "artifacts" / "image_folder_checkpoint.forge"
+    assert model_path.exists()
+    assert checkpoint_path.exists()
+
+    # The checkpoint's fresh path now writes "data_loader_rng_state" via
+    # plain forge.save_checkpoint() (not TrainingSession.save_checkpoint())
+    # -- confirm the key is still there, in the same shape
+    # start_training_session()'s resume path expects.
+    checkpoint = load_checkpoint(str(checkpoint_path))
+    assert "data_loader_rng_state" in checkpoint.extra
+
+    # The saved model is a real, working portable artifact: preprocessing
+    # and classes round-trip, and a fresh prediction succeeds.
+    classes = load_classes(str(model_path))
+    assert classes == sorted(CLASSES)
+    preprocessing = load_preprocessing(str(model_path))
+    assert preprocessing is not None
+    model = load_model(str(model_path))
+    query = Tensor(np.zeros((1, 3, *_RESIZE_SIZE), dtype=np.float32))
+    output = predict(model, query)
+    result = interpret_classification(output, classes)[0]
+    assert result.label in classes
+
+
+def test_resume_after_a_forge_train_fresh_run_matches_continuous_training(tmp_path):
+    """The Milestone 73 shuffle-resume-equivalence guarantee must survive the
+    Milestone 80 retrofit: a fresh run trained via `forge.train()` (writing
+    `data_loader_rng_state` through plain `forge.save_checkpoint()`) followed
+    by `--resume` (still `start_training_session()`) must produce the exact
+    same parameters as one continuous run over the combined epoch count --
+    with `shuffle=True` (this example's real default), the specific case
+    Milestone 65 originally found broken and Milestone 73 fixed for this
+    example. `test_checkpoint_save_and_resume_restores_state_and_continues_
+    training` above only exercises `shuffle=False` and the pre-existing
+    `start_training_session()`-for-both-paths shape; this test is the one
+    that would have caught a regression from the M80 refactor."""
+    n_epochs, m_epochs, seed = 2, 2, 5
+
+    root = tmp_path / "shared_data"
+    generate_dataset(root, samples_per_class=15, min_size=_MIN_SIZE, max_size=_MAX_SIZE, seed=seed)
+
+    def _run(full_epochs: "int | None", resume_epochs: "int | None", out_name: str):
+        out_dir = tmp_path / out_name
+        common = ["--data-root", str(root), "--device", "cpu", "--batch-size", "8",
+                  "--seed", str(seed), "--output-dir", str(out_dir)]
+        if full_epochs is not None:
+            train_module.main(common + ["--epochs", str(full_epochs)])
+        if resume_epochs is not None:
+            ckpt = out_dir / "image_folder_checkpoint.forge"
+            train_module.main(common + ["--epochs", str(resume_epochs), "--resume", str(ckpt)])
+        return out_dir / "image_folder_model.forge"
+
+    continuous_model_path = _run(n_epochs + m_epochs, None, "continuous")
+    checkpointed_model_path = _run(n_epochs, m_epochs, "checkpointed")
+
+    continuous_params = dict(load_model(str(continuous_model_path)).named_parameters())
+    checkpointed_params = dict(load_model(str(checkpointed_model_path)).named_parameters())
+    assert continuous_params.keys() == checkpointed_params.keys()
+    for name, param in checkpointed_params.items():
+        np.testing.assert_allclose(
+            param.numpy(), continuous_params[name].numpy(), atol=1e-5,
+            err_msg=f"resumed (forge.train() fresh -> start_training_session() resume) vs. "
+                    f"continuous training diverged for parameter '{name}'",
+        )
+
+
+def test_infer_cli_runs_in_a_genuinely_separate_process(tmp_path):
+    """Every one of Milestone 71/72/77/78's reports describes fresh-process
+    inference as already "verified" -- but no test before this one ever
+    actually launched a second OS process; `test_model_persistence_and_
+    predict_map_back_to_class_name` above and `tests/test_classification_
+    metadata.py`'s `infer.py` coverage both only import `infer.run()` into
+    *this* test process. This test trains via the real `main()` entry point
+    (exercising the actual `forge.train()`-based fresh path end to end),
+    then launches `python -m examples.image_folder_classification.infer` as
+    a genuine `subprocess` -- a completely separate Python process with no
+    shared memory, module cache, or import state -- and cross-checks its
+    stdout against `forge.predict()`/`interpret_classification()` computed
+    directly in this process against the same file, proving the subprocess
+    doesn't merely "not crash" but produces the exact documented result."""
+    train_module.main(_tiny_main_args(tmp_path, epochs=2))
+    output_dir = tmp_path / "artifacts"
+    model_path = output_dir / "image_folder_model.forge"
+    image_path = output_dir / "new_mixed_resolution_query.png"
+    assert model_path.exists()
+    assert image_path.exists()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "examples.image_folder_classification.infer",
+         "--model", str(model_path), "--image", str(image_path)],
+        cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, f"infer.py subprocess failed:\n{result.stderr}"
+    assert "Prediction:" in result.stdout
+    assert "Confidence:" in result.stdout
+
+    preprocessing = load_preprocessing(str(model_path))
+    reloaded_model = load_model(str(model_path))
+    classes = load_classes(str(model_path))
+    raw = ImageFolder._load_image(image_path)
+    batch = preprocessing(raw).reshape(1, 3, *_RESIZE_SIZE)
+    expected = interpret_classification(predict(reloaded_model, batch), classes)[0]
+    assert f"Prediction: {expected.label}" in result.stdout
+    assert f"Confidence: {expected.confidence:.1%}" in result.stdout
