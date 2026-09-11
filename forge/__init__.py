@@ -24,7 +24,10 @@ Public subpackages:
   generator state needed for exact resume equivalence -- in one call, and
   `generate_sequence()` (Milestone 75), the autoregressive sampling loop
   every stepwise recurrent model (`RNNCell`/`LSTMCell`-based) needs to turn
-  a trained model into new generated output.
+  a trained model into new generated output, and `save_and_verify()`
+  (Milestone 78), which saves a model as a portable artifact and immediately
+  proves it by reloading it fresh and confirming a sample prediction agrees
+  with the pre-save model.
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a
@@ -77,7 +80,13 @@ from .serialization import (
     save_model,
 )
 from .tensor import DEFAULT_DTYPE, DType, Tensor
-from .training import ClassificationPrediction, generate_sequence, interpret_classification, predict
+from .training import (
+    ClassificationPrediction,
+    generate_sequence,
+    interpret_classification,
+    predict,
+    save_and_verify,
+)
 
 __version__ = "0.1.0"
 
@@ -115,6 +124,7 @@ __all__ = [
     "load_checkpoint",
     "Checkpoint",
     "predict",
+    "save_and_verify",
     "generate_sequence",
     "interpret_classification",
     "ClassificationPrediction",

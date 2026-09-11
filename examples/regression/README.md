@@ -262,10 +262,11 @@ for the full investigation and design rationale.
 ## Model persistence
 
 `train.py` also demonstrates the plain (optimizer-free) persistence path:
-after training, it records a prediction, calls `forge.save_model()`, reloads
-with `forge.load_model()`, and asserts the reloaded model reproduces the
-same prediction -- printed as `Verified: reloaded model reproduces the
-pre-save prediction.` at the end of every run. The same property is covered
+after training, it calls `forge.training.save_and_verify()` (Milestone 78),
+which saves the model, then reloads it fresh and confirms the reload's
+prediction matches the pre-save model -- printed as `Saved + verified model
+-> ...` at the end of every run, raising `forge.PersistenceError` instead
+if the reload ever disagrees. The same property is covered
 by `tests/test_regression_example_integration.py::test_model_persistence_preserves_predictions`
 (CPU) and `tests/test_regression_example_cuda_integration.py::test_model_persistence_preserves_predictions_on_cuda`
 (CUDA).

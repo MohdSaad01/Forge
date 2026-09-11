@@ -14,12 +14,15 @@ import pytest
 
 import forge
 from forge import Tensor, no_grad
-from forge.data import DataLoader, TensorDataset
-from forge.exceptions import DataError, TrainerError
+from forge.data import Compose, DataLoader, Normalize, TensorDataset
+from forge.exceptions import DataError, PersistenceError, TrainerError
 from forge.nn import Dropout, Linear, Module, ReLU, RNNCell
-from forge.training import Trainer, generate_sequence, predict
+from forge.serialization import load_classes, load_preprocessing
+from forge.training import Trainer, generate_sequence, predict, save_and_verify
+from forge.training import inference as inference_module
 from forge.training.inference import generate_sequence as generate_sequence_direct
 from forge.training.inference import predict as predict_direct
+from forge.training.inference import save_and_verify as save_and_verify_direct
 
 
 class MLP(Module):
@@ -31,6 +34,16 @@ class MLP(Module):
 
     def forward(self, x):
         return self.fc2(self.relu(self.fc1(x)))
+
+
+# Registered for persistence (Milestone 78's save_and_verify() tests below
+# need to actually save/reload this class, unlike the pre-existing predict()/
+# generate_sequence() tests above which never persist a model).
+from forge.serialization import register_module  # noqa: E402
+
+register_module("_MLP_M78Test", MLP, get_config=lambda m: {
+    "in_features": m.fc1.in_features, "hidden": m.fc1.out_features, "out_features": m.fc2.out_features,
+})
 
 
 def _model(seed=0):
@@ -197,6 +210,125 @@ def test_predict_matches_trainer_evaluate_predictions_on_same_data():
     with no_grad():
         after = model(x).numpy()
     np.testing.assert_allclose(trainer_forward, after, atol=1e-6)
+
+
+# -- save_and_verify() (Milestone 78) -----------------------------------------
+
+
+def test_save_and_verify_is_reexported_consistently():
+    assert forge.save_and_verify is save_and_verify
+    assert forge.training.save_and_verify is save_and_verify
+    assert save_and_verify is save_and_verify_direct
+
+
+def test_save_and_verify_returns_reloaded_module_matching_pre_save_prediction(tmp_path):
+    model = _model()
+    x = _features(n=1)
+    path = str(tmp_path / "model.forge")
+
+    with no_grad():
+        expected = model(x).numpy()
+
+    reloaded = save_and_verify(model, path, x)
+    assert isinstance(reloaded, MLP)
+    assert reloaded is not model
+    with no_grad():
+        actual = reloaded(x).numpy()
+    np.testing.assert_allclose(actual, expected, atol=1e-6)
+
+
+def test_save_and_verify_writes_a_file_load_model_can_read_independently(tmp_path):
+    model = _model()
+    x = _features(n=1)
+    path = str(tmp_path / "model.forge")
+
+    save_and_verify(model, path, x)
+    independently_reloaded = forge.load_model(path)
+    with no_grad():
+        expected = model(x).numpy()
+        actual = independently_reloaded(x).numpy()
+    np.testing.assert_allclose(actual, expected, atol=1e-6)
+
+
+def test_save_and_verify_passes_through_preprocessing_and_classes(tmp_path):
+    model = _model()
+    x = _features(n=1)
+    path = str(tmp_path / "model.forge")
+    transform = Compose([Normalize(mean=0.0, std=1.0)])
+
+    save_and_verify(model, path, x, preprocessing=transform, classes=["a", "b", "c"])
+
+    assert load_classes(path) == ["a", "b", "c"]
+    assert load_preprocessing(path) is not None
+
+
+def test_save_and_verify_defaults_to_no_preprocessing_or_classes(tmp_path):
+    model = _model()
+    x = _features(n=1)
+    path = str(tmp_path / "model.forge")
+
+    save_and_verify(model, path, x)
+
+    assert load_classes(path) is None
+    assert load_preprocessing(path) is None
+
+
+def test_save_and_verify_rejects_non_module(tmp_path):
+    with pytest.raises(TrainerError):
+        save_and_verify("not a module", str(tmp_path / "model.forge"), _features(n=1))
+
+
+def test_save_and_verify_rejects_non_tensor_sample(tmp_path):
+    model = _model()
+    with pytest.raises(DataError):
+        save_and_verify(model, str(tmp_path / "model.forge"), np.zeros((1, 4), dtype=np.float32))
+
+
+def test_save_and_verify_explicit_device_override_accepted_on_cpu_only_machine(tmp_path):
+    model = _model()
+    x = _features(n=1)
+    path = str(tmp_path / "model.forge")
+
+    reloaded = save_and_verify(model, path, x, device="cpu")
+    assert str(reloaded.device) == "cpu"
+
+
+def test_save_and_verify_raises_persistence_error_on_prediction_mismatch(tmp_path, monkeypatch):
+    """A reloaded model that diverges from the pre-save model must be caught, not silently accepted."""
+    model = _model()
+    x = _features(n=1)
+    path = str(tmp_path / "model.forge")
+
+    real_predict = inference_module.predict
+    call_count = {"n": 0}
+
+    def _flaky_predict(m, inputs, device=None):
+        call_count["n"] += 1
+        result = real_predict(m, inputs, device=device)
+        if call_count["n"] == 2:
+            # Simulate the second (post-reload) predict() call disagreeing
+            # with the first -- exactly the condition save_and_verify()
+            # exists to catch.
+            return Tensor(result.numpy() + 100.0)
+        return result
+
+    monkeypatch.setattr(inference_module, "predict", _flaky_predict)
+    with pytest.raises(PersistenceError):
+        inference_module.save_and_verify(model, path, x)
+
+
+def test_save_and_verify_does_not_mutate_the_original_model(tmp_path):
+    model = _model()
+    x = _features(n=1)
+    with no_grad():
+        before = model(x).numpy()
+
+    save_and_verify(model, str(tmp_path / "model.forge"), x)
+
+    with no_grad():
+        after = model(x).numpy()
+    np.testing.assert_allclose(before, after, atol=1e-6)
+    assert model.training is True
 
 
 # -- generate_sequence() (Milestone 75) --------------------------------------

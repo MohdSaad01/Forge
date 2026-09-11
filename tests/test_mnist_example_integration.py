@@ -26,17 +26,18 @@ import pytest
 import forge
 from forge import Tensor, no_grad
 from forge.cli.main import main as cli_main
-from forge.data import DataLoader, TensorDataset
+from forge.data import Compose, DataLoader, Lambda, Normalize, TensorDataset
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_model, save_model
-from forge.training import Accuracy, Trainer
+from forge.serialization import load_checkpoint, load_classes, load_model, load_preprocessing, save_model
+from forge.training import Accuracy, Trainer, interpret_classification
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from examples.mnist.model import build_model  # noqa: E402  (path setup above)
+from examples.mnist.train import _MEAN, _STD, build_transform  # noqa: E402
 
 _NUM_CLASSES = 10
 
@@ -249,3 +250,130 @@ def test_cli_inspects_generated_mnist_model_and_checkpoint(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Optimizer: Adam" in out
     assert "Epoch: 1" in out
+
+
+# -- Milestone 77: persistable preprocessing + classes + fresh-process infer --
+
+
+def _make_raw_pixel_image(label: int, seed: int) -> np.ndarray:
+    """A `(1, 28, 28)` float32 array in real MNIST's raw `[0, 255]` uint8
+    range -- the same "class `L` -> a bright vertical stripe" motif
+    `_make_synthetic_mnist` uses above, scaled up from that function's small
+    `build_transform()`-output-shaped range to the *pre*-`build_transform()`
+    range this section's tests need (an image that has genuinely never been
+    normalized, matching what `MNISTDataset(..., transform=None)` -- or a
+    brand-new PNG file -- actually hands a caller)."""
+    rng = np.random.default_rng(seed)
+    image = (rng.standard_normal((1, 28, 28)) * 12.0 + 20.0).astype(np.float32)
+    col = label * 2
+    image[0, :, col : col + 2] = 220.0 + rng.standard_normal((28, 2)).astype(np.float32) * 10.0
+    return np.clip(image, 0.0, 255.0)
+
+
+def test_build_transform_is_bit_exact_with_the_old_lambda_based_pipeline():
+    """`build_transform()`'s `Normalize(mean=0, std=255)` step must compute
+    exactly what the pre-Milestone-77 `Lambda(lambda x: x * (1/255))` step
+    did -- this is a persistence-motivated *rewrite*, not a behavior change,
+    so every prediction/training-curve number this example has ever reported
+    must remain identical."""
+    old_pipeline = Compose([Lambda(lambda x: x * (1.0 / 255.0)), Normalize(mean=_MEAN, std=_STD)])
+    x = Tensor(np.random.default_rng(0).uniform(0, 255, size=(1, 28, 28)).astype(np.float32))
+    np.testing.assert_array_equal(build_transform()(x).numpy(), old_pipeline(x).numpy())
+
+
+def test_model_persistence_with_preprocessing_and_classes_round_trips_to_a_new_raw_image(tmp_path):
+    """Milestone 77: `save_model(..., preprocessing=..., classes=...)` now
+    works for MNIST (previously blocked by the `Lambda` step -- see
+    `build_transform()`'s docstring), and a raw, never-normalized image
+    Tensor can be classified using only what `load_preprocessing()`/
+    `load_classes()` reconstruct from the file, exactly like
+    `tests/test_classification_metadata.py` already proves for
+    `examples/image_folder_classification`."""
+    forge.random.seed(50)
+    train_loader = DataLoader(_make_dataset(64, seed=51), batch_size=16, shuffle=True, generator=np.random.default_rng(52))
+
+    model = build_model()
+    optimizer = Adam(model.parameters(), lr=5e-3)
+    trainer = Trainer(model, CrossEntropyLoss(), optimizer, device="cpu", verbose=False)
+    trainer.fit(train_loader, epochs=3)
+
+    model_path = tmp_path / "mnist_with_preprocessing.forge"
+    classes = [str(d) for d in range(_NUM_CLASSES)]
+    save_model(model, str(model_path), preprocessing=build_transform(), classes=classes)
+
+    reloaded_classes = load_classes(str(model_path))
+    assert reloaded_classes == classes
+    reloaded_preprocessing = load_preprocessing(str(model_path))
+    reloaded_model = load_model(str(model_path))
+
+    # A brand-new, raw [0, 255] image -- never passed through this
+    # process's own build_transform() call.
+    raw_image = Tensor(_make_raw_pixel_image(label=3, seed=53))
+    prepared = reloaded_preprocessing(raw_image).reshape(1, 1, 28, 28)
+    output = forge.predict(reloaded_model, prepared)
+    result = interpret_classification(output, reloaded_classes)[0]
+    assert result.label in classes
+    assert 0.0 <= result.confidence <= 1.0
+
+
+def test_save_model_with_lambda_based_transform_would_have_failed(tmp_path):
+    """Regression guard for *why* Milestone 77 rewrote `build_transform()`:
+    a `Lambda`-containing pipeline is still, and must remain, unsaveable --
+    proving the fix was necessary, not cosmetic."""
+    from forge.exceptions import PersistenceError
+
+    model = build_model()
+    old_pipeline = Compose([Lambda(lambda x: x * (1.0 / 255.0)), Normalize(mean=_MEAN, std=_STD)])
+    with pytest.raises(PersistenceError):
+        save_model(model, str(tmp_path / "unsaveable.forge"), preprocessing=old_pipeline)
+
+
+def test_infer_run_classifies_a_fresh_process_style_png(tmp_path):
+    """`examples/mnist/infer.py::run()` -- imported fresh here, exactly like
+    `tests/test_classification_metadata.py` exercises
+    `examples.image_folder_classification.infer.run()` -- must reproduce
+    `forge.predict()` + `interpret_classification()`'s own result for the
+    exact same (decoded-from-PNG) input."""
+    from forge.data import save_image
+
+    from examples.mnist import infer as infer_module
+
+    forge.random.seed(60)
+    train_loader = DataLoader(_make_dataset(64, seed=61), batch_size=16, shuffle=True, generator=np.random.default_rng(62))
+
+    model = build_model()
+    optimizer = Adam(model.parameters(), lr=5e-3)
+    trainer = Trainer(model, CrossEntropyLoss(), optimizer, device="cpu", verbose=False)
+    trainer.fit(train_loader, epochs=3)
+
+    model_path = tmp_path / "mnist_for_infer.forge"
+    classes = [str(d) for d in range(_NUM_CLASSES)]
+    save_model(model, str(model_path), preprocessing=build_transform(), classes=classes)
+
+    raw_image = Tensor(_make_raw_pixel_image(label=5, seed=63))
+    image_path = tmp_path / "digit.png"
+    save_image(Tensor(raw_image.numpy() / 255.0), str(image_path))
+
+    result = infer_module.run(str(model_path), str(image_path))
+
+    # Recompute "by hand" from the *same decoded PNG* (not the pre-save
+    # float tensor -- writing to PNG rounds to 8-bit, so this isolates
+    # `run()`'s own wiring from PNG round-trip rounding noise).
+    reloaded_preprocessing = load_preprocessing(str(model_path))
+    reloaded_model = load_model(str(model_path))
+    decoded = infer_module._load_digit_image(image_path)
+    expected_output = forge.predict(reloaded_model, reloaded_preprocessing(decoded).reshape(1, 1, 28, 28))
+    expected = interpret_classification(expected_output, classes)[0]
+    assert result.label == expected.label
+    assert result.confidence == pytest.approx(expected.confidence, abs=1e-6)
+
+
+def test_infer_run_without_preprocessing_raises_persistence_error(tmp_path):
+    from examples.mnist import infer as infer_module
+
+    model = build_model()
+    model_path = tmp_path / "mnist_no_preprocessing.forge"
+    save_model(model, str(model_path))
+
+    with pytest.raises(forge.PersistenceError):
+        infer_module.run(str(model_path), str(tmp_path / "does_not_matter.png"))

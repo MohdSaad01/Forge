@@ -19,7 +19,10 @@ layers.
   implementation) and `download_mnist()`.
 - `model.py` -- `build_model()`, the small CNN architecture.
 - `train.py` -- the runnable example: training, evaluation, checkpointing,
-  resume, and model persistence.
+  resume, and model + preprocessing + classes persistence.
+- `infer.py` (Milestone 77) -- a **separate, standalone script** for
+  classifying one new digit image file in a fresh process, independent of
+  `train.py`. See **Standalone inference** below.
 
 ## Prerequisites
 
@@ -150,14 +153,49 @@ epochs produce parameters matching within `1e-5` --
 ## Model persistence
 
 `train.py` also demonstrates the plain (optimizer-free) persistence path:
-after training, it records a prediction, calls `forge.save_model()`, reloads
-with `forge.load_model()`, and asserts the reloaded model reproduces the
-same prediction -- printed as `Verified: reloaded model reproduces the
-pre-save prediction.` at the end of every run. The same property is
-covered on a synthetic dataset by
+after training, it calls `forge.training.save_and_verify()` (Milestone 78),
+which saves the model, then reloads it fresh and confirms the reload's
+prediction matches the pre-save model -- printed as `Saved + verified model
++ preprocessing + classes -> ...` at the end of every run, raising
+`forge.PersistenceError` instead if the reload ever disagrees. The same
+property is covered on a synthetic dataset by
 `tests/test_mnist_example_integration.py::test_model_persistence_preserves_predictions`
 (CPU) and `tests/test_mnist_example_cuda_integration.py::test_model_persistence_preserves_predictions_on_cuda`
 (CUDA).
+
+**Preprocessing + classes (Milestone 77).** `train.py` now saves the exact
+`Normalize`-based preprocessing pipeline (`forge.save_model(..., preprocessing=
+build_transform())`) and the digit-index-to-label vocabulary
+(`classes=["0", ..., "9"]`) alongside the model -- the same mechanism
+`examples/image_folder_classification` established in Milestones 71/72,
+applied here for the first time. Earlier, `build_transform()`'s pixel
+scaling used `Lambda(lambda x: x * (1/255))`, which cannot be saved (`Lambda`
+wraps an arbitrary Python callable); it is now `Normalize(mean=0.0,
+std=255.0)`, computing exactly the same value, so this file's saved model
+can be reconstructed and used to classify a brand-new digit image with no
+external knowledge of MNIST's normalization convention.
+
+## Standalone inference (fresh process, Milestone 77)
+
+```bash
+python -m examples.mnist.infer --model examples/mnist/artifacts/mnist_model.forge --image path/to/some_digit.png
+```
+
+`infer.py` is a genuinely separate script from `train.py`: it only calls
+`forge.load_model()`, `forge.load_preprocessing()`, `forge.load_classes()`,
+`forge.predict()`, and `forge.interpret_classification()` -- everything it
+needs (architecture, weights, preprocessing, and the digit vocabulary) comes
+from the one `.forge` file `train.py` wrote. The one piece of
+MNIST-specific glue is decoding an arbitrary image file to a single grayscale
+28x28 channel (`infer.py::_load_digit_image`) -- `forge.data.ImageFolder`'s
+own single-image decode helper always produces 3-channel RGB, which does not
+match a grayscale MNIST model's expected input. Covered by
+`tests/test_mnist_example_integration.py::test_infer_run_classifies_a_fresh_process_style_png`.
+
+Note: unlike `examples/image_folder_classification`, `forge model predict`
+(the CLI command) is **not** usable with an MNIST model -- that command
+always decodes its `--image` argument as 3-channel RGB, but MNIST's CNN
+expects 1 channel. Use `examples.mnist.infer` instead.
 
 ## CLI inspection
 

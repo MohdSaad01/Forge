@@ -46,11 +46,12 @@ from pathlib import Path
 import numpy as np
 
 import forge
-from forge.data import Compose, DataLoader, Lambda, Normalize
+from forge import Tensor
+from forge.data import Compose, DataLoader, Normalize, save_image
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_model, save_model
-from forge.training import Accuracy, Trainer, predict
+from forge.serialization import load_checkpoint, load_classes, load_preprocessing
+from forge.training import Accuracy, Trainer, interpret_classification, predict, save_and_verify
 
 try:
     from .dataset import MNISTDataset
@@ -62,7 +63,6 @@ except ImportError:  # running as a plain script (`python examples/mnist/train.p
 # Conventional MNIST normalization constants (mean/std of the raw [0, 1]
 # pixel distribution over the training set) -- applied via the existing
 # `forge.data.transforms` primitives, not a bespoke MNIST preprocessing API.
-_PIXEL_SCALE = 1.0 / 255.0
 _MEAN = 0.1307
 _STD = 0.3081
 
@@ -70,11 +70,19 @@ _STD = 0.3081
 def build_transform():
     """`[0, 255]` uint8-valued pixels -> scaled, mean/std-normalized float32.
 
-    `Lambda` performs the `/255` scale (a plain Tensor multiply); `Normalize`
-    is the existing `forge.data.transforms.Normalize` primitive. No
-    MNIST-specific preprocessing API is added to Forge core.
+    Milestone 77: the `/255` scale is expressed as `Normalize(mean=0.0,
+    std=255.0)` -- `(x - 0) / 255 == x / 255` -- composed with the existing
+    mean/std `Normalize` step, not `Lambda(lambda x: x * _PIXEL_SCALE)` as
+    earlier milestones had it. `Lambda` wraps an arbitrary Python callable
+    with no safe serialized representation (see
+    `forge/serialization/transforms.py`), so a `Lambda`-based pipeline can
+    never be passed to `save_model(..., preprocessing=...)`. This is the
+    exact substitution `examples/image_folder_classification/train.py`
+    already established in Milestone 71, applied here for the first time to
+    Forge's flagship example -- no new Forge primitive, no MNIST-specific
+    preprocessing API added.
     """
-    return Compose([Lambda(lambda x: x * _PIXEL_SCALE), Normalize(mean=_MEAN, std=_STD)])
+    return Compose([Normalize(mean=0.0, std=255.0), Normalize(mean=_MEAN, std=_STD)])
 
 
 def build_datasets(data_root: str, download: bool):
@@ -145,23 +153,61 @@ def main(argv=None) -> None:
 
     trainer.save_checkpoint(str(checkpoint_path))
     print(f"\nSaved checkpoint -> {checkpoint_path}")
-    save_model(model, str(model_path))
-    print(f"Saved model -> {model_path}")
-
-    # Model-persistence round trip (Section 12): load fresh and confirm
-    # predictions match, exactly the property `examples/persistence_demo.py`
-    # already demonstrates for a Linear model.
-    query_x, _ = test_ds[0]
+    # Milestone 77: `preprocessing=`/`classes=` (Milestones 71/72) now save
+    # alongside the model for the first time in this example -- previously
+    # blocked by `build_transform()`'s `Lambda` step (see that function's
+    # docstring). `classes=[str(d) for d in range(10)]` is MNIST's own
+    # digit-index-to-label vocabulary (`output[..., i]` means the digit `i`),
+    # the same convention `ImageFolder.classes` already uses for images.
+    # Milestone 78: `save_and_verify()` (Section 12's old hand-written
+    # "save -> reload -> predict() must agree" round trip, now the shared
+    # abstraction every retrofitted Forge example calls the same way) saves
+    # the model and immediately proves it by reloading it fresh.
+    query_x, query_y = test_ds[0]
     query_x = query_x.to(args.device).reshape(1, 1, 28, 28)
-    pre_save_pred = predict(model, query_x).numpy()
-    reloaded = load_model(str(model_path), device=args.device)
-    post_load_pred = predict(reloaded, query_x).numpy()
-    assert np.allclose(pre_save_pred, post_load_pred, atol=1e-5), "reloaded model prediction diverged"
-    print("Verified: reloaded model reproduces the pre-save prediction.")
+    reloaded = save_and_verify(
+        model, str(model_path), query_x,
+        preprocessing=build_transform(), classes=[str(d) for d in range(10)],
+    )
+    print(f"Saved + verified model + preprocessing + classes -> {model_path}")
 
-    print("\nInspect the generated artifacts with the M19 CLI:")
+    # Milestone 72's interpretation step, using load_classes()'s own
+    # reconstructed vocabulary rather than this process's in-memory literal,
+    # to prove the file alone is enough (matches
+    # examples/image_folder_classification/train.py's own precedent).
+    reloaded_classes = load_classes(str(model_path))
+    result = interpret_classification(predict(reloaded, query_x), reloaded_classes)[0]
+    print(f"\nInference demo (test sample 0, true digit {int(query_y.numpy())}):")
+    print(f"Prediction: digit {result.label}")
+    print(f"Confidence: {result.confidence:.1%}")
+
+    # Milestone 77: a brand-new image file -- decoded from raw, un-normalized
+    # pixels and prepared via the *file's own* reconstructed preprocessing
+    # pipeline (`load_preprocessing()`, not this process's own
+    # `build_transform()` call) -- proving the saved artifact travels to a
+    # fresh process the same way Milestone 71/72 already proved for
+    # `examples/image_folder_classification`. `examples/mnist/infer.py`
+    # (run here in-process for the demo, and independently as a genuinely
+    # separate process below) is the standalone counterpart to
+    # `image_folder_classification/infer.py`.
+    raw_test_ds = MNISTDataset(args.data_root, train=False, transform=None, download=False)
+    raw_image, raw_label = raw_test_ds[1]
+    new_image_path = output_dir / "new_digit_query.png"
+    save_image(Tensor(raw_image.numpy() / 255.0), new_image_path)
+    reloaded_preprocessing = load_preprocessing(str(model_path))
+    new_batch = reloaded_preprocessing(raw_image).to(args.device).reshape(1, 1, 28, 28)
+    new_pred = predict(reloaded, new_batch)
+    new_result = interpret_classification(new_pred, reloaded_classes)[0]
+    print(f"\nNew image '{new_image_path.name}' (never passed through this process's own "
+          f"build_transform() call, true digit {int(raw_label.numpy())}):")
+    print(f"Prediction: digit {new_result.label}")
+    print(f"Confidence: {new_result.confidence:.1%}")
+
+    print("\nInspect the generated artifacts with the CLI:")
     print(f"  python -m forge model inspect {model_path}")
     print(f"  python -m forge checkpoint inspect {checkpoint_path}")
+    print("\nRun standalone inference in a fresh process (Milestone 77):")
+    print(f"  python -m examples.mnist.infer --model {model_path} --image {new_image_path}")
 
 
 if __name__ == "__main__":

@@ -215,10 +215,12 @@ and `::test_resume_equivalence_matches_continuous_training`.
 ## Model persistence
 
 `train.py` also demonstrates the plain (optimizer-free) persistence path:
-after training, it records a prediction, calls `forge.save_model()`, reloads
-with `forge.load_model()`, and asserts the reloaded model reproduces the
-same prediction -- printed as `Verified: reloaded model reproduces the
-pre-save prediction.` at the end of every run.
+after training, it calls `forge.training.save_and_verify()` (Milestone 78),
+which saves the model, then reloads it fresh and confirms the reload's
+prediction matches the pre-save model -- printed as `Saved + verified model
+-> ...` at the end of every run, raising `forge.PersistenceError` instead if
+the reload ever disagrees. The rendered `segmentation_predicted_mask.png`
+is produced from the reloaded model, not the pre-save one.
 
 ## Viewing a predicted mask
 

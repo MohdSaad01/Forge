@@ -218,13 +218,28 @@ python -m examples.regression.compare examples/resnet/artifacts/resnet_history.j
 ## Model persistence
 
 `train.py` demonstrates the plain (optimizer-free) persistence path: after
-training, it records a prediction, calls `forge.save_model()`, reloads with
-`forge.load_model()`, and asserts the reloaded model reproduces the same
-prediction -- printed as `Verified: reloaded model reproduces the pre-save
-prediction.` at the end of every run. Because `ResNetMNIST`/`ResidualBlock`
+training, it calls `forge.training.save_and_verify()` (Milestone 78), which
+saves the model, then reloads it fresh and confirms the reload's prediction
+matches the pre-save model -- printed as `Saved + verified model +
+preprocessing + classes -> ...` at the end of every run, raising
+`forge.PersistenceError` instead if the reload ever disagrees. Because
+`ResNetMNIST`/`ResidualBlock`
 are custom `Module` subclasses, this exercises the full recursive
 save/load path through `register_module()`-registered custom types, not
 just the built-in layer types every earlier example used.
+
+**Preprocessing + classes (Milestone 77).** `train.py` now also saves
+`examples.mnist.train.build_transform()`'s preprocessing pipeline and the
+digit-index-to-label vocabulary alongside the model
+(`save_model(..., preprocessing=..., classes=[...])`) -- the first time this
+mechanism (Milestones 71/72) has been exercised on a custom-registered,
+non-`Sequential` Module tree. Reconstructing this model in a fresh process
+(`forge.load_model()`) requires that process to have already imported
+`examples.resnet.model` at least once, so that its own `register_module()`
+call has run -- see `docs/architecture/persistence.md`'s "Custom-module
+limitations" section; there is no `examples/resnet/infer.py` (the
+`examples/mnist` standalone-inference workflow already demonstrates the
+same fresh-process pattern with fewer moving parts).
 
 ## CLI inspection
 

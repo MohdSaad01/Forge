@@ -173,14 +173,17 @@ documented RNG policy.
 Identical pattern to every other Forge example
 (`docs/architecture/persistence.md`): `train.py` saves a checkpoint capturing
 model + Adam state + epoch/global_step + RNG state, supports `--resume`, and
-after training verifies the save/load round trip reproduces the same
-prediction via `forge.predict()`. It also (Milestone 71) saves the model's
-`preprocessing=Compose([Resize(...), Normalize(...)])` pipeline, and
-(Milestone 72) the model's `classes=full_dataset.classes` vocabulary, as two
-sibling metadata entries in the same `.forge` model file
-(`save_model(model, path, preprocessing=..., classes=...)`) -- no separate
-sidecar file -- see `docs/architecture/persistence.md`'s **Preprocessing
-metadata** and **Class-label metadata** sections.
+after training calls `forge.training.save_and_verify()` (Milestone 78),
+which saves the model with its `preprocessing=Compose([Resize(...),
+Normalize(...)])` pipeline (Milestone 71) and `classes=full_dataset.classes`
+vocabulary (Milestone 72) as two sibling metadata entries in the same
+`.forge` model file (`save_model(model, path, preprocessing=...,
+classes=...)` -- no separate sidecar file), then reloads it fresh and
+confirms the reload's prediction matches the pre-save model, raising
+`forge.PersistenceError` instead if the reload ever disagrees -- see
+`docs/architecture/persistence.md`'s **Preprocessing metadata** and
+**Class-label metadata** sections, and `docs/architecture/training-engine.md`'s
+**Portable-artifact save + verify** section.
 
 ## Inference demonstration
 

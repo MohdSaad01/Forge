@@ -4547,3 +4547,168 @@ failure is the same pre-existing `test_dataloader_prefetch.py`
 allocator-measurement flake documented since M63, reproduced passing
 cleanly in isolation, no M76 regression.
 Full report: `docs/development/m76-visualize-image-output.md`.
+
+### M77 — Portable artifacts for the MNIST family: preprocessing/classes persistence + fresh-process inference
+
+Brief demanded investigating the gap between Forge's current workflows and
+"using a trained model as an application," using
+`examples/image_folder_classification` as the reference-quality workflow,
+and forbidding another readiness assessment or symmetry-only feature.
+Investigation traced the M71/M72 preprocessing+classes persistence
+mechanism (`save_model(..., preprocessing=..., classes=...)`) and found it
+was never used outside that one example: `mnist`, `resnet`, and
+`autoencoder` each still call `save_model(model, path)` with no
+preprocessing or classes, because each one's own `build_transform()` scales
+pixels via `Lambda(lambda x: x * (1/255))` -- and `Lambda` is deliberately
+unregistered for persistence (no safe serialized representation), so
+attempting `preprocessing=build_transform()` there raises `PersistenceError`
+immediately. `examples/image_folder_classification/train.py` had already
+solved exactly this problem in Milestone 71 (`Normalize(mean=0, std=255)`
+computes the identical value and *is* serializable) but the fix was never
+back-ported to Forge's three other real, already-existing image-pixel
+consumers. A second, related finding: of the two examples with
+custom-registered (non-`Sequential`) Module trees ever saved (`autoencoder`,
+`resnet`), **neither had ever been `load_model()`-ed by a process that
+hadn't already imported their own `model.py`** -- direct experimentation
+confirmed `load_model()` fails with `PersistenceError` ("not registered for
+persistence in this process") unless the loading process first imports the
+model-defining module (whose module-level `register_module()` call is what
+actually registers it) -- a real, previously unverified artifact-portability
+gap for every non-`Sequential` example, distinct from (and only ever
+implicitly assumed safe alongside) M71/M72's `Sequential`-only proof in
+`image_folder_classification`.
+
+Fixed `examples/mnist/train.py` and `examples/autoencoder/train.py`'s
+`build_transform()` to use `Normalize(mean=0.0, std=255.0)` in place of
+`Lambda`, verified bit-exact against the old computation by direct test and
+by re-running each example's own full training loop (MNIST CNN: 95.4% val
+accuracy after 1 epoch; autoencoder: 64.5% MSE reduction over the
+mean-image baseline after 1 epoch -- both consistent with pre-M77
+runs, confirming the rewrite is behavior-preserving, not a behavior change).
+Retrofitted `save_model()` calls in `mnist`, `resnet` (which reuses
+`mnist.train.build_transform` unmodified), and `autoencoder` to pass
+`preprocessing=build_transform()` (`resnet`/`mnist` also `classes=[str(d)
+for d in range(10)]`) -- `resnet` is the first real consumer where this
+mechanism is proven on a custom-registered, non-`Sequential` Module tree
+(`ResNetMNIST`/`ResidualBlock`), not just `Sequential`. Added
+`examples/mnist/infer.py` -- Forge's flagship example's first standalone,
+fresh-process inference script, mirroring
+`image_folder_classification/infer.py`'s shape exactly (`load_model()` +
+`load_preprocessing()` + `load_classes()` + `predict()` +
+`interpret_classification()`, nothing from `train.py`), with one small
+MNIST-specific addition: a local grayscale image decode helper, since
+`ImageFolder._load_image` is RGB-only by design and cannot decode a
+single-channel digit image correctly. No `forge/` framework file was
+touched -- this milestone applies M71/M72's existing mechanism to three more
+real consumers and adds one new standalone example script, exactly the
+"extract/apply an established pattern to duplicated real consumers"
+category, not a new capability.
+
+`examples/mnist/train.py` now also demonstrates the full workflow on a
+brand-new image file: writes a raw (never-normalized) MNIST test digit to a
+real PNG via `forge.data.save_image()` (M76), reloads the model's
+preprocessing/classes from the saved `.forge` file alone (not this
+process's in-memory `build_transform()`/class list), and classifies it --
+matching the `image_folder_classification/train.py` Section 11/12 pattern.
+Verified `python -m examples.mnist.infer --model ... --image ...` as a
+genuinely separate OS process, and independently reproduced (via direct
+experimentation, not just the report's prose) that `load_model()` on a
+`resnet`-saved artifact fails with a clear `PersistenceError` unless
+`examples.resnet.model` is imported first, then succeeds identically once
+it is -- documented as a real, permanent constraint (not a bug) in
+`examples/resnet/README.md`, matching
+`docs/architecture/persistence.md`'s existing "Custom-module limitations"
+section. Also discovered and documented (not fixed, out of scope): `forge
+model predict` (the CLI command) always decodes its `--image` argument as
+3-channel RGB, so it cannot classify a 1-channel MNIST model -- `examples/
+mnist/infer.py` is the correct tool for that case.
+
+8 new tests (5 `tests/test_mnist_example_integration.py`: `Normalize`-vs-
+`Lambda` bit-exact equivalence, preprocessing+classes round trip to a
+brand-new raw image, a regression guard proving the old `Lambda`-based
+pipeline really was unsaveable, `infer.py::run()` fresh-process correctness
+against a real PNG, and its `PersistenceError` path with no saved
+preprocessing; 1 `tests/test_resnet_example_integration.py`: preprocessing+
+classes round trip on the custom-registered `ResNetMNIST` tree; 2
+`tests/test_autoencoder_example_integration.py`: the same `Normalize`-vs-
+`Lambda` equivalence check plus a preprocessing round trip). All three
+examples' full `train.py` scripts were re-run end-to-end against real MNIST
+(not just unit-tested) to confirm unchanged training behavior and a working
+save-with-preprocessing path. Full suite: **2,254 collected, 2,253 passed, 1
+failed** (2,246 + 8 new) -- the same pre-existing
+`test_dataloader_prefetch.py` allocator-measurement flake documented since
+M63, reproduced passing cleanly in isolation, no M77 regression.
+Full report: `docs/development/m77-mnist-family-portable-artifacts.md`.
+
+### M78 — First complete developer workflow: `save_and_verify()`
+
+Brief demanded shifting from "framework construction through isolated
+capabilities" to "Forge as an actual usable framework," forbidding another
+readiness assessment and requiring a real, substantial new user-facing
+capability chosen from evidence in the current repository, not invented
+blindly. Investigated `Trainer`/`TrainingSession`, `Dataset`/`DataLoader`/
+`ImageFolder`, `forge/nn`, model/checkpoint persistence, `predict()`/
+`generate_sequence()`/`interpret_classification()`, and the CLI's own
+documented limitations, per the brief's required-investigation list, then
+grepped every `examples/*/train.py` for its post-training persistence code.
+Found two duplicated patterns: `fit() -> evaluate() -> save_checkpoint() ->
+save_model()` across the seven `Trainer`-based examples (already narrowed by
+Milestone 73's `start_training_session()`), and, underneath that, a second,
+more universal duplication Milestone 73 had not touched -- **all ten**
+examples' `train.py` scripts (including the three hand-written-loop RNN
+examples) independently hand-wrote the identical "save the model, reload it
+fresh, run `predict()` on both, and `assert numpy.allclose(..., atol=1e-5)`"
+round trip to prove `docs/product/vision.md`'s "save as a portable
+artifact... reload... receive a useful result" promise actually holds for
+the file just written, not just the in-memory model.
+
+Added `forge.training.save_and_verify(model, path, sample, device=None,
+preprocessing=None, classes=None, atol=1e-5) -> Module`
+(`forge/training/inference.py`, alongside `predict()`/`generate_sequence()`/
+`interpret_classification()`, re-exported at `forge.save_and_verify` and
+`forge.training.save_and_verify`) -- composes `save_model()`/`load_model()`
+(Milestones 71/72's persistence calls, unmodified) and `predict()`
+(Milestone 68, unmodified) twice, comparing the pre-save and post-reload
+predictions and raising `forge.PersistenceError` (naming the max absolute
+difference) instead of the old bare `assert` a caller could lose under
+`python -O`. Returns the freshly **reloaded** `Module`, not the original, so
+a caller's next step (an interpretation or reconstruction demo) genuinely
+exercises the file on disk. Deliberately scoped to `predict()`'s own single
+-forward-call convention: does not touch `Trainer.save_checkpoint()`/
+`TrainingSession.save_checkpoint()` (checkpointing is a separate,
+resumable-training concern callers compose by calling both), and does not
+cover the three stepwise-recurrence examples (`char_rnn`/`word_rnn`/
+`long_range_recall`), whose `model.step()` calling convention `predict()`
+itself was never built for -- those keep their own independent check rather
+than being forced into a shape that doesn't fit.
+
+Retrofitted all seven `Trainer`-based examples' `train.py`
+(`image_folder_classification` -- the brief's required primary consumer --
+plus `mnist`, `regression`, `resnet`, `autoencoder`, `segmentation`,
+`waveform_classification`) to call `save_and_verify()` in place of their own
+hand-written round trip, collapsing 6-10 duplicated lines per example to 1-4
+and removing now-dead `load_model`/`save_model`/`np.allclose` imports and
+`pre_save_pred`/`post_load_pred` intermediates; `autoencoder`'s reconstruction
+PNG and `segmentation`'s predicted-mask PNG are now rendered from the
+freshly reloaded model (already proven to match the pre-save model) rather
+than the pre-save prediction, so what gets rendered is genuinely what the
+saved artifact produces. No `forge/serialization`, `forge/training/trainer.py`,
+or `forge/training/session.py` file was touched -- this composes existing
+persistence/inference machinery rather than replacing or duplicating any of
+it.
+
+11 new tests (10 `tests/test_inference.py`: re-export identity, matching
+pre-save prediction, independent `load_model()` readability,
+`preprocessing=`/`classes=` pass-through, default-to-`None` when omitted,
+non-`Module`/non-`Tensor` rejection, explicit `device=` override, a
+monkeypatched-mismatch test proving `PersistenceError` actually fires, and a
+no-mutation-of-the-original-model check; 1 `tests/test_inference_cuda.py`:
+a CUDA-resident model saves and restores onto CUDA with a CPU-resident
+verification sample, hardware-verified on the 940MX). All seven retrofitted
+examples' real `train.py` scripts were run end-to-end (including real MNIST
+downloads and real CUDA training) via their existing integration test
+suites, not just unit-tested. Full suite: **2,265 collected, 2,264 passed, 1
+failed** (2,254 + 11 new) -- the same pre-existing
+`test_dataloader_prefetch.py` allocator-measurement flake documented since
+M63, reproduced passing cleanly in isolation, no M78 regression.
+Full report: `docs/development/m78-first-complete-training-workflow.md`.

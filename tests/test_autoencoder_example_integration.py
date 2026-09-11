@@ -28,10 +28,10 @@ import pytest
 import forge
 from forge import Tensor, no_grad
 from forge.cli.main import main as cli_main
-from forge.data import DataLoader, TensorDataset
+from forge.data import Compose, DataLoader, Lambda, Normalize, TensorDataset
 from forge.nn import MSELoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_model, save_model
+from forge.serialization import load_checkpoint, load_model, load_preprocessing, save_model
 from forge.training import Trainer
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +41,7 @@ if str(_REPO_ROOT) not in sys.path:
 from examples.autoencoder.dataset import AutoencoderDataset  # noqa: E402
 from examples.autoencoder.model import ConvAutoencoder, build_model  # noqa: E402
 from examples.autoencoder.train import (  # noqa: E402
+    build_transform,
     latent_nearest_neighbor_label_agreement,
     trivial_baseline_mse,
 )
@@ -379,3 +380,42 @@ def test_autoencoder_dataset_applies_transform_only_to_the_returned_image(fake_m
     x, y = ds[0]
     np.testing.assert_array_equal(x.numpy(), np.zeros((1, 28, 28), dtype=np.float32))
     np.testing.assert_array_equal(y.numpy(), np.zeros((1, 28, 28), dtype=np.float32))
+
+
+# -- Milestone 77: persistable preprocessing (no more Lambda) ------------------
+
+
+def test_build_transform_is_bit_exact_with_the_old_lambda_based_pipeline():
+    """`build_transform()`'s `Normalize(mean=0, std=255)` must compute
+    exactly what the pre-Milestone-77 `Lambda(lambda x: x * (1/255))` step
+    did -- a persistence-motivated rewrite, not a behavior change."""
+    old_pipeline = Compose([Lambda(lambda x: x * (1.0 / 255.0))])
+    x = Tensor(np.random.default_rng(0).uniform(0, 255, size=(1, 28, 28)).astype(np.float32))
+    np.testing.assert_array_equal(build_transform()(x).numpy(), old_pipeline(x).numpy())
+
+
+def test_model_persistence_with_preprocessing_round_trips(tmp_path):
+    """Milestone 77: `save_model(..., preprocessing=...)` now works for the
+    autoencoder (previously blocked by `build_transform()`'s `Lambda` step),
+    and the reconstructed transform can prepare a brand-new raw image."""
+    forge.random.seed(20)
+    train_loader = DataLoader(
+        _make_reconstruction_dataset(48, seed=21), batch_size=16, shuffle=True, generator=np.random.default_rng(22)
+    )
+
+    model = build_model(latent_dim=8)
+    optimizer = Adam(model.parameters(), lr=5e-3)
+    trainer = Trainer(model, MSELoss(), optimizer, device="cpu", verbose=False)
+    trainer.fit(train_loader, epochs=1)
+
+    model_path = tmp_path / "autoencoder_with_preprocessing.forge"
+    save_model(model, str(model_path), preprocessing=build_transform())
+
+    reloaded_preprocessing = load_preprocessing(str(model_path))
+    reloaded_model = load_model(str(model_path))
+
+    raw = Tensor(np.random.default_rng(23).uniform(0, 255, size=(1, 28, 28)).astype(np.float32))
+    prepared = reloaded_preprocessing(raw).reshape(1, 1, 28, 28)
+    with no_grad():
+        reconstruction = reloaded_model(prepared)
+    assert reconstruction.shape == prepared.shape

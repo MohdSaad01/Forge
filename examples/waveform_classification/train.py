@@ -43,8 +43,8 @@ import forge
 from forge.data import DataLoader
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_model, save_model
-from forge.training import Accuracy, Trainer, predict
+from forge.serialization import load_checkpoint
+from forge.training import Accuracy, Trainer, save_and_verify
 
 try:
     from .dataset import LENGTH, make_datasets
@@ -123,23 +123,19 @@ def main(argv=None) -> None:
 
     trainer.save_checkpoint(str(checkpoint_path))
     print(f"\nSaved checkpoint -> {checkpoint_path}")
-    save_model(model, str(model_path))
-    print(f"Saved model -> {model_path}")
 
-    # Model-persistence round trip: reload fresh and confirm predictions
-    # match, the same property `examples/regression/train.py`/
-    # `examples/mnist/train.py` demonstrate for their own architectures.
+    # Milestone 78: save_and_verify() saves the model, then reloads it fresh
+    # and confirms the reload's prediction on query_x matches the model that
+    # was just saved -- the same "save -> reload -> predict() must agree"
+    # round trip `examples/regression/train.py`/`examples/mnist/train.py`
+    # demonstrate, now the shared abstraction. `-1`-inferred reshape is a
+    # CPU-`Tensor.reshape` convenience only (`CUDABackend.reshape` requires
+    # every dim explicit, see `forge/backend/cuda/backend.py`); pass `LENGTH`
+    # explicitly so this round trip works identically on both devices.
     query_x, _ = test_ds[0]
-    # `-1`-inferred reshape is a CPU-`Tensor.reshape` convenience only
-    # (`CUDABackend.reshape` requires every dim explicit, see
-    # `forge/backend/cuda/backend.py`); pass `LENGTH` explicitly so this
-    # round trip works identically on both devices.
     query_x = query_x.to(args.device).reshape(1, 1, LENGTH)
-    pre_save_pred = predict(model, query_x).numpy()
-    reloaded = load_model(str(model_path), device=args.device)
-    post_load_pred = predict(reloaded, query_x).numpy()
-    assert np.allclose(pre_save_pred, post_load_pred, atol=1e-5), "reloaded model prediction diverged"
-    print("Verified: reloaded model reproduces the pre-save prediction.")
+    save_and_verify(model, str(model_path), query_x)
+    print(f"Saved + verified model -> {model_path}")
 
     print("\nInspect the generated artifacts with the M19 CLI:")
     print(f"  python -m forge model inspect {model_path}")

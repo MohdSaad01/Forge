@@ -374,3 +374,51 @@ def test_cli_inspects_generated_resnet_model_and_checkpoint(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Optimizer: Adam" in out
     assert "Epoch: 1" in out
+
+
+# -- Milestone 77: preprocessing + classes persistence on a custom-registered tree --
+
+
+def test_model_persistence_with_preprocessing_and_classes_round_trips(tmp_path):
+    """Milestone 77: `save_model(..., preprocessing=..., classes=...)` (Milestones
+    71/72) works for a *custom-registered* Module tree (`ResNetMNIST`/
+    `ResidualBlock`, not `Sequential`) -- proving that mechanism, previously
+    only ever exercised by `examples/image_folder_classification`'s
+    `Sequential`-only model, does not silently depend on the module tree
+    being `Sequential`. This also exercises the same registry mechanism
+    `docs/architecture/persistence.md`'s "Custom-module limitations" section
+    documents: `load_model()` only succeeds below because this test module
+    already imported `ResNetMNIST`/`ResidualBlock` above (running
+    `register_module()` as an import side effect).
+    """
+    from examples.mnist.train import build_transform
+
+    forge.random.seed(40)
+    train_loader = DataLoader(_make_dataset(48, seed=41), batch_size=16, shuffle=True, generator=np.random.default_rng(42))
+
+    model = build_model()
+    optimizer = Adam(model.parameters(), lr=5e-3)
+    trainer = Trainer(model, CrossEntropyLoss(), optimizer, device="cpu", verbose=False)
+    trainer.fit(train_loader, epochs=1)
+
+    model_path = tmp_path / "resnet_with_preprocessing.forge"
+    classes = [str(d) for d in range(_NUM_CLASSES)]
+    save_model(model, str(model_path), preprocessing=build_transform(), classes=classes)
+
+    from forge.serialization import load_classes, load_preprocessing
+    from forge.training import interpret_classification
+
+    reloaded_classes = load_classes(str(model_path))
+    assert reloaded_classes == classes
+    reloaded_preprocessing = load_preprocessing(str(model_path))
+    reloaded_model = load_model(str(model_path))
+    assert isinstance(reloaded_model, ResNetMNIST)
+
+    raw = Tensor(np.random.default_rng(43).uniform(0, 255, size=(1, 28, 28)).astype(np.float32))
+    prepared = reloaded_preprocessing(raw).reshape(1, 1, 28, 28)
+    reloaded_model.eval()
+    with no_grad():
+        output = reloaded_model(prepared)
+    result = interpret_classification(output, reloaded_classes)[0]
+    assert result.label in classes
+    assert 0.0 <= result.confidence <= 1.0

@@ -19,7 +19,7 @@ from forge import Tensor, no_grad
 from forge.backend.cuda import is_cuda_available
 from forge.data import DataLoader, TensorDataset
 from forge.nn import Linear, Module, ReLU, RNNCell
-from forge.training import generate_sequence, predict
+from forge.training import generate_sequence, predict, save_and_verify
 
 pytestmark = pytest.mark.skipif(not is_cuda_available(), reason="CUDA is not available on this machine")
 
@@ -35,6 +35,15 @@ class MLP(Module):
 
     def forward(self, x):
         return self.fc2(self.relu(self.fc1(x)))
+
+
+# Registered for persistence (Milestone 78's save_and_verify() tests below
+# actually save/reload this class).
+from forge.serialization import register_module  # noqa: E402
+
+register_module("_MLP_M78CUDATest", MLP, get_config=lambda m: {
+    "in_features": m.fc1.in_features, "hidden": m.fc1.out_features, "out_features": m.fc2.out_features,
+})
 
 
 def _features(n=11, in_features=4, seed=0):
@@ -84,6 +93,23 @@ def test_predict_device_defaults_to_cuda_model_device():
     # device, which is always CPU for direct usability (.numpy(), display).
     assert str(result.device) == "cpu"
     assert str(model.device) == "cuda"
+
+
+# -- save_and_verify() (Milestone 78) -----------------------------------------
+
+
+def test_save_and_verify_saves_cuda_model_and_restores_it_onto_cuda(tmp_path):
+    forge.random.seed(5)
+    model = MLP().to("cuda")
+    x = Tensor(_features(n=1))  # deliberately CPU-resident, like predict()'s own contract
+
+    reloaded = save_and_verify(model, str(tmp_path / "model.forge"), x)
+    assert str(reloaded.device) == "cuda"
+
+    with no_grad():
+        expected = model(x.to("cuda")).to("cpu").numpy()
+        actual = reloaded(x.to("cuda")).to("cpu").numpy()
+    np.testing.assert_allclose(actual, expected, **TOL)
 
 
 # -- generate_sequence() (Milestone 75) --------------------------------------

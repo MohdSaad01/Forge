@@ -242,15 +242,26 @@ and `::test_resume_equivalence_matches_continuous_training`.
 ## Model persistence
 
 `train.py` also demonstrates the plain (optimizer-free) persistence path:
-after training, it records a reconstruction, calls `forge.save_model()`,
-reloads with `forge.load_model()`, and asserts the reloaded model reproduces
-the same reconstruction -- printed as `Verified: reloaded model reproduces
-the pre-save reconstruction.` at the end of every run. The same property is
-covered by
+after training, it calls `forge.training.save_and_verify()` (Milestone 78),
+which saves the model, then reloads it fresh and confirms the reload's
+reconstruction matches the pre-save model -- printed as `Saved + verified
+model + preprocessing -> ...` at the end of every run, raising
+`forge.PersistenceError` instead if the reload ever disagrees; the rendered
+`reconstruction_output.png` is produced from the reloaded model, not the
+pre-save one, so what gets saved to disk is what the artifact actually
+produces. The same property is covered by
 `tests/test_autoencoder_example_integration.py::test_model_persistence_preserves_predictions`
 (CPU) and
 `tests/test_autoencoder_example_cuda_integration.py::test_model_persistence_preserves_predictions_on_cuda`
 (CUDA).
+
+**Preprocessing (Milestone 77).** `train.py` now also saves its
+`Normalize`-based pixel-scaling pipeline alongside the model
+(`save_model(..., preprocessing=build_transform())`) -- `build_transform()`
+previously used `Lambda(lambda x: x * (1/255))`, which cannot be saved
+(`Lambda` has no safe serialized representation); it is now
+`Normalize(mean=0.0, std=255.0)`, computing exactly the same value. No
+`classes=` is saved -- an autoencoder has no class vocabulary to record.
 
 ## Viewing a reconstruction
 

@@ -47,11 +47,11 @@ import numpy as np
 
 import forge
 from forge import no_grad
-from forge.data import Compose, DataLoader, Lambda, save_image
+from forge.data import Compose, DataLoader, Normalize, save_image
 from forge.nn import MSELoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_model, save_model
-from forge.training import Trainer, predict
+from forge.serialization import load_checkpoint
+from forge.training import Trainer, predict, save_and_verify
 
 try:
     from .dataset import DEFAULT_ROOT, AutoencoderDataset
@@ -59,8 +59,6 @@ try:
 except ImportError:  # running as a plain script (`python examples/autoencoder/train.py`)
     from dataset import DEFAULT_ROOT, AutoencoderDataset
     from model import build_model
-
-_PIXEL_SCALE = 1.0 / 255.0
 
 
 def build_transform():
@@ -74,8 +72,15 @@ def build_transform():
     zero-centered, unbounded-range target would make the trivial "predict
     the mean image" baseline (see `main()`) harder to interpret for no
     benefit.
+
+    Milestone 77: `Normalize(mean=0.0, std=255.0)` replaces
+    `Lambda(lambda x: x * _PIXEL_SCALE)` -- `(x - 0) / 255 == x / 255`, the
+    same substitution `examples/mnist/train.py` and
+    `examples/image_folder_classification/train.py` use, needed here for
+    the same reason: `Lambda` cannot be passed to
+    `save_model(..., preprocessing=...)` (see that call below).
     """
-    return Compose([Lambda(lambda x: x * _PIXEL_SCALE)])
+    return Compose([Normalize(mean=0.0, std=255.0)])
 
 
 def build_datasets(data_root: str, download: bool):
@@ -210,27 +215,31 @@ def main(argv=None) -> None:
 
     trainer.save_checkpoint(str(checkpoint_path))
     print(f"\nSaved checkpoint -> {checkpoint_path}")
-    save_model(model, str(model_path))
-    print(f"Saved model -> {model_path}")
-
-    # Model-persistence round trip: reload fresh and confirm reconstructions
-    # match, the same property every other Forge example demonstrates.
+    # Milestone 77: `preprocessing=` (Milestone 71) now saves alongside the
+    # model for the first time in this example -- previously blocked by
+    # `build_transform()`'s `Lambda` step (see that function's docstring).
+    # No `classes=` (Milestone 72): an autoencoder has no class vocabulary.
+    # Milestone 78: `save_and_verify()` (the old hand-written "save -> reload
+    # -> predict() must agree" round trip, now the shared abstraction) saves
+    # the model and immediately proves it by reloading it fresh.
     query_x, _ = test_ds[0]
     query_x = query_x.to(args.device).reshape(1, 1, 28, 28)
-    pre_save_pred = predict(model, query_x).numpy()
-    reloaded = load_model(str(model_path), device=args.device)
-    post_load_pred = predict(reloaded, query_x).numpy()
-    assert np.allclose(pre_save_pred, post_load_pred, atol=1e-5), "reloaded model prediction diverged"
-    print("Verified: reloaded model reproduces the pre-save reconstruction.")
+    reloaded = save_and_verify(model, str(model_path), query_x, preprocessing=build_transform())
+    print(f"Saved + verified model + preprocessing -> {model_path}")
 
     # Milestone 76: the reconstruction is the whole point of an autoencoder,
     # but until now nothing ever rendered it -- every prior run only printed
     # a scalar MSE. Write the input and its reconstruction out as real PNGs
-    # so a person can actually look at what the model produced.
+    # so a person can actually look at what the model produced -- using the
+    # freshly reloaded model (Milestone 78's `save_and_verify()` already
+    # proved its reconstruction matches the pre-save model to within
+    # `atol`), so what gets rendered is genuinely what the saved artifact
+    # produces.
     input_image_path = output_dir / "reconstruction_input.png"
     output_image_path = output_dir / "reconstruction_output.png"
+    reconstruction = predict(reloaded, query_x).numpy()
     save_image(query_x.reshape(1, 28, 28), str(input_image_path))
-    save_image(forge.Tensor(pre_save_pred.reshape(1, 28, 28)), str(output_image_path))
+    save_image(forge.Tensor(reconstruction.reshape(1, 28, 28)), str(output_image_path))
     print(f"Saved reconstruction input/output -> {input_image_path}, {output_image_path}")
 
     print("\nInspect the generated artifacts with the Milestone 19 CLI:")

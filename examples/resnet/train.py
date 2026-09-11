@@ -55,8 +55,8 @@ import forge
 from forge.data import DataLoader
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_model, save_model
-from forge.training import Accuracy, Trainer, predict
+from forge.serialization import load_checkpoint, load_classes
+from forge.training import Accuracy, Trainer, interpret_classification, predict, save_and_verify
 
 try:
     from examples.mnist.dataset import MNISTDataset
@@ -167,23 +167,38 @@ def main(argv=None) -> None:
 
     trainer.save_checkpoint(str(checkpoint_path), extra={"data_loader_rng_state": data_rng.bit_generator.state})
     print(f"\nSaved checkpoint -> {checkpoint_path}")
-    save_model(model, str(model_path))
-    print(f"Saved model -> {model_path}")
 
     extend_run_record(run_record, history=history, final_eval=final_eval, duration_seconds=duration)
     save_run_record(history_path, run_record)
     print(f"Saved run record -> {history_path}")
 
-    # Model-persistence round trip (Section 10): load fresh and confirm
-    # predictions match, the same property every other Forge example
-    # verifies.
-    query_x, _ = test_ds[0]
+    # Milestone 77: `preprocessing=`/`classes=` (Milestones 71/72), reusing
+    # `examples.mnist.train.build_transform()` unmodified now that it no
+    # longer contains a `Lambda` step -- the first time a *custom-registered*
+    # Module tree (`ResidualBlock`/`ResNetMNIST`, not `Sequential`) has been
+    # saved with persisted preprocessing/classes, proving that mechanism
+    # extends past `Sequential`-only models. See
+    # `docs/development/m77-mnist-family-portable-artifacts.md`. Milestone 78:
+    # `save_and_verify()` (Section 10's old hand-written round trip, now the
+    # shared abstraction) saves the model and immediately proves it by
+    # reloading it fresh -- the first proof this mechanism works on a
+    # custom-registered tree, not only `Sequential`.
+    query_x, query_y = test_ds[0]
     query_x = query_x.to(args.device).reshape(1, 1, 28, 28)
-    pre_save_pred = predict(model, query_x).numpy()
-    reloaded = load_model(str(model_path), device=args.device)
-    post_load_pred = predict(reloaded, query_x).numpy()
-    assert np.allclose(pre_save_pred, post_load_pred, atol=1e-5), "reloaded model prediction diverged"
-    print("Verified: reloaded model reproduces the pre-save prediction.")
+    reloaded = save_and_verify(
+        model, str(model_path), query_x,
+        preprocessing=build_transform(), classes=[str(d) for d in range(_NUM_CLASSES)],
+    )
+    print(f"Saved + verified model + preprocessing + classes -> {model_path}")
+
+    # Milestone 77: interpret via the file's own reconstructed vocabulary,
+    # proving `load_classes()` round-trips through a custom-registered
+    # (non-Sequential) Module tree, not only `Sequential`.
+    reloaded_classes = load_classes(str(model_path))
+    result = interpret_classification(predict(reloaded, query_x), reloaded_classes)[0]
+    print(f"\nInference demo (test sample 0, true digit {int(query_y.numpy())}):")
+    print(f"Prediction: digit {result.label}")
+    print(f"Confidence: {result.confidence:.1%}")
 
     print("\nInspect the generated artifacts with the Milestone 19 CLI:")
     print(f"  python -m forge model inspect {model_path}")

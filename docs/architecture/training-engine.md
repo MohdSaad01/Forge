@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78)
 
 ## Package layout
 ```
@@ -6,7 +6,7 @@ forge/
     training/
         trainer.py     Trainer, EpochResult, EvaluationResult, TrainingHistory
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
-        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72)
+        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78)
         session.py     TrainingSession, start_training_session() (Milestone 73)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
 ```
@@ -663,6 +663,61 @@ the refactored script, proving behavioral equivalence). `mnist`, `resnet`,
 `segmentation`, `autoencoder`, and `waveform_classification` were not
 retrofitted this milestone (mechanical, low-risk, and left as a natural
 follow-up) but `regression`'s retrofit demonstrates the identical pattern.
+
+## Portable-artifact save + verify: `save_and_verify()` (Milestone 78)
+Every Trainer-based example (`mnist`, `regression`, `resnet`, `autoencoder`,
+`segmentation`, `waveform_classification`, `image_folder_classification`)
+independently hand-wrote the identical closing sequence once training
+finished: `save_model()`, then `load_model()` a fresh copy back, then
+`predict()` each and compare with `numpy.allclose(..., atol=1e-5)` behind a
+bare `assert` -- the literal proof that `docs/product/vision.md`'s "save as a
+portable artifact... load it later... receive a useful result" workflow
+actually holds for the file just written, not just the in-memory model.
+`forge.training.save_and_verify()` (`forge/training/inference.py`) is that
+sequence, written once:
+```python
+reloaded = forge.save_and_verify(
+    trainer.model, str(model_path), query_x,
+    preprocessing=build_transform(), classes=full_dataset.classes,
+)
+result = interpret_classification(predict(reloaded, new_image), reloaded_classes)
+```
+1. `predict(model, sample, device=...)` -- the pre-save prediction, from the
+   live, just-trained model.
+2. `save_model(model, path, preprocessing=preprocessing, classes=classes)`
+   (Milestones 71/72's unmodified persistence call -- no new serialization
+   logic).
+3. `load_model(path, device=...)` -- a genuinely fresh reconstruction.
+4. `predict(reloaded, sample)` -- the post-load prediction.
+5. `numpy.allclose(pre_save, post_load, atol=atol)`; a mismatch raises
+   `PersistenceError` (a real, catchable error -- not an `assert` a caller
+   could lose under `python -O`) naming the max absolute difference.
+
+Returns the freshly **reloaded** `Module`, not the original -- so whatever a
+caller does next (an interpretation demo, a reconstruction image) genuinely
+exercises the file on disk, not lingering in-memory state.
+
+**Scope.** Composes exactly `save_model()` + `load_model()` + `predict()`,
+so it covers exactly `predict()`'s calling convention (one batched `Tensor`
+forward pass) -- it is orthogonal to, and does not touch,
+`Trainer.save_checkpoint()`/`TrainingSession.save_checkpoint()` (checkpoint
+persistence is a separate, resumable-training concern; a caller calls both,
+exactly as every retrofitted example's `train.py` does). It does not cover
+the stepwise-recurrence sequence models (`char_rnn`/`word_rnn`/
+`long_range_recall`), which verify via `model.step(x, state)` -- a different
+calling convention `predict()` itself was never built for (see **Inference**
+above) -- those three examples keep their own independent hand-written check
+rather than being forced into a shape that does not fit them.
+
+**Real consumers.** All seven Trainer-based examples were retrofitted --
+`image_folder_classification` (the primary, required consumer per this
+milestone's own brief) and `mnist` (Forge's flagship example, and the first
+place `save_and_verify()`'s return value is reused for interpretation, not
+just discarded after the check) are the two most representative;
+`regression`/`resnet`/`autoencoder`/`segmentation`/`waveform_classification`
+confirm the same call shape holds across every remaining architecture and
+persistence-metadata combination (with/without `preprocessing=`,
+with/without `classes=`, `Sequential` and custom-registered `Module` trees).
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

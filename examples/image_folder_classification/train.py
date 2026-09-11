@@ -74,13 +74,11 @@ from pathlib import Path
 
 import numpy as np
 
-import forge
-from forge import Tensor
 from forge.data import Compose, DataLoader, ImageFolder, Normalize, Resize, random_split
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
-from forge.serialization import load_classes, load_model, load_preprocessing, save_model
-from forge.training import Accuracy, interpret_classification, predict, start_training_session
+from forge.serialization import load_classes, load_preprocessing
+from forge.training import Accuracy, interpret_classification, predict, save_and_verify, start_training_session
 
 try:
     from .generate_dataset import _render_image, generate_dataset
@@ -230,18 +228,20 @@ def main(argv=None) -> None:
     # file alone -- not a hand-written `classes.json` sidecar a caller had
     # to remember to keep next to it -- is enough to turn a predicted index
     # back into a class name later. See `load_classes()` and
-    # `forge.training.interpret_classification()`.
-    save_model(session.trainer.model, str(model_path), preprocessing=build_transform(), classes=full_dataset.classes)
-    print(f"Saved model + preprocessing + classes ({full_dataset.classes}) -> {model_path}")
-
-    # Model-persistence round trip: save -> reload -> predict() must agree.
+    # `forge.training.interpret_classification()`. Milestone 78:
+    # `save_and_verify()` saves the model, then reloads it fresh and
+    # confirms the reload's prediction on `query_x_batch` matches the
+    # pre-save model -- the same "save -> reload -> predict() must agree"
+    # proof this script used to hand-write, now the shared Milestone 78
+    # abstraction (`forge/training/inference.py`) every retrofitted Forge
+    # example calls the same way.
     query_x, query_y = test_ds[0]
     query_x_batch = query_x.to(args.device).reshape(1, *query_x.shape)
-    pre_save_pred = predict(session.trainer.model, query_x_batch).numpy()
-    reloaded = load_model(str(model_path), device=args.device)
-    post_load_pred = predict(reloaded, query_x_batch).numpy()
-    assert np.allclose(pre_save_pred, post_load_pred, atol=1e-5), "reloaded model prediction diverged"
-    print("Verified: reloaded model reproduces the pre-save prediction.")
+    reloaded = save_and_verify(
+        session.trainer.model, str(model_path), query_x_batch,
+        preprocessing=build_transform(), classes=full_dataset.classes,
+    )
+    print(f"Saved + verified model + preprocessing + classes ({full_dataset.classes}) -> {model_path}")
 
     # Section 11: standalone single-image inference through forge.predict(),
     # interpreted into a human-readable class name + confidence via Milestone
@@ -249,7 +249,7 @@ def main(argv=None) -> None:
     # reconstructed vocabulary, not the in-memory `full_dataset.classes`
     # this process still happens to have, to prove the file alone is enough.
     reloaded_classes = load_classes(str(model_path))
-    result = interpret_classification(Tensor(post_load_pred), reloaded_classes)[0]
+    result = interpret_classification(predict(reloaded, query_x_batch), reloaded_classes)[0]
     true_idx = int(query_y.numpy())
     true_name = full_dataset.classes[true_idx]
     print(f"\nInference demo (test sample 0, true class: {true_name}):")

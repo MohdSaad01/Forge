@@ -43,8 +43,8 @@ import forge
 from forge.data import DataLoader, save_image
 from forge.nn import MSELoss
 from forge.optim import Adam
-from forge.serialization import load_checkpoint, load_model, save_model
-from forge.training import Trainer, predict
+from forge.serialization import load_checkpoint
+from forge.training import Trainer, predict, save_and_verify
 
 try:
     from .dataset import IMAGE_SIZE, make_datasets
@@ -153,28 +153,29 @@ def main(argv=None) -> None:
 
     trainer.save_checkpoint(str(checkpoint_path))
     print(f"\nSaved checkpoint -> {checkpoint_path}")
-    save_model(model, str(model_path))
-    print(f"Saved model -> {model_path}")
 
-    # Model-persistence round trip: reload fresh and confirm predictions
-    # match, the same property every other Forge example demonstrates.
+    # Milestone 78: save_and_verify() saves the model, then reloads it fresh
+    # and confirms the reload's prediction on query_x matches the model that
+    # was just saved -- the same "save -> reload -> predict() must agree"
+    # round trip every other Forge example demonstrates, now the shared
+    # abstraction.
     query_x, query_mask = test_ds[0]
     query_x = query_x.to(args.device).reshape(1, 3, IMAGE_SIZE, IMAGE_SIZE)
-    pre_save_pred = predict(model, query_x).numpy()
-    reloaded = load_model(str(model_path), device=args.device)
-    post_load_pred = predict(reloaded, query_x).numpy()
-    assert np.allclose(pre_save_pred, post_load_pred, atol=1e-5), "reloaded model prediction diverged"
-    print("Verified: reloaded model reproduces the pre-save prediction.")
+    reloaded = save_and_verify(model, str(model_path), query_x)
+    print(f"Saved + verified model -> {model_path}")
 
     # Milestone 76: a segmentation model's real output is the predicted
     # mask, but until now nothing ever rendered it -- every prior run only
     # printed scalar pixel_accuracy/iou numbers. Write the input image, the
     # thresholded predicted mask, and the ground-truth mask out as real
-    # PNGs so a person can actually see what the model segmented.
+    # PNGs so a person can actually see what the model segmented -- using
+    # the freshly reloaded model (already proven to match the pre-save model
+    # to within `atol` by `save_and_verify()` above).
     input_image_path = output_dir / "segmentation_input.png"
     predicted_mask_path = output_dir / "segmentation_predicted_mask.png"
     ground_truth_mask_path = output_dir / "segmentation_ground_truth_mask.png"
-    predicted_mask = (pre_save_pred.reshape(1, IMAGE_SIZE, IMAGE_SIZE) >= _THRESHOLD).astype(np.float32)
+    reloaded_pred = predict(reloaded, query_x).numpy()
+    predicted_mask = (reloaded_pred.reshape(1, IMAGE_SIZE, IMAGE_SIZE) >= _THRESHOLD).astype(np.float32)
     save_image(query_x.reshape(3, IMAGE_SIZE, IMAGE_SIZE), str(input_image_path))
     save_image(forge.Tensor(predicted_mask), str(predicted_mask_path))
     save_image(query_mask, str(ground_truth_mask_path))

@@ -54,7 +54,7 @@ import numpy as np
 from .. import random as forge_random
 from ..autograd import no_grad
 from ..backend.device import Device
-from ..exceptions import DataError, TrainerError
+from ..exceptions import DataError, PersistenceError, TrainerError
 from ..nn.module import Module
 from ..tensor.tensor import Tensor
 
@@ -131,6 +131,99 @@ def predict(
         raise DataError("predict() received an empty iterable of inputs (no batches to run).")
     combined = np.concatenate(chunks, axis=0)
     return Tensor(combined, dtype=out_dtype, device="cpu")
+
+
+def save_and_verify(
+    model: Module,
+    path: str,
+    sample: Tensor,
+    device: "str | Device | None" = None,
+    preprocessing: "Any | None" = None,
+    classes: "list[str] | None" = None,
+    atol: float = 1e-5,
+) -> Module:
+    """Save `model` to `path`, then immediately prove it is a genuinely portable
+    artifact by reloading it fresh and confirming its prediction on `sample`
+    matches the model that was just saved (Milestone 78).
+
+    ```python
+    reloaded = save_and_verify(
+        trainer.model, str(model_path), query_x.reshape(1, *query_x.shape),
+        preprocessing=build_transform(), classes=full_dataset.classes,
+    )
+    result = interpret_classification(predict(reloaded, new_image_batch), reloaded_classes)
+    ```
+
+    Every Trainer-based Forge example (`mnist`, `regression`, `resnet`,
+    `autoencoder`, `segmentation`, `waveform_classification`,
+    `image_folder_classification`) independently hand-wrote the identical
+    "`save_model()` -> `load_model()` -> `predict()` twice -> `numpy.allclose(...,
+    atol=1e-5)` -> `assert`" sequence to prove exactly this property -- the
+    literal "portable artifact" half of `docs/product/vision.md`'s workflow,
+    duplicated across all ten examples' `train.py` scripts (the three
+    stepwise-recurrence examples hand-write an equivalent check against
+    `model.step()` instead -- see the **Scope** paragraph below). This
+    function is that sequence, written once: `save_model(model, path,
+    preprocessing=preprocessing, classes=classes)` (Milestones 71/72's
+    unmodified persistence call), then `load_model(path, device=...)` +
+    `predict()` on both the pre-save model and the freshly reloaded one,
+    compared with `numpy.allclose(..., atol=atol)`.
+
+    `device` defaults to `model.device` (the device `model`/`sample` already
+    live on, matching `predict()`'s own default) -- the reloaded model is
+    restored onto the same device `save_model()` recorded, mirroring
+    `load_model()`'s own default policy exactly. `sample` must already be
+    batched (a leading batch dimension) the same way any `predict()` input
+    is -- this function does no reshaping of its own.
+
+    Raises `forge.DataError` if `sample` is not a `Tensor`, and
+    `forge.PersistenceError` if the reloaded model's prediction diverges from
+    the pre-save prediction by more than `atol` -- the exact condition every
+    example's own hand-written `assert` used to catch, now a real, catchable
+    error rather than an `AssertionError` a caller could silently lose under
+    `python -O`.
+
+    Returns the freshly **reloaded** `Module` (not `model` itself) -- ready
+    for immediate further use (e.g. an interpretation or reconstruction
+    demo), so a caller's next step genuinely exercises the file on disk, not
+    lingering in-memory state from training.
+
+    **Scope.** Deliberately narrow: this only composes `save_model()` +
+    `load_model()` + `predict()`, so it covers exactly `predict()`'s own
+    calling convention (`model(x)` on a single batched `Tensor`) -- it does
+    not touch `Trainer.save_checkpoint()`/`TrainingSession.save_checkpoint()`
+    (checkpointing is a separate, resumable-training concern, orthogonal to
+    "is this inference artifact portable"; callers compose the two by calling
+    both, exactly as every retrofitted example does), and it does not cover
+    the stepwise-recurrence sequence models (`char_rnn`/`word_rnn`/
+    `long_range_recall`), which verify via `model.step(x, state)`, a
+    different calling convention `predict()` was never built for (see
+    `predict()`'s own docstring) -- those three examples keep their existing,
+    independent hand-written check rather than being forced into a shape
+    that doesn't fit them.
+    """
+    if not isinstance(model, Module):
+        raise TrainerError(f"save_and_verify() requires a forge.nn.Module model, got {type(model).__name__}.")
+    if not isinstance(sample, Tensor):
+        raise DataError(f"save_and_verify() requires sample to be a Tensor, got {type(sample).__name__}.")
+
+    from ..serialization.model import load_model as _load_model, save_model as _save_model
+
+    resolved_device = Device.parse(device) if device is not None else None
+    pre_save = predict(model, sample, device=resolved_device).numpy()
+
+    _save_model(model, path, preprocessing=preprocessing, classes=classes)
+    reloaded = _load_model(path, device=resolved_device.type if resolved_device is not None else None)
+    post_load = predict(reloaded, sample).numpy()
+
+    if not np.allclose(pre_save, post_load, atol=atol):
+        max_diff = float(np.max(np.abs(pre_save - post_load)))
+        raise PersistenceError(
+            f"save_and_verify(): the model reloaded from '{path}' produced a prediction "
+            f"that differs from the model that was just saved (max abs diff {max_diff:.6g} "
+            f"exceeds atol={atol})."
+        )
+    return reloaded
 
 
 def generate_sequence(
@@ -325,4 +418,4 @@ def interpret_classification(output: Tensor, classes: "Sequence[str]") -> "list[
     ]
 
 
-__all__ = ["predict", "generate_sequence", "interpret_classification", "ClassificationPrediction"]
+__all__ = ["predict", "save_and_verify", "generate_sequence", "interpret_classification", "ClassificationPrediction"]
