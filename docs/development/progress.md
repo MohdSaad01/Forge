@@ -4712,3 +4712,75 @@ failed** (2,254 + 11 new) -- the same pre-existing
 `test_dataloader_prefetch.py` allocator-measurement flake documented since
 M63, reproduced passing cleanly in isolation, no M78 regression.
 Full report: `docs/development/m78-first-complete-training-workflow.md`.
+
+### M79 — High-level training API: `forge.train()`
+
+Brief demanded a real product milestone answering "what currently forces an
+ordinary Forge developer to understand Forge's internal training machinery
+when they simply want to train a model?", forbidding another readiness
+assessment/survey/cleanup-only milestone. A targeted inspection of
+`Trainer`/`TrainingSession`/`DataLoader` and every `examples/*/train.py`
+found every script still hand-assembles `DataLoader(...)` + `Trainer(...)` +
+`trainer.fit(...)` itself, even after M73/M78 removed the fresh-vs-resumed
+construction branch and the post-training save-verify round trip.
+
+Added `forge.training.train(model, dataset, *, loss, optimizer, epochs,
+batch_size=32, shuffle=True, validation_dataset=None, device=None,
+metrics=None, verbose=True) -> TrainingHistory` (`forge/training/api.py`,
+new file, re-exported `forge.train`/`forge.training.train`) -- a thin
+orchestration layer over the unmodified `DataLoader`/`Trainer`: accepts a
+plain `Dataset` (builds a `DataLoader` internally) or an already-built
+`DataLoader` (used as-is, the escape hatch for `drop_last`/a custom shuffle
+generator/CUDA prefetch), moves `model` to `device=` **in place** before
+training (safe because `Module.to()` preserves `Parameter` identity, so an
+`optimizer` already built from `model.parameters()` stays valid), and calls
+`Trainer.fit()` once, returning its own `TrainingHistory` unmodified.
+Deliberately has **no checkpoint/resume** parameter -- `TrainingSession`'s
+resume path fundamentally replaces the caller's model/optimizer with the
+checkpoint's, which would either surprise a `train()` caller or reintroduce
+`start_training_session()`'s factory-based shape, exactly the "second
+checkpoint abstraction" the brief warns against; a resumable run still uses
+`start_training_session()` + `Trainer` directly. Distinct from the
+monolithic "dataset-to-artifact" `forge.train()` M78 already investigated
+and rejected (§18 of that report) -- M79's `train()` takes an
+already-constructed model/optimizer and touches no dataset
+construction/preprocessing/model definition, only the narrower
+`DataLoader`+`Trainer`+`fit()` glue M78 didn't address.
+
+Retrofitted `examples/mnist/train.py`'s fresh (non-`--resume`) path to
+`forge.train()`, chosen over the brief's suggested `image_folder_classification`
+after verifying by direct grep that `image_folder_classification`'s
+`--resume` path (unlike `mnist`'s) already depends on
+`start_training_session()`'s `data_loader_rng_state` resume-equivalence
+guarantee (M65/M73) -- retrofitting it would have silently downgraded that
+already-fixed reproducibility property, while `mnist` never had it to begin
+with, making its retrofit a genuine simplification with zero regression
+risk. `--resume` keeps its plain `Trainer` + `trainer.resume(checkpoint)`
+path unchanged, side by side with the new `forge.train()` fresh path;
+`epoch`/`global_step` for a fresh run's checkpoint are derived from the
+returned `TrainingHistory` (`len(history)`, `len(history) * len(train_loader)`)
+and saved via the free `forge.save_checkpoint()` function. Ran the real
+script end-to-end against real MNIST on both devices: CPU fresh run (2
+epochs, 98.08% val accuracy) -> `--resume` (1 more epoch, correctly resumed
+at `epoch=2, global_step=938`) -> standalone `infer.py` in a genuinely
+separate process (correct prediction) -> CUDA fresh run (1701 vs. 792
+samples/sec on CPU, ~2.1x, save_and_verify + inference correct).
+
+24 new tests (21 `tests/test_training_api.py` + 3
+`tests/test_training_api_cuda.py`, hardware-verified on the 940MX): return
+type/parameter updates/loss reduction, bit-exact equivalence against a
+hand-built `DataLoader`+`Trainer` given identical seeded state (proving pure
+orchestration, not a second training implementation), `Dataset`/`DataLoader`
+input, validation reporting, device resolution/movement (including the
+optimizer-parameter-identity-across-a-device-move safety claim), and error
+handling for invalid required arguments. `examples/mnist/train.py`'s own
+pre-existing integration suites pass unmodified (they exercise
+`build_model()`/`build_transform()` against a hand-built `Trainer`, not
+`main()`). No `forge/tensor`, `forge/autograd`, `forge/backend`, `forge/nn`,
+`forge/optim`, `forge/data`, `forge/serialization`,
+`forge/training/trainer.py`, or `forge/training/session.py` file was
+touched. Full suite: **2,289 collected, 2,288 passed, 1 failed** (2,265 + 24
+new) -- the same pre-existing `test_dataloader_prefetch.py`
+allocator-measurement flake documented since M63, reproduced passing cleanly
+in isolation, no M79 regression.
+Full report: `docs/development/m79-high-level-training-api.md`.

@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79)
 
 ## Package layout
 ```
@@ -8,6 +8,7 @@ forge/
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
         inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78)
         session.py     TrainingSession, start_training_session() (Milestone 73)
+        api.py         train() (Milestone 79)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
 ```
 `forge.training` is exposed as a submodule of `forge` (`forge.training.Trainer`),
@@ -718,6 +719,112 @@ just discarded after the check) are the two most representative;
 confirm the same call shape holds across every remaining architecture and
 persistence-metadata combination (with/without `preprocessing=`,
 with/without `classes=`, `Sequential` and custom-registered `Module` trees).
+
+## Single-call high-level training: `train()` (Milestone 79)
+Every Trainer-based example's `train.py` still starts with the same
+hand-assembled sequence before it ever calls `.fit()`:
+```python
+loader = DataLoader(train_ds, batch_size=32, shuffle=True)
+val_loader = DataLoader(val_ds, batch_size=32)
+trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device=device)
+history = trainer.fit(loader, epochs=epochs, validation_loader=val_loader)
+```
+`forge.training.train()` (`forge/training/api.py`) is that sequence, written
+once, as a thin orchestration layer over `DataLoader`/`Trainer` -- it builds
+no gradients, updates no parameters, and implements no batching of its own:
+```python
+history = forge.train(
+    model, train_dataset,
+    loss=CrossEntropyLoss(),
+    optimizer=Adam(model.parameters(), lr=1e-3),
+    epochs=10,
+    validation_dataset=val_dataset,
+    device="cuda",
+    metrics=[Accuracy()],
+)
+```
+`loss`/`optimizer`/`epochs` are required and keyword-only -- no automatic
+loss or optimizer selection, matching this milestone's own explicit scope.
+`model` must be a `forge.nn.Module`, `loss` a `forge.nn.Loss`, `optimizer` a
+`forge.optim.Optimizer` -- validated by the `Trainer` this function
+constructs internally, raising `TrainerError` exactly as a direct
+`Trainer(...)` call would.
+
+**Dataset, not just DataLoader.** `dataset`/`validation_dataset` each accept
+either a plain `forge.data.Dataset` (wrapped in a fresh
+`DataLoader(batch_size=batch_size, shuffle=...)` -- `shuffle` for the
+training set, always `False` for validation) or an already-built
+`DataLoader`, used exactly as given. This is deliberately the *only* other
+shape accepted -- `train()` does not re-expose `DataLoader`'s full
+constructor (`drop_last`, a custom `generator`, CUDA prefetch); a caller
+needing any of those builds the `DataLoader` itself and passes it in place
+of a `Dataset`, exactly like `examples/mnist/train.py`'s own retrofit does
+to keep its `data_rng`-seeded shuffle generator independent of `forge.
+random`'s own stream (see **Real consumer** below).
+
+**Device is one keyword.** `device` defaults to `model`'s current device
+(`"cpu"` for a `Parameter`-less fresh model); an explicit `device=` calls
+`model.to(device)` **in place** before training -- the one deliberate
+difference from `Trainer`'s own "validate, never move" policy (`Trainer`
+itself is unmodified by this milestone). This is safe because `Module.to()`
+moves every `Parameter` in place, preserving Python identity
+(`docs/architecture/modules.md`), so an `optimizer` already constructed from
+`model.parameters()` before the `train()` call remains valid afterward. This
+is exactly the `model = build_model().to(args.device)` line every existing
+example already writes by hand, folded into one keyword.
+
+**Returns `Trainer.fit()`'s own `TrainingHistory`** -- there is no separate
+high-level result type, and `train()` does not return the model (the caller
+already holds the reference it passed in; `model`/`optimizer` are mutated in
+place by training, the same convention `Trainer.fit()` itself uses).
+
+### What `train()` does not cover: checkpoint/resume
+`TrainingSession`/`start_training_session()` (Milestone 73) already own the
+fresh-or-resumed-`Trainer` workflow, and its resume path fundamentally
+*replaces* the model/optimizer a caller passed in with whatever the
+checkpoint saved. Grafting that onto `train()`'s "you already built
+`model`/`optimizer`, train them" shape would mean either silently discarding
+the caller's `model`/`optimizer` on a resumed call (a surprising, easy-to-
+miss behavior change for a function whose whole premise is "the model you
+passed is the model that trains") or reintroducing
+`start_training_session()`'s `build_model`/`build_optimizer` factories --
+which would make `train()` no simpler than the workflow it exists to
+replace, i.e. a second checkpoint abstraction, exactly what this milestone's
+brief warns against building. `train()` therefore has no `checkpoint=`/
+`resume=` parameter at all: a resumable run still uses
+`start_training_session()` + `Trainer` directly.
+
+### Real consumer: `examples/mnist/train.py`
+Forge's flagship example is also `train()`'s first real consumer. A fresh
+(non-`--resume`) run now trains through `forge.train()`; `--resume` keeps
+using a plain `Trainer` + `trainer.resume(checkpoint)` exactly as before --
+the two paths live side by side in one script, the clearest real
+demonstration of where the high-level and low-level training APIs each
+apply. `image_folder_classification` (the other candidate `train()`'s own
+milestone brief suggested) was deliberately **not** retrofitted: since
+Milestone 73 its `--resume` path already gets exact resume-equivalence via
+`start_training_session()`'s `data_loader_rng_state` checkpoint field
+(**Reusable training sessions** above), and `train()` cannot produce a
+checkpoint carrying that field without duplicating `TrainingSession`'s own
+mechanism -- retrofitting its fresh path would have silently downgraded a
+checkpoint written by a first (`--generate`) run, the first `--resume`
+after it losing exact shuffle-continuity. `mnist`'s fresh path never had
+that guarantee in the first place (it was one of the five examples Milestone
+73 explicitly left un-retrofitted to `TrainingSession`), so switching it to
+`train()` is a genuine simplification with no reproducibility regression --
+verified by direct inspection of both scripts' actual `--resume` code paths,
+not assumed.
+
+Because `train()` does not track `epoch`/`global_step`, `examples/mnist/
+train.py`'s fresh branch derives them from the returned `TrainingHistory`
+(`epoch = len(history)`, `global_step = epoch * len(train_loader)` -- exactly
+what a fresh `Trainer.fit(epochs=...)` would have counted) and calls
+`forge.save_checkpoint()` (the free function, not `Trainer.save_checkpoint
+()`) directly -- still the same checkpoint format, no new persistence logic.
+The script's final-evaluation print also now reads `history[-1].val_loss`/
+`val_metrics` (already computed once per epoch via `validation_dataset=
+test_loader`) instead of a second, redundant `trainer.evaluate(test_loader)`
+call recomputing the identical number.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

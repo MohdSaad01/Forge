@@ -10,7 +10,7 @@ this page is only an index so you can find the right one quickly.
 | Example | Demonstrates | Model family | Forge APIs exercised | CPU/CUDA |
 |---|---|---|---|---|
 | [`trainer_demo.py`](trainer_demo.py) | The minimal end-to-end path: dataset → loader → model → loss → optimizer → `Trainer.fit()` → evaluation. Start here. | `Linear` regression, `Linear`→`ReLU`→`Linear` classification | `data.TensorDataset`/`DataLoader`/`random_split`, `nn.Linear`/`ReLU`, `nn.MSELoss`/`CrossEntropyLoss`, `optim.SGD`, `training.Trainer` | CPU only (demo script) |
-| [`mnist/`](mnist/README.md) | Image classification with a real convolutional network on a real external dataset -- Forge's flagship example, and (Milestone 77) the second example (after `image_folder_classification`) whose saved model file carries its own preprocessing + class vocabulary, with a standalone `infer.py` proving fresh-process portability. | CNN (`Conv2d`, `MaxPool2d`) | + `nn.Conv2d`/`MaxPool2d`/`Flatten`, `optim.Adam`, checkpoint/resume, `serialization.save_model(..., preprocessing=..., classes=...)`/`load_model` | CPU and CUDA (hardware-verified) |
+| [`mnist/`](mnist/README.md) | Image classification with a real convolutional network on a real external dataset -- Forge's flagship example, (Milestone 77) the second example (after `image_folder_classification`) whose saved model file carries its own preprocessing + class vocabulary, with a standalone `infer.py` proving fresh-process portability, and (Milestone 79) the first real consumer of the high-level `forge.train()` entry point for its non-`--resume` path. | CNN (`Conv2d`, `MaxPool2d`) | + `nn.Conv2d`/`MaxPool2d`/`Flatten`, `optim.Adam`, `training.train()` (Milestone 79), checkpoint/resume, `serialization.save_model(..., preprocessing=..., classes=...)`/`load_model` | CPU and CUDA (hardware-verified) |
 | [`char_rnn/`](char_rnn/README.md) | Character-level language modeling: a hand-written multi-timestep training loop over a recurrent cell. | Vanilla RNN (`RNNCell`) | + `nn.RNNCell`, `Tensor.tanh()`, model persistence | CPU and CUDA (hardware-verified) |
 | [`word_rnn/`](word_rnn/README.md) | Word-level language modeling over a real (1,806-word) vocabulary. | `Embedding` → RNN | + `nn.Embedding`, `Tensor.embedding_lookup()` | CPU and CUDA (hardware-verified) |
 | [`regression/`](regression/README.md) | Tabular regression: continuous features with linear, interaction, and quadratic structure. | MLP (`Linear`/`ReLU` stack) | Same as `mnist/` (`Trainer`, `Adam`, checkpoint/resume, persistence) applied to a regression loss/metrics | CPU and CUDA (hardware-verified) |
@@ -51,20 +51,28 @@ If you're evaluating whether Forge can support a workload shaped like
 yours, read the closest match's own README first; the model/data code is
 designed to be a starting point you copy and adapt, not a fixed template.
 
-## The shared training workflow (Milestones 73/78)
+## The shared training workflow (Milestones 73/78/79)
 
-Every `Trainer`-based example above (`mnist`, `regression`, `resnet`,
-`autoencoder`, `segmentation`, `waveform_classification`,
-`image_folder_classification`) drives the same two shared abstractions
-rather than hand-rolling its own plumbing: `forge.training.
-start_training_session()` (Milestone 73) builds a fresh `Trainer` or resumes
-one from a checkpoint in one call, and `forge.training.save_and_verify()`
-(Milestone 78) saves the trained model as a portable artifact and
-immediately proves it by reloading it fresh and confirming a sample
-prediction agrees with the pre-save model -- raising `forge.
-PersistenceError` (not a bare `assert`) if it ever doesn't. See
-`docs/architecture/training-engine.md`'s **Reusable training sessions** and
-**Portable-artifact save + verify** sections for the full contract.
+Every `Trainer`-based example above drives shared abstractions rather than
+hand-rolling its own plumbing: `regression` and `image_folder_classification`
+build their `Trainer` via `forge.training.start_training_session()`
+(Milestone 73), which builds a fresh `Trainer` or resumes one from a
+checkpoint -- including exact `DataLoader`-shuffle resume-equivalence -- in
+one call; `mnist` (Milestone 79) trains its common, non-`--resume` case
+through `forge.train()` instead (`forge/training/api.py`), the single-call
+high-level entry point that builds its own `DataLoader`(s) and drives
+`Trainer.fit()` underneath, falling back to a plain `Trainer` +
+`trainer.resume()` for `--resume` runs (`train()` itself has no
+checkpoint/resume concept -- see `docs/architecture/training-engine.md`'s
+**Single-call high-level training** section for why). Every `Trainer`-based
+example's saved model, regardless of which of those it uses, goes through
+`forge.training.save_and_verify()` (Milestone 78), which saves the trained
+model as a portable artifact and immediately proves it by reloading it
+fresh and confirming a sample prediction agrees with the pre-save model --
+raising `forge.PersistenceError` (not a bare `assert`) if it ever doesn't.
+See `docs/architecture/training-engine.md`'s **Reusable training sessions**,
+**Single-call high-level training**, and **Portable-artifact save + verify**
+sections for the full contract.
 
 ## Running the tests for these examples
 

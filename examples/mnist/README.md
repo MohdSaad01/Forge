@@ -3,7 +3,7 @@
 An end-to-end, realistic validation of Forge's framework core:
 
 ```text
-MNISTDataset -> DataLoader -> Trainer -> CNN -> CrossEntropyLoss -> Adam
+MNISTDataset -> DataLoader -> forge.train() -> CNN -> CrossEntropyLoss -> Adam
 ```
 
 Every step uses only public Forge APIs (`forge`, `forge.data`, `forge.nn`,
@@ -12,6 +12,14 @@ Every step uses only public Forge APIs (`forge`, `forge.data`, `forge.nn`,
 `examples/mnist/` only adapts the standard MNIST file format into a
 `forge.data.Dataset` and assembles a small CNN from existing `forge.nn`
 layers.
+
+**Milestone 79.** A fresh (non-`--resume`) run trains through
+`forge.train()`, the high-level entry point that builds on `DataLoader`/
+`Trainer` -- see `docs/architecture/training-engine.md`'s **Single-call
+high-level training** section. `--resume` still uses a plain `Trainer` +
+`trainer.resume(checkpoint)` directly (`forge.train()` has no
+checkpoint/resume concept), so this script is also the clearest real
+example of when to reach for each API.
 
 ## Files
 
@@ -84,8 +92,9 @@ checks, on a fast synthetic stand-in dataset rather than this real run).
 python -m examples.mnist.train --epochs 3 --device cuda
 ```
 
-Identical model/optimizer/data pipeline; only `Trainer(..., device="cuda")`
-and `model.to("cuda")` differ (`build_model()` itself is device-agnostic).
+Identical model/optimizer/data pipeline; only `forge.train(..., device=
+"cuda")` differs, which moves `model` to CUDA in place before training
+(`build_model()` itself is device-agnostic).
 Hardware-verified on the reference GeForce 940MX (CC 5.0, driver 582.53,
 CUDA Toolkit 12.6, see `docs/development/development-environment.md`):
 first-epoch loss/accuracy matched the CPU run's within floating-point
@@ -139,9 +148,15 @@ python -m examples.mnist.train --resume artifacts/mnist_checkpoint.forge --epoch
 ```
 
 `--resume` restores the model, Adam state, and epoch/global_step counters
-via `forge.load_checkpoint()` + `Trainer.resume()`, then continues training
-exactly as `docs/architecture/persistence.md` documents -- verified by
+via `forge.load_checkpoint()` + `Trainer.resume()` (the plain `Trainer` path
+-- see the **Milestone 79** note above for why resuming does not go through
+`forge.train()`), then continues training exactly as
+`docs/architecture/persistence.md` documents -- verified by
 `tests/test_mnist_example_integration.py::test_checkpoint_save_and_resume_restores_state_and_continues_training`.
+A fresh run's checkpoint is written via the plain `forge.save_checkpoint()`
+function instead of `Trainer.save_checkpoint()` (`epoch`/`global_step` are
+derived from the `TrainingHistory` `forge.train()` returns, since `forge.
+train()` itself tracks neither) -- same checkpoint format either way.
 
 **Resume equivalence.** For a small deterministic configuration with
 `shuffle=False` (no caller-owned `DataLoader` generator state to restore --

@@ -53,14 +53,20 @@ See `docs/architecture/architecture.md` for the full design rules and
   (`Normalize`, `Compose`, `Reshape`, `Resize`, ...), `DataLoader` (batching,
   shuffling, `random_split`), and `CUDAPrefetchLoader` for overlapped
   host-to-device transfer.
-- **`forge.training`** -- `Trainer` (`fit`/`evaluate`/checkpoint resume),
-  metrics (`Accuracy`, `MeanAbsoluteError`, ...), `TrainingHistory`,
-  `predict()` -- standalone post-training inference (`forge.predict(model,
-  x)`), no `Loss`/`Optimizer` required -- and `start_training_session()`,
-  which builds a fresh `Trainer` or resumes one from a checkpoint (including
-  the `DataLoader` shuffle-generator state needed for exact resume
-  equivalence) from one call, replacing the resume-or-fresh-start branch
-  every checkpoint-capable example used to hand-roll.
+- **`forge.training`** -- `train()`, the single-call high-level entry point
+  (`forge.train(model, dataset, loss=..., optimizer=..., epochs=10)`) that
+  builds its own `DataLoader`(s), moves the model to `device=`, and drives
+  `Trainer.fit()` underneath -- see [Training, checkpointing, and
+  persistence](#training-checkpointing-and-persistence) below; `Trainer`
+  (`fit`/`evaluate`/checkpoint resume), metrics (`Accuracy`,
+  `MeanAbsoluteError`, ...), `TrainingHistory`, `predict()` -- standalone
+  post-training inference (`forge.predict(model, x)`), no `Loss`/`Optimizer`
+  required -- and `start_training_session()`, which builds a fresh `Trainer`
+  or resumes one from a checkpoint (including the `DataLoader`
+  shuffle-generator state needed for exact resume equivalence) from one
+  call, replacing the resume-or-fresh-start branch every checkpoint-capable
+  example used to hand-roll (`train()` itself has no checkpoint/resume --
+  use `start_training_session()`/`Trainer` directly for that).
 - **`forge.serialization`** -- `save_model`/`load_model` (architecture +
   parameters, via an explicit module registry -- never arbitrary code
   execution) and `save_checkpoint`/`load_checkpoint` (adds optimizer state,
@@ -133,36 +139,41 @@ import numpy as np
 
 import forge
 from forge import Tensor
-from forge.data import DataLoader, TensorDataset
+from forge.data import TensorDataset
 from forge.nn import Linear
 from forge.nn.loss import MSELoss
 from forge.optim import SGD
-from forge.training import Trainer
 
 forge.random.seed(0)
 rng = np.random.default_rng(0)
 
-# 1-2. Data: y = 3*x1 - 2*x2 + 1, plus a DataLoader for batching.
+# 1-2. Data: y = 3*x1 - 2*x2 + 1, as a Dataset (forge.train() batches it).
 X = rng.uniform(-1, 1, size=(200, 2))
 y = (3 * X[:, 0] - 2 * X[:, 1] + 1).reshape(-1, 1)
-loader = DataLoader(TensorDataset(Tensor(X), Tensor(y)), batch_size=16, shuffle=True)
+dataset = TensorDataset(Tensor(X), Tensor(y))
 
 # 3-5. Model, loss, optimizer.
 model = Linear(2, 1)
 optimizer = SGD(model.parameters(), lr=0.1)
 
 # 6. Train.
-trainer = Trainer(model=model, loss_fn=MSELoss(), optimizer=optimizer)
-trainer.fit(loader, epochs=15)
+forge.train(model, dataset, loss=MSELoss(), optimizer=optimizer, epochs=15, batch_size=16)
 
 # 7. Predict.
 prediction = forge.predict(model, Tensor(X[:1]))
 print(prediction.numpy())
 ```
 
-This is exactly what `examples/trainer_demo.py`'s `regression_demo()` does
-(with a second classification example alongside it) -- run the full script
-directly:
+`forge.train()` is Forge's high-level entry point -- it builds the
+`DataLoader` and drives `Trainer.fit()` underneath; construct a `DataLoader`
+and a `Trainer` directly when you need more control (validation, metrics,
+prefetch, checkpoint/resume) -- see [Training, checkpointing, and
+persistence](#training-checkpointing-and-persistence) below.
+`examples/trainer_demo.py`'s `regression_demo()` solves this exact same
+problem the other way, spelling out the `DataLoader`/`Trainer` construction
+`forge.train()` does on your behalf above -- read it alongside this section
+to see what's happening underneath (with a second classification example
+alongside it); run the full script directly:
 
 ```bash
 python examples/trainer_demo.py
@@ -199,15 +210,24 @@ Pass `--device cuda` in place of `--device cpu` on a machine where
 
 ## Training, checkpointing, and persistence
 
-`Trainer.fit()` runs the standard loop (forward -> loss -> backward ->
-optimizer step, with optional validation) and returns a `TrainingHistory`.
+`forge.train(model, dataset, loss=..., optimizer=..., epochs=...)` is the
+high-level entry point for the common case: it builds a `DataLoader` from
+`dataset` (or accepts one directly), moves `model` to `device=` if given,
+and runs `Trainer.fit()` underneath, returning the same `TrainingHistory`.
+`Trainer.fit()` itself runs the standard loop (forward -> loss -> backward
+-> optimizer step, with optional validation) for callers who construct the
+`DataLoader`/`Trainer` themselves -- needed for anything `train()` doesn't
+expose: CUDA prefetch, a custom `DataLoader` generator, or checkpoint/resume.
 `forge.save_checkpoint()`/`load_checkpoint()` capture model + optimizer
 state + epoch/step + RNG state so a run can resume exactly where it left
-off (`Trainer.resume()`); `forge.save_model()`/`load_model()` save just the
-trained architecture and parameters for later inference, independent of how
-it was trained. Every example under `examples/` demonstrates both paths --
-see `docs/architecture/persistence.md` for the file format and trust model
-(no arbitrary code execution on load).
+off (`Trainer.resume()`, or `forge.training.start_training_session()` for a
+fresh-or-resumed `Trainer` in one call); `forge.save_model()`/`load_model()`
+save just the trained architecture and parameters for later inference,
+independent of how it was trained. Every example under `examples/`
+demonstrates both paths -- see `docs/architecture/persistence.md` for the
+file format and trust model (no arbitrary code execution on load) and
+`docs/architecture/training-engine.md` for `train()`'s full contract and its
+`Trainer`/`TrainingSession` boundary.
 
 ## Testing
 

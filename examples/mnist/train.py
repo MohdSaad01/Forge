@@ -1,7 +1,7 @@
 """Forge Milestone 20: an end-to-end MNIST training example.
 
 ```text
-MNISTDataset -> DataLoader -> Trainer -> CNN (Conv2d/ReLU/MaxPool2d/Flatten/Linear)
+MNISTDataset -> DataLoader -> forge.train() -> CNN (Conv2d/ReLU/MaxPool2d/Flatten/Linear)
     -> CrossEntropyLoss -> Adam
 ```
 
@@ -11,6 +11,17 @@ this script adds no framework logic of its own, only example wiring. See
 `examples/mnist/README.md` for prerequisites, expected behavior, and how to
 reproduce every part of Milestone 20 (checkpoint/resume, model persistence,
 CLI inspection) from this one entry point.
+
+**Milestone 79.** A fresh (non-`--resume`) run now trains through
+`forge.train()` (`forge/training/api.py`) instead of this script hand-
+assembling `Trainer(...)` + `trainer.fit(...)` itself -- Forge's flagship
+example is also its first real consumer of the new high-level entry point.
+`--resume` keeps using a plain `Trainer` + `trainer.resume(checkpoint)`
+exactly as before: `forge.train()` deliberately has no checkpoint/resume
+concept (see that module's docstring for why), so a resumed run is the one
+place this script still needs the lower-level API directly -- the two paths
+side by side are the clearest real demonstration of where Forge's high-level
+and low-level training APIs each apply.
 
 ## Determinism
 
@@ -125,6 +136,7 @@ def main(argv=None) -> None:
 
     loss_fn = CrossEntropyLoss()
 
+    start = time.perf_counter()
     if args.resume:
         print(f"Resuming from checkpoint '{args.resume}' ...")
         checkpoint = load_checkpoint(args.resume, device=args.device)
@@ -133,25 +145,51 @@ def main(argv=None) -> None:
         trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device=args.device, metrics=[Accuracy()])
         trainer.resume(checkpoint)
         print(f"Resumed at epoch={trainer.epoch}, global_step={trainer.global_step}")
+        history = trainer.fit(train_loader, epochs=args.epochs, validation_loader=test_loader)
+        trainer.save_checkpoint(str(checkpoint_path))
     else:
+        # Milestone 79: forge.train() replaces this branch's own
+        # build_model().to(device) + Adam + Trainer(...) + trainer.fit(...)
+        # sequence -- see forge/training/api.py. train_loader/test_loader
+        # stay hand-built above rather than passed as raw Datasets, since
+        # forge.train() accepts an already-built DataLoader exactly as given
+        # and this script deliberately keeps model init (forge.random) and
+        # batch order (data_rng) on independent generator streams -- see
+        # this module's own **Determinism** section.
         model = build_model().to(args.device)
         optimizer = Adam(model.parameters(), lr=args.lr)
-        trainer = Trainer(model=model, loss_fn=loss_fn, optimizer=optimizer, device=args.device, metrics=[Accuracy()])
-
-    start = time.perf_counter()
-    history = trainer.fit(train_loader, epochs=args.epochs, validation_loader=test_loader)
+        history = forge.train(
+            model, train_loader,
+            loss=loss_fn,
+            optimizer=optimizer,
+            epochs=args.epochs,
+            validation_dataset=test_loader,
+            device=args.device,
+            metrics=[Accuracy()],
+        )
+        # forge.train() is a fresh-training-only entry point -- no
+        # epoch/global_step bookkeeping across resumes (see
+        # forge/training/api.py's "No checkpoint/resume" section). For a
+        # first run those two counters are exactly "how much training
+        # forge.train() just did", derived from its own returned history the
+        # same way a fresh Trainer would have counted them.
+        epoch = len(history)
+        global_step = epoch * len(train_loader)
+        forge.save_checkpoint(str(checkpoint_path), model, optimizer, epoch=epoch, global_step=global_step)
     duration = time.perf_counter() - start
 
     samples_per_sec = (len(train_ds) * args.epochs) / duration if duration > 0 else float("inf")
     print(f"\nTrained {args.epochs} epoch(s) on '{args.device}' in {duration:.1f}s "
           f"({samples_per_sec:.0f} train samples/sec).")
     print(f"loss: {history[0].train_loss:.4f} -> {history[-1].train_loss:.4f}")
+    # history[-1].val_* already reflects test_loader evaluated after the last
+    # epoch's parameter update (validation_loader/validation_dataset above)
+    # -- the same number a separate post-fit trainer.evaluate(test_loader)
+    # call used to recompute from scratch.
     print(f"val accuracy: {history[-1].val_metrics['accuracy']:.2%}")
+    print(f"\nFinal test evaluation: loss={history[-1].val_loss:.4f}, "
+          f"accuracy={history[-1].val_metrics['accuracy']:.2%}")
 
-    final_eval = trainer.evaluate(test_loader)
-    print(f"\nFinal test evaluation: loss={final_eval.loss:.4f}, accuracy={final_eval.metrics['accuracy']:.2%}")
-
-    trainer.save_checkpoint(str(checkpoint_path))
     print(f"\nSaved checkpoint -> {checkpoint_path}")
     # Milestone 77: `preprocessing=`/`classes=` (Milestones 71/72) now save
     # alongside the model for the first time in this example -- previously
