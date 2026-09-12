@@ -46,7 +46,12 @@ Public subpackages:
   (e.g. a regression model) rather than an image file -- composing
   `load_model()`/`load_preprocessing()`/`predict()`, with preprocessing
   optional and no class-vocabulary concept, returning the model's raw
-  numeric prediction `Tensor` directly.
+  numeric prediction `Tensor` directly; and `predict_image_artifact()`
+  (Milestone 84), the third artifact shape, for a portable image-to-image
+  dense-prediction artifact (e.g. `examples/segmentation`) -- composing
+  `load_model()`/`load_preprocessing()`/`ImageFolder._load_image()`/
+  `predict()`, then thresholding the model's raw per-pixel output into a
+  `{0, 1}`-valued mask `Tensor` ready for `forge.data.save_image()`.
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a
@@ -106,6 +111,7 @@ from .training import (
     interpret_classification,
     predict,
     predict_artifact,
+    predict_image_artifact,
     predict_tensor_artifact,
     save_and_verify,
     train,
@@ -151,6 +157,7 @@ __all__ = [
     "save_and_verify",
     "predict_artifact",
     "predict_tensor_artifact",
+    "predict_image_artifact",
     "generate_sequence",
     "interpret_classification",
     "ClassificationPrediction",

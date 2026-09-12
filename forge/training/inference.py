@@ -64,6 +64,14 @@ deliberately a separate function rather than a second branch inside
 paragraph for why forcing classification-specific semantics (mandatory
 preprocessing, file decoding, class interpretation) onto a numeric input
 would misrepresent what a regression artifact actually needs.
+
+`predict_image_artifact()` (Milestone 84) is the third artifact shape: an
+image-to-image, dense-prediction model (`examples/segmentation`), whose
+input is an image file (like `predict_artifact()`) but whose output is
+itself another image-shaped Tensor (a per-pixel mask), not a class label or
+a scalar. See that function's own docstring for the one small, already-
+established output conversion it applies and why it is not a generalized
+"any image-to-image model" function.
 """
 
 from __future__ import annotations
@@ -433,6 +441,102 @@ def predict_tensor_artifact(
     return predict(model, prepared)
 
 
+def predict_image_artifact(
+    path: str,
+    image: "str | os.PathLike",
+    *,
+    device: "str | Device | None" = None,
+    threshold: float = 0.5,
+) -> Tensor:
+    """Run one new image file through a portable image-to-image `.forge`
+    artifact and get back a savable prediction Tensor, in one call (Milestone 84).
+
+    ```python
+    prediction = forge.predict_image_artifact("segmentation_model.forge", "new_image.png")
+    forge.data.save_image(prediction, "prediction.png")
+    ```
+
+    `examples/segmentation/train.py` produces a dense, per-pixel prediction
+    (a `(1, H, W)` mask) rather than a class label or a number -- neither
+    `predict_artifact()` (Milestone 82, which always ends in a class-vocabulary
+    interpretation) nor `predict_tensor_artifact()` (Milestone 83, whose input
+    is already a numeric array, not an image file) fits this shape: the input
+    is a file that must be decoded like `predict_artifact()`'s, but the output
+    is itself another image, not a label. `predict_image_artifact()` is the
+    dense-prediction counterpart: it composes `load_model()`,
+    `load_preprocessing()`, `ImageFolder._load_image()`, and `predict()`
+    exactly like `predict_artifact()` does, then applies the one conversion
+    `examples/segmentation/train.py`/`metrics.py` already define for turning
+    this architecture's raw, unbounded per-pixel output into an actual
+    predicted mask: threshold at `threshold` (default `0.5`, the same
+    `_THRESHOLD` both of those modules use) to obtain a `{0, 1}`-valued
+    result. This is not a generic "any image-to-image model" function --
+    it reuses one specific, already-established output convention; a future
+    image-output workload with different result semantics (e.g. an
+    autoencoder's unbounded reconstruction, which needs no thresholding at
+    all) would need its own function, following the same task-specific-
+    boundary discipline `predict_artifact()`/`predict_tensor_artifact()`
+    already established, not a generalization of this one.
+
+    `image` must be a path (`str` or `os.PathLike`) to one image file on disk,
+    decoded via `ImageFolder._load_image()` -- the same `(3, H, W)`, raw
+    `[0, 255]`-range decode `predict_artifact()` uses. Anything else raises
+    `forge.DataError`.
+
+    **Preprocessing is mandatory**, exactly like `predict_artifact()`: `path`
+    must have been saved with `forge.save_model(..., preprocessing=...)` --
+    there is no way to rescale a freshly decoded `[0, 255]` image into the
+    model's trained input range otherwise. A `path` saved with no
+    preprocessing raises `forge.PersistenceError` naming the missing
+    configuration.
+
+    `device` defaults to the device recorded in the archive (`load_model()`'s
+    own default) -- pass `device="cpu"`/`device="cuda"` to override, exactly
+    as `load_model()`/`predict_artifact()` themselves accept.
+
+    Returns a CPU `Tensor` of shape `(1, H, W)` (the model's own per-pixel
+    output shape, with the batch dimension dropped) whose values are exactly
+    `0.0` or `1.0` -- ready to pass directly to `forge.data.save_image()`.
+
+    Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
+    artifact or a missing preprocessing configuration, and `forge.DataError`
+    if `image` is not a path or does not point to a readable image file.
+
+    **Scope.** Composes exactly `load_model()` + `load_preprocessing()` +
+    `ImageFolder._load_image()` + `predict()`, plus the one small,
+    already-established threshold conversion described above. No new
+    artifact format, input abstraction, or model-serving machinery is
+    introduced.
+    """
+    if not isinstance(image, (str, os.PathLike)):
+        raise DataError(
+            f"predict_image_artifact() requires image to be a file path (str or os.PathLike), "
+            f"got {type(image).__name__}."
+        )
+
+    from ..data.image_folder import ImageFolder
+    from ..serialization.model import load_model as _load_model
+    from ..serialization.model import load_preprocessing as _load_preprocessing
+
+    preprocessing = _load_preprocessing(path)
+    if preprocessing is None:
+        raise PersistenceError(
+            f"'{path}' was saved with no preprocessing configuration (see "
+            "forge.save_model(..., preprocessing=...)) -- predict_image_artifact() has no automatic "
+            "way to prepare the input image for this model."
+        )
+
+    model = _load_model(path, device=device.type if isinstance(device, Device) else device)
+
+    raw = ImageFolder._load_image(Path(image))
+    prepared = preprocessing(raw)
+    batch = prepared.reshape(1, *prepared.shape)
+    output = predict(model, batch)
+
+    mask = (output.numpy() >= threshold).astype(np.float32)
+    return Tensor(mask[0], device="cpu")
+
+
 def generate_sequence(
     model: Module,
     seed: "Sequence[Any]",
@@ -626,6 +730,6 @@ def interpret_classification(output: Tensor, classes: "Sequence[str]") -> "list[
 
 
 __all__ = [
-    "predict", "save_and_verify", "predict_artifact", "predict_tensor_artifact", "generate_sequence",
-    "interpret_classification", "ClassificationPrediction",
+    "predict", "save_and_verify", "predict_artifact", "predict_tensor_artifact", "predict_image_artifact",
+    "generate_sequence", "interpret_classification", "ClassificationPrediction",
 ]

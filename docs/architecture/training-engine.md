@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82; single-call numeric-artifact inference via `predict_tensor_artifact()` as of Milestone 83)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82; single-call numeric-artifact inference via `predict_tensor_artifact()` as of Milestone 83; single-call image-to-image artifact inference via `predict_image_artifact()` as of Milestone 84)
 
 ## Package layout
 ```
@@ -6,7 +6,7 @@ forge/
     training/
         trainer.py     Trainer, EpochResult, EvaluationResult, TrainingHistory
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
-        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78), predict_artifact() (Milestone 82), predict_tensor_artifact() (Milestone 83)
+        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78), predict_artifact() (Milestone 82), predict_tensor_artifact() (Milestone 83), predict_image_artifact() (Milestone 84)
         session.py     TrainingSession, start_training_session() (Milestone 73)
         api.py         train() (Milestone 79), train_and_save(), TrainAndSaveResult (Milestone 81)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
@@ -1079,6 +1079,64 @@ and pre-save/post-load numerical equivalence) independent of any one
 example.
 
 See `docs/development/m83-regression-artifact-workflow.md`.
+
+## Portable-artifact inference for image-to-image output: `predict_image_artifact()` (Milestone 84)
+
+Neither `predict_artifact()` nor `predict_tensor_artifact()` fits
+`examples/segmentation`'s shape: the input is an image file, like
+`predict_artifact()`'s, but the output is itself another image-shaped
+`Tensor` (a per-pixel mask), not a class label or a scalar. `forge.training.
+predict_image_artifact()` (`forge/training/inference.py`) is the third
+artifact shape:
+```python
+prediction = forge.predict_image_artifact("segmentation_model.forge", "new_image.png")
+forge.data.save_image(prediction, "prediction.png")
+```
+1. `load_preprocessing(path)` -- **mandatory**, like `predict_artifact()`:
+   there is no way to rescale a freshly decoded `[0, 255]` image into the
+   model's trained input range otherwise. Missing preprocessing raises
+   `forge.PersistenceError`.
+2. `load_model(path, device=device)`.
+3. `ImageFolder._load_image(image)` -- the same `(3, H, W)`, raw `[0, 255]`
+   decode `predict_artifact()` reuses, then the reconstructed preprocessing
+   is applied and a batch dimension added.
+4. `predict(model, batch)` -- the model's raw, unbounded per-pixel output.
+5. Threshold at `threshold` (default `0.5`, the same `_THRESHOLD`
+   `examples/segmentation/metrics.py`/`train.py` already use) to obtain a
+   `{0, 1}`-valued mask, then drop the batch dimension -- the returned
+   `(1, H, W)` `Tensor` is ready for `forge.data.save_image()` unchanged.
+
+**Not a generalized "any image-to-image model" function.** Step 5 reuses one
+specific, already-established output convention (`examples/segmentation`'s
+binary mask). A future image-output workload with different result
+semantics -- e.g. `examples/autoencoder`'s unbounded reconstruction, which
+needs no thresholding at all and is not saved with the RGB-in/binary-mask-out
+contract `ImageFolder._load_image()` implies -- would need its own function,
+following the same task-specific-boundary discipline `predict_artifact()`/
+`predict_tensor_artifact()` already established, not a generalization of
+this one.
+
+**Real consumer.** `examples/segmentation/train.py`'s fresh path now also
+saves a `Normalize(mean=0.0, std=255.0)` preprocessing pipeline
+(`build_transform()`) alongside the model via `save_and_verify(...,
+preprocessing=...)`, then demonstrates a brand-new synthetic image
+(independent seed, never part of train or test), written to disk as a real
+PNG, being read back and segmented through one `forge.predict_image_artifact()`
+call -- mirroring `image_folder_classification/train.py`'s own
+`predict_artifact()` demo and `regression/train.py`'s
+`predict_tensor_artifact()` demo for their respective artifact shapes.
+`examples/segmentation/infer.py` is a standalone script built entirely on
+this one call, exactly like `image_folder_classification/infer.py`.
+
+**Fresh-process verification.** `tests/test_segmentation_artifact_workflow.py::
+test_examples_segmentation_infer_works_from_a_genuinely_separate_process`
+trains and saves a real segmentation artifact via `examples.segmentation.
+train.main()`, then launches a real `subprocess.run([sys.executable, "-m",
+"examples.segmentation.infer", ...])`, comparing the predicted-mask PNG it
+writes against this process's own `predict_image_artifact()` call on the
+identical image file, bit-for-bit.
+
+See `docs/development/m84-segmentation-artifact-workflow.md`.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

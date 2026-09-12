@@ -74,10 +74,15 @@ See `docs/architecture/architecture.md` for the full design rules and
   checkpoint/resume -- use `start_training_session()`/`Trainer` directly
   for that); `predict_artifact()`, which turns a portable `.forge`
   image-classification artifact and one new image file directly into a
-  human-readable prediction; and `predict_tensor_artifact()`, its
+  human-readable prediction; `predict_tensor_artifact()`, its
   non-classification counterpart for a portable artifact whose input is a
   plain numeric array (e.g. a regression model) -- preprocessing optional,
-  no class-vocabulary concept, returns the raw numeric prediction `Tensor`.
+  no class-vocabulary concept, returns the raw numeric prediction `Tensor`;
+  and `predict_image_artifact()`, the counterpart for an image-to-image
+  dense-prediction artifact (e.g. `examples/segmentation`) -- input is an
+  image file like `predict_artifact()`'s, but the output is another
+  image-shaped `Tensor` (a thresholded per-pixel mask), ready for
+  `forge.data.save_image()`.
 - **`forge.serialization`** -- `save_model`/`load_model` (architecture +
   parameters, via an explicit module registry -- never arbitrary code
   execution) and `save_checkpoint`/`load_checkpoint` (adds optimizer state,
@@ -245,13 +250,18 @@ Trainer-based example's `train.py` ends with. On the consuming side,
 artifact and one new image file into a prediction in one call, and
 `forge.predict_tensor_artifact(path, input_data)` does the same for a
 non-classification artifact (e.g. `examples/regression/`) whose input is a
-plain numeric array rather than a file. Every example under `examples/`
-demonstrates the producing side; `mnist`/`image_folder_classification` and
-`regression` respectively demonstrate the two consuming functions -- see
-`docs/architecture/persistence.md` for the file format and trust model (no
-arbitrary code execution on load) and `docs/architecture/training-engine.md`
-for `train()`/`train_and_save()`/`predict_artifact()`/`predict_tensor_artifact()`'s
-full contracts and their `Trainer`/`TrainingSession` boundary.
+plain numeric array rather than a file, and `forge.predict_image_artifact(path,
+image_path)` does the same for an image-to-image dense-prediction artifact
+(e.g. `examples/segmentation/`), returning another image-shaped `Tensor`
+ready for `forge.data.save_image()`. Every example under `examples/`
+demonstrates the producing side; `mnist`/`image_folder_classification`,
+`regression`, and `segmentation` respectively demonstrate the three
+consuming functions -- see `docs/architecture/persistence.md` for the file
+format and trust model (no arbitrary code execution on load) and
+`docs/architecture/training-engine.md` for
+`train()`/`train_and_save()`/`predict_artifact()`/`predict_tensor_artifact()`/
+`predict_image_artifact()`'s full contracts and their
+`Trainer`/`TrainingSession` boundary.
 
 ## Testing
 

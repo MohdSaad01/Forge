@@ -5023,3 +5023,67 @@ regression. Every pre-existing regression test (CPU and CUDA, including the
 after the `train.py` retrofit; CUDA hardware-verified (940MX): `tests/
 test_regression_example_cuda_integration.py` (6/6). Full report:
 `docs/development/m83-regression-artifact-workflow.md`.
+
+### M84 — `forge.predict_image_artifact()`: the portable image-output (segmentation) artifact workflow
+
+Brief asked for the smallest complete portable-artifact workflow for a real
+image-*output* workload (`examples/segmentation` or `examples/autoencoder`),
+completing what M76's `save_image()` started. Inspection found segmentation
+the cleaner fit: its `(3, H, W)` RGB-in / `(1, H, W)` mask-out shape lines up
+with `ImageFolder._load_image()`'s existing 3-channel decode and
+`save_image()`'s `(C, H, W)` output contract, while autoencoder's `(1, 28,
+28)` single-channel MNIST input would need a new grayscale-conversion
+capability with no other consumer. The one real gap: segmentation's dataset
+is generated entirely in-memory (M64), so its saved model never carried a
+`preprocessing=` pipeline -- there was no way to rescale a real decoded
+`[0, 255]` image file into the model's trained `[0, 1]` range.
+
+Built `forge.training.predict_image_artifact(path, image, *, device=None,
+threshold=0.5)` (`forge/training/inference.py`) -- the image-to-image
+counterpart to `predict_artifact()` (M82): composes `load_model()`/
+`load_preprocessing()`/`ImageFolder._load_image()`/`predict()`, then
+thresholds the model's raw per-pixel output at `threshold` (default `0.5`,
+reusing `examples/segmentation/metrics.py`'s own `_THRESHOLD` convention)
+into a `{0, 1}`-valued mask `Tensor` ready for `forge.data.save_image()`.
+Preprocessing is mandatory, like `predict_artifact()`. Deliberately a
+separate function, not a generalized "any image-to-image model" dispatcher
+-- it reuses one specific, already-established output convention
+(segmentation's binary mask); a future workload with different output
+semantics (e.g. autoencoder's unbounded reconstruction) would need its own
+function, following the same task-specific-boundary discipline M82/M83
+already established.
+
+Retrofitted `examples/segmentation/train.py`: new `build_transform()`
+(`Normalize(mean=0.0, std=255.0)`, the same `Lambda`-replacement convention
+`autoencoder`/`mnist` already use) passed to `save_and_verify(...,
+preprocessing=...)`, plus a new end-of-run demo -- a brand-new synthetic
+image (independent seed, never part of train or test) written to disk as a
+real PNG, then segmented through one `forge.predict_image_artifact()` call
+reading nothing but the saved `.forge` file, with the result saved via
+`save_image()`. Added `examples/segmentation/infer.py`, a standalone
+fresh-process script mirroring `image_folder_classification/infer.py`'s
+shape.
+
+Files changed: `forge/training/inference.py` (`predict_image_artifact()`),
+`forge/training/__init__.py`, `forge/__init__.py` (re-exports);
+`examples/segmentation/train.py` (preprocessing + new demo), `examples/
+segmentation/infer.py` (new); `docs/architecture/training-engine.md` (new
+**Portable-artifact inference for image-to-image output** section);
+`examples/segmentation/README.md`, `examples/README.md` (previously missing
+`segmentation/` row added), root `README.md` updated. 20 new tests (17 CPU
+in `tests/test_segmentation_artifact_workflow.py`, including the real
+acceptance test with a genuine `subprocess` fresh-process `infer.py` run; 3
+CUDA in `tests/test_segmentation_artifact_workflow_cuda.py`). Full suite:
+**2,358 collected, 2,357 passed, 1 failed** (2,338 + 20 new) -- the same
+pre-existing `test_dataloader_prefetch.py` allocator-measurement flake
+documented since M63, reproduced passing cleanly in isolation, no M84
+regression. `tests/test_segmentation_example_integration.py` (20/20) and
+`tests/test_segmentation_example_cuda_integration.py` (5/5, hardware
+-verified on the 940MX) passed unmodified after the retrofit. Real
+end-to-end verification on the 940MX (`--epochs 15 --device cuda`):
+test pixel_accuracy=0.9981/iou=0.9909 (matching M64's documented reference
+numbers), a fresh `python -m examples.segmentation.infer` subprocess
+produced a predicted-mask PNG bit-for-bit identical to the one `train.py`
+wrote in-process, and that mask scored IoU=1.0 against ground truth on the
+brand-new, never-trained-on image. Full report:
+`docs/development/m84-segmentation-artifact-workflow.md`.

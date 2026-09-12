@@ -16,6 +16,7 @@ this page is only an index so you can find the right one quickly.
 | [`regression/`](regression/README.md) | Tabular regression: continuous features with linear, interaction, and quadratic structure -- (Milestone 83) its fresh-training path now trains and saves through `forge.train_and_save()`, with the fitted `Normalize` feature transform persisted as `preprocessing=`, and a portable artifact consumed via `forge.predict_tensor_artifact()`, the non-classification counterpart to `image_folder_classification`'s `forge.predict_artifact()`. | MLP (`Linear`/`ReLU` stack) | Same as `mnist/` (`Trainer`, `Adam`, checkpoint/resume, persistence) applied to a regression loss/metrics, plus `training.train_and_save()`/`predict_tensor_artifact()` (Milestone 83) | CPU and CUDA (hardware-verified) |
 | [`waveform_classification/`](waveform_classification/README.md) | Classifying fixed-length 1D time series (noisy sine/square/sawtooth/triangle waveforms) by shape. | 1D CNN (`Conv1d`, `MaxPool1d`) | + `nn.Conv1d`/`MaxPool1d` (Milestone 62), same `Trainer`/`Adam`/checkpoint/resume/persistence pipeline as `mnist/` | CPU and CUDA (hardware-verified) |
 | [`autoencoder/`](autoencoder/README.md) | Unsupervised image reconstruction through a compressed bottleneck, on real MNIST images -- the first example with no label/target beyond its own input. | Convolutional autoencoder (`Conv2d`/`MaxPool2d` encoder, `UpsampleNearest2d`/`Conv2d` decoder) | + `nn.UpsampleNearest2d` (Milestone 63), same `Trainer`/`Adam`/checkpoint/resume/persistence pipeline as `mnist/` | CPU and CUDA (hardware-verified) |
+| [`segmentation/`](segmentation/README.md) | Dense, per-pixel prediction -- a same-resolution binary mask, not one prediction per image -- on a synthetic shape-on-background dataset -- (Milestone 84) its saved model now also carries `Normalize` preprocessing, with a portable artifact consumed via `forge.predict_image_artifact()`, the image-to-image counterpart to `mnist`'s `forge.predict_artifact()`. | Encoder/decoder CNN (`Conv2d`/`MaxPool2d` encoder, `UpsampleNearest2d`/`Conv2d` decoder) | + example-local `PixelAccuracy`/`IoU` `training.Metric`s, `training.predict_image_artifact()` (Milestone 84) | CPU and CUDA (hardware-verified) |
 | [`long_range_recall/`](long_range_recall/README.md) | `RNNCell` vs. `LSTMCell` on a synthetic long-range-dependency task -- measures and demonstrates the vanishing-gradient gap `LSTMCell` closes. | Vanilla RNN (`RNNCell`) or LSTM (`LSTMCell`) | + `nn.LSTMCell`, `Tensor.sigmoid()` (Milestone 67), model persistence | CPU and CUDA (hardware-verified) |
 | [`image_folder_classification/`](image_folder_classification/README.md) | Classifying ordinary image *files on disk* (a generated, **mixed-resolution** circle/square/triangle shape dataset) via a directory-per-class layout -- the first example whose data source isn't a bundled format or in-memory array, (Milestone 71) the first whose saved model file carries its own required input preprocessing, reconstructed automatically by a separate `infer.py` process, and (Milestone 81) its fresh-training path now trains and saves through one `forge.train_and_save()` call. | CNN (`Conv2d`/`BatchNorm2d`/`MaxPool2d`/`Dropout`) | + `data.ImageFolder`/`IMAGE_EXTENSIONS` (Milestone 69), `data.transforms.Resize` (Milestone 70), `serialization.save_model(..., preprocessing=...)`/`load_preprocessing()` (Milestone 71), `data.random_split`, `training.train_and_save()` (Milestone 81), `training.predict()` | CPU and CUDA (hardware-verified) |
 | [`data_pipeline_demo.py`](data_pipeline_demo.py) | `Dataset` → `Transform` → `DataLoader` → batches feeding a model, with no training loop at all. | N/A (pipeline only) | `data.TensorDataset`, `data.transforms.Normalize`, `data.DataLoader` | CPU only (demo script) |
@@ -81,18 +82,22 @@ OS process (Milestone 80 -- see `docs/architecture/training-engine.md`'s
 **Fresh-process verification** section); `regression` has an equivalent
 subprocess-based test that calls `forge.predict_tensor_artifact()` directly
 (Milestone 83, no separate `infer.py`; see `tests/
-test_regression_artifact_workflow.py`). Two portable-artifact inference
-functions now exist for the two materially different artifact shapes
-Forge's examples produce: `forge.predict_artifact()` (Milestone 82, image
-files, mandatory preprocessing, class interpretation -- `mnist`/
-`image_folder_classification`) and `forge.predict_tensor_artifact()`
+test_regression_artifact_workflow.py`); `segmentation` has its own
+standalone `infer.py` (Milestone 84) with an equivalent subprocess-based
+test (see `tests/test_segmentation_artifact_workflow.py`). Three
+portable-artifact inference functions now exist for the three materially
+different artifact shapes Forge's examples produce: `forge.predict_artifact()`
+(Milestone 82, image files, mandatory preprocessing, class interpretation --
+`mnist`/`image_folder_classification`), `forge.predict_tensor_artifact()`
 (Milestone 83, plain numeric input, optional preprocessing, no class
-concept -- `regression`). See `docs/architecture/training-engine.md`'s
-**Reusable training sessions**, **Single-call high-level training**,
-**Portable-artifact save + verify**, **Train, evaluate, persist, verify in
-one call**, **Portable-artifact inference in one call**, and
-**Portable-artifact inference for numeric input** sections for the full
-contract.
+concept -- `regression`), and `forge.predict_image_artifact()` (Milestone
+84, image files in, another image-shaped mask `Tensor` out -- `segmentation`).
+See `docs/architecture/training-engine.md`'s **Reusable training sessions**,
+**Single-call high-level training**, **Portable-artifact save + verify**,
+**Train, evaluate, persist, verify in one call**, **Portable-artifact
+inference in one call**, **Portable-artifact inference for numeric input**,
+and **Portable-artifact inference for image-to-image output** sections for
+the full contract.
 
 ## Running the tests for these examples
 

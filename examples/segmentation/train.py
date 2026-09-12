@@ -29,6 +29,14 @@ python -m examples.segmentation.train --epochs 15 --device cpu
 python -m examples.segmentation.train --epochs 15 --device cuda
 python -m examples.segmentation.train --resume examples/segmentation/artifacts/segmentation_checkpoint.forge --epochs 5
 ```
+
+## Portable artifact inference (Milestone 84)
+
+The saved model now also carries a `Normalize`-based preprocessing pipeline
+(`build_transform()` below), so `forge.predict_image_artifact()` can turn a
+brand-new image *file* -- not an in-memory `Tensor` from this run's own
+dataset -- directly into a predicted mask, in a completely separate process:
+see `examples/segmentation/infer.py`.
 """
 
 from __future__ import annotations
@@ -40,22 +48,40 @@ from pathlib import Path
 import numpy as np
 
 import forge
-from forge.data import DataLoader, save_image
+from forge.data import Compose, DataLoader, Normalize, save_image
 from forge.nn import MSELoss
 from forge.optim import Adam
 from forge.serialization import load_checkpoint
-from forge.training import Trainer, predict, save_and_verify
+from forge.training import Trainer, predict, predict_image_artifact, save_and_verify
 
 try:
-    from .dataset import IMAGE_SIZE, make_datasets
+    from .dataset import IMAGE_SIZE, generate_raw, make_datasets
     from .metrics import IoU, PixelAccuracy
     from .model import build_model
 except ImportError:  # running as a plain script (`python examples/segmentation/train.py`)
-    from dataset import IMAGE_SIZE, make_datasets
+    from dataset import IMAGE_SIZE, generate_raw, make_datasets
     from metrics import IoU, PixelAccuracy
     from model import build_model
 
 _THRESHOLD = 0.5
+
+
+def build_transform():
+    """`[0, 255]` uint8-valued decoded-image pixels -> `[0, 1]` float32.
+
+    `SegmentationDataset` already generates its images directly in `[0, 1]`
+    (Milestone 64), so training itself needs no transform. This is needed
+    only for Milestone 84's portable-artifact workflow: a real image *file*
+    on disk (written by `forge.data.save_image()`, or any other `[0, 255]`
+    -encoded PNG/JPEG) decodes via `ImageFolder._load_image()` into the same
+    raw `[0, 255]` range `examples/autoencoder/train.py`'s MNIST files and
+    `examples/image_folder_classification`'s photos do -- `Normalize(mean=0.0,
+    std=255.0)` rescales that back down to the `[0, 1]` range the model was
+    actually trained on, the same substitution those two examples already
+    established for exactly this reason (`Lambda` cannot be saved via
+    `save_model(..., preprocessing=...)`).
+    """
+    return Compose([Normalize(mean=0.0, std=255.0)])
 
 
 def majority_class_baseline(test_ds) -> "tuple[float, float]":
@@ -161,8 +187,8 @@ def main(argv=None) -> None:
     # abstraction.
     query_x, query_mask = test_ds[0]
     query_x = query_x.to(args.device).reshape(1, 3, IMAGE_SIZE, IMAGE_SIZE)
-    reloaded = save_and_verify(model, str(model_path), query_x)
-    print(f"Saved + verified model -> {model_path}")
+    reloaded = save_and_verify(model, str(model_path), query_x, preprocessing=build_transform())
+    print(f"Saved + verified model + preprocessing -> {model_path}")
 
     # Milestone 76: a segmentation model's real output is the predicted
     # mask, but until now nothing ever rendered it -- every prior run only
@@ -181,6 +207,26 @@ def main(argv=None) -> None:
     save_image(query_mask, str(ground_truth_mask_path))
     print(f"Saved segmentation input/predicted-mask/ground-truth-mask -> "
           f"{input_image_path}, {predicted_mask_path}, {ground_truth_mask_path}")
+
+    # Milestone 84: the complete portable, file-based artifact workflow --
+    # a brand-new synthetic image (independent seed, never part of train or
+    # test), written to disk as a real PNG, then read back through nothing
+    # but the '.forge' file at model_path via forge.predict_image_artifact().
+    # Unlike the in-memory `query_x` demo above, this never touches the
+    # Trainer/dataset objects still alive in this process -- it exercises
+    # exactly what a developer holding only model_path and a new image file
+    # can do.
+    new_image, new_mask = generate_raw(1, seed=args.seed + 2, size=IMAGE_SIZE)
+    new_image_path = output_dir / "segmentation_new_image.png"
+    new_ground_truth_path = output_dir / "segmentation_new_ground_truth_mask.png"
+    new_predicted_mask_path = output_dir / "segmentation_new_predicted_mask.png"
+    save_image(forge.Tensor(new_image[0]), str(new_image_path))
+    save_image(forge.Tensor(new_mask[0]), str(new_ground_truth_path))
+
+    artifact_prediction = predict_image_artifact(str(model_path), str(new_image_path))
+    save_image(artifact_prediction, str(new_predicted_mask_path))
+    print(f"\nPortable artifact inference (forge.predict_image_artifact()): "
+          f"{new_image_path} -> {new_predicted_mask_path}")
 
     print("\nInspect the generated artifacts with the Milestone 19 CLI:")
     print(f"  python -m forge model inspect {model_path}")

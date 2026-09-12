@@ -217,10 +217,13 @@ and `::test_resume_equivalence_matches_continuous_training`.
 `train.py` also demonstrates the plain (optimizer-free) persistence path:
 after training, it calls `forge.training.save_and_verify()` (Milestone 78),
 which saves the model, then reloads it fresh and confirms the reload's
-prediction matches the pre-save model -- printed as `Saved + verified model
--> ...` at the end of every run, raising `forge.PersistenceError` instead if
-the reload ever disagrees. The rendered `segmentation_predicted_mask.png`
-is produced from the reloaded model, not the pre-save one.
+prediction matches the pre-save model -- printed as `Saved + verified model +
+preprocessing -> ...` at the end of every run, raising `forge.PersistenceError`
+instead if the reload ever disagrees. The rendered `segmentation_predicted_mask.png`
+is produced from the reloaded model, not the pre-save one. Since Milestone
+84, the saved model also carries a `Normalize(mean=0.0, std=255.0)`
+preprocessing pipeline (`train.py::build_transform()`) -- see **Portable
+artifact inference** below for what that unlocks.
 
 ## Viewing a predicted mask
 
@@ -230,6 +233,42 @@ via `forge.data.save_image`) -- the same query image `Model persistence`
 above already runs through the model, rendered as real files instead of only
 reported as scalar `pixel_accuracy`/`iou` numbers. Open all three to see what
 the model actually segmented.
+
+## Portable artifact inference (Milestone 84)
+
+Every prior demo above still runs the model on an in-memory `Tensor` this
+same training process already built. `train.py` now also demonstrates the
+fully portable, file-based workflow: a brand-new synthetic image
+(`segmentation_new_image.png`, an independent seed never part of train or
+test) is written to disk as a real PNG, then read back through nothing but
+the saved `segmentation_model.forge` file via `forge.predict_image_artifact()`
+-- the one-call counterpart to `predict_artifact()` (Milestone 82) /
+`predict_tensor_artifact()` (Milestone 83) for a dense-prediction,
+image-to-image artifact:
+
+```python
+prediction = forge.predict_image_artifact("segmentation_model.forge", "new_image.png")
+forge.data.save_image(prediction, "prediction.png")
+```
+
+It composes `load_model()`, `load_preprocessing()`,
+`ImageFolder._load_image()`, and `predict()`, then applies the same
+threshold-at-`0.5` conversion `metrics.py` already uses to turn the raw,
+unbounded per-pixel output into a `{0, 1}`-valued mask ready to pass
+straight to `forge.data.save_image()` -- no manual reconstruction of that
+sequence required. `examples/segmentation/infer.py` is a standalone script
+built entirely on this one call:
+
+```bash
+python -m examples.segmentation.infer \
+    --model examples/segmentation/artifacts/segmentation_model.forge \
+    --image examples/segmentation/artifacts/segmentation_new_image.png \
+    --output examples/segmentation/artifacts/segmentation_new_predicted_mask.png
+```
+
+and is proven to work from a genuinely separate OS process (not just a
+second in-process call) by
+`tests/test_segmentation_artifact_workflow.py::test_examples_segmentation_infer_works_from_a_genuinely_separate_process`.
 
 ## CLI inspection
 
@@ -256,4 +295,19 @@ Run them with:
 
 ```bash
 python -m pytest tests/test_segmentation_example_integration.py tests/test_segmentation_example_cuda_integration.py
+```
+
+`tests/test_segmentation_artifact_workflow.py` (CPU) and
+`tests/test_segmentation_artifact_workflow_cuda.py` (CUDA; skips cleanly
+without a working CUDA backend) additionally cover Milestone 84's portable,
+file-based artifact workflow: `predict_image_artifact()`'s output shape/
+value contract, numerical equivalence against the manual
+load-preprocess-predict-threshold pipeline it replaces, error handling
+(missing preprocessing/model/image, corrupt image), the real
+`examples/segmentation/train.py`/`infer.py` end-to-end run (including a
+genuinely separate-OS-process fresh-process check), and CPU/CUDA parity.
+Run them with:
+
+```bash
+python -m pytest tests/test_segmentation_artifact_workflow.py tests/test_segmentation_artifact_workflow_cuda.py
 ```
