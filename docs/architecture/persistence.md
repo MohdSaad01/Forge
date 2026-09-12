@@ -101,6 +101,22 @@ weights); `from_config(config)` (defaulting to `cls(**config)` if not
 given explicitly) reconstructs a **bare** instance from that dict, which
 `load_model()` then overwrites with the file's saved parameter values.
 
+**RNG isolation (Milestone 81).** A "bare" instance is still constructed
+through the class's ordinary `__init__` -- for `Linear`/`Conv2d`/`Embedding`/
+etc. this draws a real initial-weights sample from `forge.random.
+default_generator()`, discarded a moment later when `load_model()` overwrites
+it with the archived values. That draw still *advances* the global
+generator, though, which is an observable side effect a caller reloading a
+model mid-run (e.g. `forge.training.save_and_verify()`) never asked for and
+would not expect -- found when it silently broke a resume-equivalence
+guarantee in `examples/image_folder_classification/train.py` (see
+`docs/development/m81-train-to-verified-artifact-workflow.md`). `load_model()`
+now snapshots `forge.random.get_state()` before reconstructing the tree and
+restores it in a `finally` immediately after (the same mechanism `forge.
+serialization.checkpoint` uses for exact training resume, **RNG /
+determinism policy** below) -- reconstruction's wasted draws never escape
+`load_model()`'s own call.
+
 ### Custom/composite modules
 A hand-written `Module` subclass such as
 ```python

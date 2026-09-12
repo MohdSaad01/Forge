@@ -22,7 +22,8 @@ from forge.data import TensorDataset
 from forge.nn import Linear, Module, ReLU
 from forge.nn.loss import MSELoss
 from forge.optim import Adam
-from forge.training import train
+from forge.serialization import register_module
+from forge.training import train, train_and_save
 
 pytestmark = pytest.mark.skipif(not is_cuda_available(), reason="CUDA is not available on this machine")
 
@@ -36,6 +37,11 @@ class _CudaMLP(Module):
 
     def forward(self, x):
         return self.fc2(self.relu(self.fc1(x)))
+
+
+register_module("_CudaMLP_M81Test", _CudaMLP, get_config=lambda m: {
+    "in_features": m.fc1.in_features, "hidden": m.fc1.out_features, "out_features": m.fc2.out_features,
+})
 
 
 def _dataset(n=32, seed=0):
@@ -85,3 +91,23 @@ def test_train_on_cuda_reports_validation():
         epochs=2, device="cuda", validation_dataset=_dataset(n=16, seed=1), verbose=False,
     )
     assert history[-1].val_loss is not None
+
+
+def test_train_and_save_on_cuda_produces_a_verified_reloadable_artifact(tmp_path):
+    """train_and_save() (Milestone 81) composes train()+save_and_verify() --
+    this is the minimal hardware proof that the composition works end to end
+    on the real CUDA backend: the model moves to CUDA, trains, and the
+    saved/reloaded artifact's prediction agrees with the pre-save model."""
+    model = _CudaMLP()
+    optimizer = Adam(model.parameters(), lr=0.1)
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+
+    result = train_and_save(
+        model, _dataset(n=32), loss=MSELoss(), optimizer=optimizer,
+        epochs=2, device="cuda", verbose=False,
+        path=str(tmp_path / "model.forge"), sample=x,
+    )
+
+    assert str(model.device) == "cuda"
+    assert result.model.device is not None
+    assert str(result.model.device) == "cuda"

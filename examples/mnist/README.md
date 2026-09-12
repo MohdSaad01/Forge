@@ -3,7 +3,7 @@
 An end-to-end, realistic validation of Forge's framework core:
 
 ```text
-MNISTDataset -> DataLoader -> forge.train() -> CNN -> CrossEntropyLoss -> Adam
+MNISTDataset -> DataLoader -> forge.train_and_save() -> CNN -> CrossEntropyLoss -> Adam
 ```
 
 Every step uses only public Forge APIs (`forge`, `forge.data`, `forge.nn`,
@@ -13,12 +13,15 @@ Every step uses only public Forge APIs (`forge`, `forge.data`, `forge.nn`,
 `forge.data.Dataset` and assembles a small CNN from existing `forge.nn`
 layers.
 
-**Milestone 79.** A fresh (non-`--resume`) run trains through
-`forge.train()`, the high-level entry point that builds on `DataLoader`/
-`Trainer` -- see `docs/architecture/training-engine.md`'s **Single-call
-high-level training** section. `--resume` still uses a plain `Trainer` +
-`trainer.resume(checkpoint)` directly (`forge.train()` has no
-checkpoint/resume concept), so this script is also the clearest real
+**Milestone 79/81.** A fresh (non-`--resume`) run trains and saves through
+`forge.train_and_save()`, the single call that trains via `forge.train()`
+(the high-level entry point that builds on `DataLoader`/`Trainer`) and then
+saves + verifies the result via `save_and_verify()` -- see `docs/
+architecture/training-engine.md`'s **Single-call high-level training** and
+**Train, evaluate, persist, verify in one call** sections. `--resume` still
+uses a plain `Trainer` + `trainer.resume(checkpoint)`, followed by its own
+`save_and_verify()` call (`train_and_save()` has no checkpoint/resume
+concept, matching `train()`), so this script is also the clearest real
 example of when to reach for each API.
 
 ## Files
@@ -92,9 +95,9 @@ checks, on a fast synthetic stand-in dataset rather than this real run).
 python -m examples.mnist.train --epochs 3 --device cuda
 ```
 
-Identical model/optimizer/data pipeline; only `forge.train(..., device=
-"cuda")` differs, which moves `model` to CUDA in place before training
-(`build_model()` itself is device-agnostic).
+Identical model/optimizer/data pipeline; only `forge.train_and_save(...,
+device="cuda")` differs, which moves `model` to CUDA in place before
+training (`build_model()` itself is device-agnostic).
 Hardware-verified on the reference GeForce 940MX (CC 5.0, driver 582.53,
 CUDA Toolkit 12.6, see `docs/development/development-environment.md`):
 first-epoch loss/accuracy matched the CPU run's within floating-point
@@ -149,14 +152,15 @@ python -m examples.mnist.train --resume artifacts/mnist_checkpoint.forge --epoch
 
 `--resume` restores the model, Adam state, and epoch/global_step counters
 via `forge.load_checkpoint()` + `Trainer.resume()` (the plain `Trainer` path
--- see the **Milestone 79** note above for why resuming does not go through
-`forge.train()`), then continues training exactly as
+-- see the **Milestone 79/81** note above for why resuming does not go
+through `forge.train_and_save()`), then continues training exactly as
 `docs/architecture/persistence.md` documents -- verified by
 `tests/test_mnist_example_integration.py::test_checkpoint_save_and_resume_restores_state_and_continues_training`.
 A fresh run's checkpoint is written via the plain `forge.save_checkpoint()`
 function instead of `Trainer.save_checkpoint()` (`epoch`/`global_step` are
-derived from the `TrainingHistory` `forge.train()` returns, since `forge.
-train()` itself tracks neither) -- same checkpoint format either way.
+derived from the `TrainingHistory` in `train_and_save()`'s returned
+`TrainAndSaveResult.history`, since `forge.train()` itself tracks neither)
+-- same checkpoint format either way.
 
 **Resume equivalence.** For a small deterministic configuration with
 `shuffle=False` (no caller-owned `DataLoader` generator state to restore --
@@ -168,12 +172,13 @@ epochs produce parameters matching within `1e-5` --
 ## Model persistence
 
 `train.py` also demonstrates the plain (optimizer-free) persistence path:
-after training, it calls `forge.training.save_and_verify()` (Milestone 78),
-which saves the model, then reloads it fresh and confirms the reload's
-prediction matches the pre-save model -- printed as `Saved + verified model
-+ preprocessing + classes -> ...` at the end of every run, raising
-`forge.PersistenceError` instead if the reload ever disagrees. The same
-property is covered on a synthetic dataset by
+`forge.training.save_and_verify()` (Milestone 78) -- called directly on
+`--resume`, or as the second half of `train_and_save()` (Milestone 81) on
+the fresh path -- saves the model, then reloads it fresh and confirms the
+reload's prediction matches the pre-save model -- printed as `Saved +
+verified model + preprocessing + classes -> ...` at the end of every run,
+raising `forge.PersistenceError` instead if the reload ever disagrees. The
+same property is covered on a synthetic dataset by
 `tests/test_mnist_example_integration.py::test_model_persistence_preserves_predictions`
 (CPU) and `tests/test_mnist_example_cuda_integration.py::test_model_persistence_preserves_predictions_on_cuda`
 (CUDA).

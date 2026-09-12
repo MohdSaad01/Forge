@@ -4855,3 +4855,60 @@ mnist/README.md`/`docs/architecture/training-engine.md` updated. No
 `test_dataloader_prefetch.py` allocator-measurement flake documented since
 M63, reproduced passing cleanly in isolation, no M80 regression.
 Full report: `docs/development/m80-train-to-artifact-workflow.md`.
+
+### M81 — `forge.train_and_save()`: composing train() + save_and_verify(), and fixing a real `load_model()` RNG leak
+
+Brief asked what manual framework-level work remains after `forge.train()`
+finishes to produce a verified, portable artifact. Inspection found the
+"evaluate" and "persist + verify" steps were each already solved
+individually (`Trainer.fit(..., validation_dataset=...)`'s per-epoch
+evaluation; `save_and_verify()`'s save-reload-compare round trip), but both
+real `train.py` scripts (`mnist`, `image_folder_classification`) still called
+`forge.train()` and then, several lines later, `save_and_verify()`
+separately -- the identical two-call sequence, in the same order, in both
+scripts. M80's own report had considered and rejected exactly this
+composition ("`forge.train_and_save()`") for lack of evidence at the time;
+by M81 the pattern had survived unchanged across two independent scripts,
+meeting this codebase's own established "two real consumers share the exact
+same shape" bar (the same one that justified `start_training_session()`,
+`generate_sequence()`, and `save_and_verify()` itself).
+
+Built `forge.training.train_and_save()` (`forge/training/api.py`) -- calls
+`train()` then `save_and_verify()` exactly once each, returning a
+`TrainAndSaveResult` (history, the final epoch's already-computed
+`val_loss`/`val_metrics`, and the reloaded+verified model) -- and retrofitted
+both examples' fresh (non-`--resume`) paths to use it.
+
+Retrofitting `image_folder_classification` (whose CNN uses `Dropout`) broke
+`test_resume_after_a_forge_train_fresh_run_matches_continuous_training`'s
+bit-for-bit resume-equivalence guarantee. Root cause: `load_model()`
+reconstructs a module tree via each registered type's ordinary constructor,
+which draws (and discards) an initial-weights sample from `forge.random.
+default_generator()` -- silently advancing the global generator. Moving
+`save_and_verify()`'s reload to run right after `train()` (inside
+`train_and_save()`), instead of after a separate `forge.save_checkpoint()`
+call as both scripts previously had it, changed what `forge.random` state the
+checkpoint recorded, desynchronizing the resumed run's subsequent `Dropout`
+draws. Fixed at the root: `load_model()` now snapshots/restores `forge.
+random`'s state around reconstruction (the same `get_state()`/`set_state()`
+mechanism `forge.serialization.checkpoint` already uses) -- reconstruction's
+wasted draws no longer escape `load_model()`'s own call, making it a pure
+read with no observable side effect on unrelated future random draws.
+
+Files changed: `forge/training/api.py` (`train_and_save()`,
+`TrainAndSaveResult`), `forge/training/__init__.py`, `forge/__init__.py`
+(re-exports); `forge/serialization/model.py` (`load_model()` RNG-isolation
+fix); `examples/mnist/train.py`, `examples/image_folder_classification/
+train.py` (fresh-path retrofit); `README.md`/`examples/README.md`/`examples/
+mnist/README.md`/`examples/image_folder_classification/README.md`/
+`docs/architecture/training-engine.md`/`docs/architecture/persistence.md`
+updated. 14 new tests (11 CPU in `tests/test_training_api.py`, 1 CUDA in
+`tests/test_training_api_cuda.py`, 2 CPU in `tests/test_serialization.py`).
+Full suite: **2,308 collected, 2,307 passed, 1 failed** (2,294 + 14 new) --
+the same pre-existing `test_dataloader_prefetch.py` allocator-measurement
+flake documented since M63, reproduced passing cleanly in isolation, no M81
+regression. CUDA hardware-verified (940MX): `tests/test_training_api_cuda.py`
+(4/4), `tests/test_image_folder_classification_cuda_integration.py` (5/5),
+`tests/test_mnist_example_cuda_integration.py`, all passing against real CUDA
+kernels.
+Full report: `docs/development/m81-train-to-verified-artifact-workflow.md`.

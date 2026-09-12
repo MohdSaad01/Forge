@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81)
 
 ## Package layout
 ```
@@ -8,7 +8,7 @@ forge/
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
         inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78)
         session.py     TrainingSession, start_training_session() (Milestone 73)
-        api.py         train() (Milestone 79)
+        api.py         train() (Milestone 79), train_and_save(), TrainAndSaveResult (Milestone 81)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
 ```
 `forge.training` is exposed as a submodule of `forge` (`forge.training.Trainer`),
@@ -868,6 +868,74 @@ which trains a fresh run through `forge.train()`, resumes it through
 equivalent (`atol=1e-5`) to one continuous run at `shuffle=True` -- this
 example's real default, and the specific case Milestone 65 originally found
 broken elsewhere. See `docs/development/m80-train-to-artifact-workflow.md`.
+
+## Train, evaluate, persist, verify in one call: `train_and_save()` (Milestone 81)
+
+Both `examples/mnist/train.py` and `examples/image_folder_classification/
+train.py`'s fresh (non-`--resume`) paths call `train()` and then immediately
+`save_and_verify()` on the result -- the same two calls, in the same order,
+in both scripts (with `forge.save_checkpoint()` in between, an orthogonal,
+resumable-training concern -- see **Portable-artifact save + verify** above).
+`forge.training.train_and_save()` (`forge/training/api.py`) is that pair,
+written once:
+```python
+result = forge.train_and_save(
+    model, train_dataset,
+    loss=CrossEntropyLoss(),
+    optimizer=Adam(model.parameters(), lr=1e-3),
+    epochs=10,
+    validation_dataset=val_dataset,
+    device="cuda",
+    metrics=[Accuracy()],
+    path="model.forge",
+    sample=query_x_batch,
+    preprocessing=build_transform(),
+    classes=full_dataset.classes,
+)
+result.history       # train()'s own TrainingHistory
+result.val_metrics    # the last epoch's validation metrics, e.g. {"accuracy": 0.97}
+result.model          # save_and_verify()'s freshly reloaded, verified Module
+```
+Calls `train()` then `save_and_verify()` exactly once each, in that order,
+with no new validation/training/persistence logic -- every condition either
+function documents (required `loss`/`optimizer`, `sample` already batched,
+`TrainerError`/`DataError`/`PersistenceError` on the same conditions) applies
+unchanged. `TrainAndSaveResult.val_loss`/`val_metrics` are copied from the
+*last* `EpochResult` in `result.history` -- already computed once per epoch
+via `validation_dataset=`, not recomputed by a second evaluation pass (a
+`forge.evaluate()`-style standalone post-training evaluation call was
+considered and rejected in Milestone 80's own report for exactly this
+reason: every real consumer already gets per-epoch evaluation for free).
+
+**Real consumers.** Both `examples/mnist/train.py` and `examples/
+image_folder_classification/train.py`'s fresh paths now call
+`train_and_save()` in place of their separate `train()` + `save_and_verify()`
+calls; `--resume` in both scripts (which has no `train()` call for
+`train_and_save()` to wrap) keeps calling `save_and_verify()` directly.
+
+**A real hazard found and fixed along the way.** Retrofitting
+`image_folder_classification` (whose model uses `Dropout`) surfaced a real,
+previously-invisible bug: `load_model()` reconstructs a module tree by
+calling each registered type's ordinary constructor (e.g. `Conv2d.__init__`),
+which draws an initial-weights sample from `forge.random.default_generator()`
+before the loaded parameter values overwrite it -- a wasted draw that
+nonetheless *advances* the global generator, silently shifting whatever a
+caller draws next (e.g. the next `Dropout` step in an ongoing training run).
+Moving `save_and_verify()`'s reload to run immediately after `train()`
+(inside `train_and_save()`), instead of after a separate `forge.
+save_checkpoint()` call as both examples previously had it, changed exactly
+what `forge.random` state that checkpoint recorded -- and broke
+`tests/test_image_folder_classification_integration.py::
+test_resume_after_a_forge_train_fresh_run_matches_continuous_training`'s
+bit-for-bit resume-equivalence guarantee. The real fix was in `load_model()`
+itself (`forge/serialization/model.py`): snapshot `forge.random`'s state
+before reconstructing the module tree and restore it immediately after (the
+same `get_state()`/`set_state()` mechanism `forge.serialization.checkpoint`
+already uses) -- loading a model for inference/verification is now a pure
+read with no observable effect on unrelated future random draws, regardless
+of when it happens relative to a checkpoint save. See
+`tests/test_serialization.py`'s **load_model() must not perturb forge.random**
+tests and `docs/development/m81-train-to-verified-artifact-workflow.md`.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

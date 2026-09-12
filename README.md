@@ -61,12 +61,18 @@ See `docs/architecture/architecture.md` for the full design rules and
   (`fit`/`evaluate`/checkpoint resume), metrics (`Accuracy`,
   `MeanAbsoluteError`, ...), `TrainingHistory`, `predict()` -- standalone
   post-training inference (`forge.predict(model, x)`), no `Loss`/`Optimizer`
-  required -- and `start_training_session()`, which builds a fresh `Trainer`
-  or resumes one from a checkpoint (including the `DataLoader`
-  shuffle-generator state needed for exact resume equivalence) from one
-  call, replacing the resume-or-fresh-start branch every checkpoint-capable
-  example used to hand-roll (`train()` itself has no checkpoint/resume --
-  use `start_training_session()`/`Trainer` directly for that).
+  required -- `save_and_verify()`, which saves a model and immediately
+  proves the file is portable by reloading it fresh and confirming a sample
+  prediction agrees; `train_and_save()`, which calls `train()` then
+  `save_and_verify()` in one step, returning the completed history, the
+  final validation result, and the reloaded, verified model together; and
+  `start_training_session()`, which builds a fresh `Trainer` or resumes one
+  from a checkpoint (including the `DataLoader` shuffle-generator state
+  needed for exact resume equivalence) from one call, replacing the
+  resume-or-fresh-start branch every checkpoint-capable example used to
+  hand-roll (`train()`/`train_and_save()` themselves have no
+  checkpoint/resume -- use `start_training_session()`/`Trainer` directly
+  for that).
 - **`forge.serialization`** -- `save_model`/`load_model` (architecture +
   parameters, via an explicit module registry -- never arbitrary code
   execution) and `save_checkpoint`/`load_checkpoint` (adds optimizer state,
@@ -223,11 +229,17 @@ state + epoch/step + RNG state so a run can resume exactly where it left
 off (`Trainer.resume()`, or `forge.training.start_training_session()` for a
 fresh-or-resumed `Trainer` in one call); `forge.save_model()`/`load_model()`
 save just the trained architecture and parameters for later inference,
-independent of how it was trained. Every example under `examples/`
-demonstrates both paths -- see `docs/architecture/persistence.md` for the
-file format and trust model (no arbitrary code execution on load) and
-`docs/architecture/training-engine.md` for `train()`'s full contract and its
-`Trainer`/`TrainingSession` boundary.
+independent of how it was trained -- `forge.save_and_verify(model, path,
+sample, preprocessing=..., classes=...)` does that save and immediately
+proves the file round-trips by reloading it fresh and comparing a
+prediction, and `forge.train_and_save(model, dataset, loss=..., optimizer=
+..., epochs=..., path=..., sample=..., preprocessing=..., classes=...)`
+composes `train()` + `save_and_verify()` into the one call every
+Trainer-based example's `train.py` ends with. Every example under
+`examples/` demonstrates both paths -- see `docs/architecture/persistence.md`
+for the file format and trust model (no arbitrary code execution on load)
+and `docs/architecture/training-engine.md` for `train()`/`train_and_save()`'s
+full contract and their `Trainer`/`TrainingSession` boundary.
 
 ## Testing
 

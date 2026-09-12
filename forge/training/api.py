@@ -1,4 +1,5 @@
-"""`forge.train()`: the single-call high-level training entry point (Milestone 79).
+"""`forge.train()`/`forge.train_and_save()`: the single-call high-level
+training and train-to-artifact entry points (Milestones 79/81).
 
 Every Trainer-based Forge example's `train.py` still starts with the same
 hand-assembled sequence before it ever calls `.fit()`:
@@ -64,11 +65,24 @@ would make `train()` no simpler than the workflow it exists to replace). A
 resumable training run still uses `start_training_session()` + `Trainer`
 directly -- see `examples/image_folder_classification/train.py` for both
 paths side by side.
+
+## `train_and_save()`: `train()` + `save_and_verify()` in one call (Milestone 81)
+
+Both `examples/mnist/train.py` and `examples/image_folder_classification/
+train.py` call `train()` and then immediately `save_and_verify()`
+(`forge/training/inference.py`, Milestone 78) on the result -- the identical
+two-call sequence, in the same order, in both scripts. `train_and_save()` is
+that sequence, written once, returning a `TrainAndSaveResult` (`history`,
+`val_loss`/`val_metrics` from the final epoch, and the freshly reloaded,
+verified `model`) instead of a plain `TrainingHistory`. It adds no
+validation/training/persistence logic beyond calling `train()` then
+`save_and_verify()` exactly once each -- see that function's own docstring.
 """
 
 from __future__ import annotations
 
-from typing import Iterable
+from dataclasses import dataclass
+from typing import Any, Iterable
 
 from ..backend.device import Device
 from ..data.dataloader import DataLoader
@@ -77,6 +91,8 @@ from ..exceptions import DataError, TrainerError
 from ..nn.loss import Loss
 from ..nn.module import Module
 from ..optim.optimizer import Optimizer
+from ..tensor.tensor import Tensor
+from .inference import save_and_verify
 from .metrics import Metric
 from .trainer import Trainer, TrainingHistory
 
@@ -184,4 +200,115 @@ def train(
     return trainer.fit(train_loader, epochs=epochs, validation_loader=validation_loader)
 
 
-__all__ = ["train"]
+@dataclass(frozen=True)
+class TrainAndSaveResult:
+    """`train_and_save()`'s return value (Milestone 81).
+
+    The same three things a caller gets from `train()` + `save_and_verify()`
+    separately, standing side by side rather than split across two return
+    values: `history` is `train()`'s own `TrainingHistory`, `model` is
+    `save_and_verify()`'s freshly reloaded, verified `Module` (not the
+    original -- see that function's docstring for why), and `val_loss`/
+    `val_metrics` are the *last* epoch's validation result -- already
+    computed once per epoch via `validation_dataset=` (`None`/`{}` when no
+    `validation_dataset` was given), copied here so a caller doesn't need to
+    know to index `history[-1]` to find the final evaluation result. No
+    second evaluation pass runs to produce these -- see `train_and_save()`'s
+    own docstring.
+    """
+
+    history: TrainingHistory
+    val_loss: "float | None"
+    val_metrics: "dict[str, float]"
+    model: Module
+
+
+def train_and_save(
+    model: Module,
+    dataset: "Dataset | DataLoader",
+    *,
+    loss: Loss,
+    optimizer: Optimizer,
+    epochs: int,
+    path: str,
+    sample: Tensor,
+    batch_size: int = 32,
+    shuffle: bool = True,
+    validation_dataset: "Dataset | DataLoader | None" = None,
+    device: "str | Device | None" = None,
+    metrics: "Iterable[Metric] | None" = None,
+    verbose: bool = True,
+    preprocessing: "Any | None" = None,
+    classes: "list[str] | None" = None,
+    atol: float = 1e-5,
+) -> TrainAndSaveResult:
+    """Train `model`, then save + verify it as a portable artifact, in one call (Milestone 81).
+
+    ```python
+    result = forge.train_and_save(
+        model, train_dataset,
+        loss=CrossEntropyLoss(),
+        optimizer=Adam(model.parameters(), lr=1e-3),
+        epochs=10,
+        validation_dataset=val_dataset,
+        device="cuda",
+        metrics=[Accuracy()],
+        path="model.forge",
+        sample=query_x_batch,
+        preprocessing=build_transform(),
+        classes=full_dataset.classes,
+    )
+    result.history       # the TrainingHistory train() returned
+    result.val_metrics    # the last epoch's validation metrics, e.g. {"accuracy": 0.97}
+    result.model          # the freshly reloaded, verified Module
+    ```
+
+    `examples/mnist/train.py` and `examples/image_folder_classification/
+    train.py` each independently called `train()` then immediately
+    `save_and_verify()` on its result -- the same two-call sequence, in the
+    same order, with no framework logic between them beyond a hand-picked
+    `sample`. `train_and_save()` is that sequence, written once: `train(model,
+    dataset, loss=loss, optimizer=optimizer, epochs=epochs, ...)` followed by
+    `save_and_verify(model, path, sample, preprocessing=preprocessing,
+    classes=classes, atol=atol)`, with the final epoch's validation result
+    copied onto the return value so a caller does not need to know
+    `TrainingHistory`'s own indexing convention to find it.
+
+    This is composition only: `train()` and `save_and_verify()` are each
+    called exactly once, unmodified, with no new validation, training, or
+    persistence logic of its own -- everything either function itself
+    documents (required `loss`/`optimizer`, no automatic loss/optimizer/
+    architecture selection, `sample` must already be a batched `Tensor`
+    matching `predict()`'s own calling convention, `TrainerError`/`DataError`
+    /`PersistenceError` on the same conditions those two functions already
+    raise) applies here unchanged. `device`, when given, is resolved and the
+    model moved by `train()`; `save_and_verify()` is then called with no
+    explicit `device=`, so it defaults to `model.device` -- the same device
+    `train()` just moved the model to.
+
+    **Scope.** Like `train()`, this has no `checkpoint=`/`resume=` concept --
+    checkpoint persistence remains a separate, resumable-training concern
+    handled by `forge.save_checkpoint()`/`TrainingSession` alongside this
+    call, exactly as every retrofitted example already does (see `train()`'s
+    own docstring for why checkpoint/resume was deliberately kept out of the
+    high-level training call). `Trainer`/`train()`/`save_and_verify()` remain
+    fully available, unmodified, for a caller needing checkpoint/resume, CUDA
+    prefetch, a custom `DataLoader`, or a training/verification boundary this
+    function does not expose.
+    """
+    history = train(
+        model, dataset,
+        loss=loss, optimizer=optimizer, epochs=epochs,
+        batch_size=batch_size, shuffle=shuffle,
+        validation_dataset=validation_dataset, device=device, metrics=metrics, verbose=verbose,
+    )
+    reloaded = save_and_verify(
+        model, path, sample, preprocessing=preprocessing, classes=classes, atol=atol,
+    )
+    last = history[-1]
+    return TrainAndSaveResult(
+        history=history, val_loss=last.val_loss, val_metrics=last.val_metrics, model=reloaded,
+    )
+
+
+__all__ = ["train", "train_and_save", "TrainAndSaveResult"]

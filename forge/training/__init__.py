@@ -7,7 +7,7 @@ gradients, updates no parameters, and implements no loss/optimizer/batching
 logic of its own. See `docs/architecture/training-engine.md`.
 """
 
-from .api import train
+from .api import TrainAndSaveResult, train, train_and_save
 from .inference import ClassificationPrediction, generate_sequence, interpret_classification, predict, save_and_verify
 from .metrics import Accuracy, MeanAbsoluteError, MeanSquaredError, Metric
 from .session import TrainingSession, start_training_session
@@ -23,6 +23,8 @@ __all__ = [
     "MeanAbsoluteError",
     "Accuracy",
     "train",
+    "train_and_save",
+    "TrainAndSaveResult",
     "predict",
     "save_and_verify",
     "generate_sequence",

@@ -1,7 +1,7 @@
 """Forge Milestone 20: an end-to-end MNIST training example.
 
 ```text
-MNISTDataset -> DataLoader -> forge.train() -> CNN (Conv2d/ReLU/MaxPool2d/Flatten/Linear)
+MNISTDataset -> DataLoader -> forge.train_and_save() -> CNN (Conv2d/ReLU/MaxPool2d/Flatten/Linear)
     -> CrossEntropyLoss -> Adam
 ```
 
@@ -22,6 +22,15 @@ concept (see that module's docstring for why), so a resumed run is the one
 place this script still needs the lower-level API directly -- the two paths
 side by side are the clearest real demonstration of where Forge's high-level
 and low-level training APIs each apply.
+
+**Milestone 81.** The fresh path now calls `forge.train_and_save()` instead
+of `forge.train()` followed by a separate `save_and_verify()` call -- the
+same train-then-save-and-verify sequence this script (and
+`examples/image_folder_classification/train.py`) already ran by hand,
+folded into one call that returns the completed `TrainingHistory`, the final
+epoch's validation result, and the freshly reloaded, verified model
+together. `--resume` keeps calling `save_and_verify()` directly (it has no
+`train()` call of its own for `train_and_save()` to wrap).
 
 ## Determinism
 
@@ -136,6 +145,13 @@ def main(argv=None) -> None:
 
     loss_fn = CrossEntropyLoss()
 
+    # Milestone 81: the sample save_and_verify()/train_and_save() need to
+    # prove the eventual artifact is portable -- picked once, up front, since
+    # both branches below end up saving+verifying against it.
+    query_x, query_y = test_ds[0]
+    query_x = query_x.to(args.device).reshape(1, 1, 28, 28)
+    classes = [str(d) for d in range(10)]
+
     start = time.perf_counter()
     if args.resume:
         print(f"Resuming from checkpoint '{args.resume}' ...")
@@ -147,18 +163,28 @@ def main(argv=None) -> None:
         print(f"Resumed at epoch={trainer.epoch}, global_step={trainer.global_step}")
         history = trainer.fit(train_loader, epochs=args.epochs, validation_loader=test_loader)
         trainer.save_checkpoint(str(checkpoint_path))
+        # Milestone 78: save_and_verify() (Section 12's old hand-written
+        # "save -> reload -> predict() must agree" round trip, now the
+        # shared abstraction every retrofitted Forge example calls the same
+        # way) saves the model and immediately proves it by reloading it
+        # fresh. The fresh (non-resume) branch below gets this for free from
+        # train_and_save() instead.
+        reloaded = save_and_verify(
+            model, str(model_path), query_x, preprocessing=build_transform(), classes=classes,
+        )
     else:
-        # Milestone 79: forge.train() replaces this branch's own
-        # build_model().to(device) + Adam + Trainer(...) + trainer.fit(...)
-        # sequence -- see forge/training/api.py. train_loader/test_loader
-        # stay hand-built above rather than passed as raw Datasets, since
-        # forge.train() accepts an already-built DataLoader exactly as given
-        # and this script deliberately keeps model init (forge.random) and
-        # batch order (data_rng) on independent generator streams -- see
-        # this module's own **Determinism** section.
+        # Milestone 81: train_and_save() replaces this branch's own
+        # build_model().to(device) + Adam + forge.train(...) +
+        # save_and_verify(...) sequence -- see forge/training/api.py.
+        # train_loader/test_loader stay hand-built above rather than passed
+        # as raw Datasets, since train_and_save() (via train()) accepts an
+        # already-built DataLoader exactly as given, and this script
+        # deliberately keeps model init (forge.random) and batch order
+        # (data_rng) on independent generator streams -- see this module's
+        # own **Determinism** section.
         model = build_model().to(args.device)
         optimizer = Adam(model.parameters(), lr=args.lr)
-        history = forge.train(
+        train_result = forge.train_and_save(
             model, train_loader,
             loss=loss_fn,
             optimizer=optimizer,
@@ -166,13 +192,20 @@ def main(argv=None) -> None:
             validation_dataset=test_loader,
             device=args.device,
             metrics=[Accuracy()],
+            path=str(model_path),
+            sample=query_x,
+            preprocessing=build_transform(),
+            classes=classes,
         )
-        # forge.train() is a fresh-training-only entry point -- no
-        # epoch/global_step bookkeeping across resumes (see
-        # forge/training/api.py's "No checkpoint/resume" section). For a
-        # first run those two counters are exactly "how much training
-        # forge.train() just did", derived from its own returned history the
-        # same way a fresh Trainer would have counted them.
+        history = train_result.history
+        reloaded = train_result.model
+        # train() (train_and_save()'s own training step) is a
+        # fresh-training-only entry point -- no epoch/global_step
+        # bookkeeping across resumes (see forge/training/api.py's "No
+        # checkpoint/resume" section). For a first run those two counters
+        # are exactly "how much training just happened", derived from the
+        # returned history the same way a fresh Trainer would have counted
+        # them.
         epoch = len(history)
         global_step = epoch * len(train_loader)
         forge.save_checkpoint(str(checkpoint_path), model, optimizer, epoch=epoch, global_step=global_step)
@@ -194,19 +227,12 @@ def main(argv=None) -> None:
     # Milestone 77: `preprocessing=`/`classes=` (Milestones 71/72) now save
     # alongside the model for the first time in this example -- previously
     # blocked by `build_transform()`'s `Lambda` step (see that function's
-    # docstring). `classes=[str(d) for d in range(10)]` is MNIST's own
-    # digit-index-to-label vocabulary (`output[..., i]` means the digit `i`),
-    # the same convention `ImageFolder.classes` already uses for images.
-    # Milestone 78: `save_and_verify()` (Section 12's old hand-written
-    # "save -> reload -> predict() must agree" round trip, now the shared
-    # abstraction every retrofitted Forge example calls the same way) saves
-    # the model and immediately proves it by reloading it fresh.
-    query_x, query_y = test_ds[0]
-    query_x = query_x.to(args.device).reshape(1, 1, 28, 28)
-    reloaded = save_and_verify(
-        model, str(model_path), query_x,
-        preprocessing=build_transform(), classes=[str(d) for d in range(10)],
-    )
+    # docstring). `classes` (MNIST's own digit-index-to-label vocabulary,
+    # `output[..., i]` means the digit `i`) is the same convention
+    # `ImageFolder.classes` already uses for images. Milestone 81:
+    # `train_and_save()`/`save_and_verify()` (the fresh/resume branches
+    # above) already saved the model and proved it by reloading it fresh --
+    # `reloaded` is that freshly-reloaded, verified `Module`.
     print(f"Saved + verified model + preprocessing + classes -> {model_path}")
 
     # Milestone 72's interpretation step, using load_classes()'s own

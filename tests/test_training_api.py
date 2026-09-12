@@ -17,11 +17,12 @@ import pytest
 import forge
 from forge import Tensor
 from forge.data import DataLoader, TensorDataset
-from forge.exceptions import DataError, TrainerError
+from forge.exceptions import DataError, PersistenceError, TrainerError
 from forge.nn import Linear, Module, ReLU
 from forge.nn.loss import CrossEntropyLoss, MSELoss
 from forge.optim import SGD, Adam
-from forge.training import Accuracy, Trainer, TrainingHistory, train
+from forge.serialization import load_classes, load_preprocessing, register_module
+from forge.training import Accuracy, TrainAndSaveResult, Trainer, TrainingHistory, train, train_and_save
 
 
 class _MLP(Module):
@@ -33,6 +34,14 @@ class _MLP(Module):
 
     def forward(self, x):
         return self.fc2(self.relu(self.fc1(x)))
+
+
+# Registered for persistence -- train_and_save()'s tests below need to
+# actually save/reload this class (matches tests/test_inference.py's own
+# _MLP_M78Test registration precedent for save_and_verify()).
+register_module("_MLP_M81Test", _MLP, get_config=lambda m: {
+    "in_features": m.fc1.in_features, "hidden": m.fc1.out_features, "out_features": m.fc2.out_features,
+})
 
 
 def _regression_dataset(n=32, seed=0):
@@ -271,3 +280,165 @@ def test_train_rejects_invalid_epochs():
 
 def test_train_is_exported_at_top_level():
     assert forge.train is train
+
+
+# -- train_and_save() (Milestone 81) -------------------------------------------
+
+
+def test_train_and_save_is_reexported_consistently():
+    assert forge.train_and_save is train_and_save
+    assert forge.training.train_and_save is train_and_save
+
+
+def test_train_and_save_returns_a_train_and_save_result(tmp_path):
+    model = _MLP()
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+    result = train_and_save(
+        model, _regression_dataset(), loss=MSELoss(), optimizer=SGD(model.parameters(), lr=0.05),
+        epochs=3, path=str(tmp_path / "model.forge"), sample=x, verbose=False,
+    )
+    assert isinstance(result, TrainAndSaveResult)
+    assert isinstance(result.history, TrainingHistory)
+    assert len(result.history) == 3
+
+
+def test_train_and_save_trains_exactly_like_train(tmp_path):
+    """train_and_save() must be pure composition: training must be
+    bit-identical to a direct train() call given identical seeded initial
+    parameters, data, and (unshuffled) batch order."""
+    dataset = _regression_dataset(n=32)
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+
+    forge.random.seed(0)
+    model_a = _MLP()
+    train(
+        model_a, dataset, loss=MSELoss(), optimizer=SGD(model_a.parameters(), lr=0.1),
+        epochs=3, batch_size=8, shuffle=False, verbose=False,
+    )
+
+    forge.random.seed(0)
+    model_b = _MLP()
+    train_and_save(
+        model_b, dataset, loss=MSELoss(), optimizer=SGD(model_b.parameters(), lr=0.1),
+        epochs=3, batch_size=8, shuffle=False, verbose=False,
+        path=str(tmp_path / "model.forge"), sample=x,
+    )
+
+    params_a = _params(model_a)
+    params_b = _params(model_b)
+    for name in params_a:
+        np.testing.assert_array_equal(params_a[name], params_b[name])
+
+
+def test_train_and_save_writes_a_working_reloadable_artifact(tmp_path):
+    model = _MLP()
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+    path = str(tmp_path / "model.forge")
+
+    result = train_and_save(
+        model, _regression_dataset(), loss=MSELoss(), optimizer=SGD(model.parameters(), lr=0.05),
+        epochs=2, path=path, sample=x, verbose=False,
+    )
+
+    assert isinstance(result.model, _MLP)
+    assert result.model is not model
+    reloaded = forge.load_model(path)
+    with forge.no_grad():
+        expected = model(x).numpy()
+        actual = reloaded(x).numpy()
+    np.testing.assert_allclose(actual, expected, atol=1e-6)
+
+
+def test_train_and_save_passes_through_preprocessing_and_classes(tmp_path):
+    model = _MLP(in_features=2, out_features=3)
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+    path = str(tmp_path / "model.forge")
+
+    train_and_save(
+        model, _classification_dataset(), loss=CrossEntropyLoss(),
+        optimizer=Adam(model.parameters(), lr=0.01), epochs=1, path=path, sample=x, verbose=False,
+        preprocessing=None, classes=["a", "b", "c"],
+    )
+
+    assert load_classes(path) == ["a", "b", "c"]
+
+
+def test_train_and_save_exposes_the_final_epochs_validation_result(tmp_path):
+    model = _MLP()
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+    result = train_and_save(
+        model, _regression_dataset(n=32, seed=0), loss=MSELoss(),
+        optimizer=SGD(model.parameters(), lr=0.05), epochs=3, verbose=False,
+        validation_dataset=_regression_dataset(n=16, seed=1),
+        path=str(tmp_path / "model.forge"), sample=x,
+    )
+    assert result.val_loss == result.history[-1].val_loss
+    assert result.val_metrics == result.history[-1].val_metrics
+    assert result.val_loss is not None
+
+
+def test_train_and_save_validation_is_none_without_a_validation_dataset(tmp_path):
+    model = _MLP()
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+    result = train_and_save(
+        model, _regression_dataset(), loss=MSELoss(), optimizer=SGD(model.parameters(), lr=0.05),
+        epochs=1, verbose=False, path=str(tmp_path / "model.forge"), sample=x,
+    )
+    assert result.val_loss is None
+    assert result.val_metrics == {}
+
+
+def test_train_and_save_raises_persistence_error_on_prediction_mismatch(tmp_path, monkeypatch):
+    """A reloaded model that diverges from the just-trained model must be
+    caught -- the exact condition save_and_verify() exists to catch,
+    propagated unchanged through train_and_save()."""
+    from forge.training import api as api_module
+    from forge.training import inference as inference_module
+
+    model = _MLP()
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+    path = str(tmp_path / "model.forge")
+
+    real_predict = inference_module.predict
+    call_count = {"n": 0}
+
+    def _flaky_predict(m, inputs, device=None):
+        call_count["n"] += 1
+        result = real_predict(m, inputs, device=device)
+        if call_count["n"] == 2:
+            return Tensor(result.numpy() + 100.0)
+        return result
+
+    monkeypatch.setattr(inference_module, "predict", _flaky_predict)
+    with pytest.raises(PersistenceError):
+        api_module.train_and_save(
+            model, _regression_dataset(), loss=MSELoss(), optimizer=SGD(model.parameters(), lr=0.05),
+            epochs=1, path=path, sample=x, verbose=False,
+        )
+
+
+def test_train_and_save_rejects_a_non_module_model(tmp_path):
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+    with pytest.raises(TrainerError):
+        train_and_save(
+            object(), _regression_dataset(), loss=MSELoss(), optimizer=SGD([], lr=0.1),
+            epochs=1, path=str(tmp_path / "model.forge"), sample=x,
+        )
+
+
+def test_train_and_save_rejects_a_non_tensor_sample(tmp_path):
+    model = _MLP()
+    with pytest.raises(DataError):
+        train_and_save(
+            model, _regression_dataset(), loss=MSELoss(), optimizer=SGD(model.parameters(), lr=0.1),
+            epochs=1, path=str(tmp_path / "model.forge"), sample=np.zeros((1, 2), dtype=np.float32),
+        )
+
+
+def test_train_and_save_requires_path_and_sample_as_keywords(tmp_path):
+    model = _MLP()
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+    with pytest.raises(TypeError):
+        train_and_save(
+            model, _regression_dataset(), loss=MSELoss(), optimizer=SGD(model.parameters(), lr=0.1), epochs=1,
+        )  # missing path/sample

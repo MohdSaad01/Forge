@@ -31,6 +31,7 @@ from typing import Any
 
 import numpy as np
 
+from .. import random as forge_random
 from ..backend import get_backend
 from ..backend.device import SUPPORTED_DEVICE_TYPES
 from ..exceptions import PersistenceError
@@ -224,12 +225,28 @@ def load_model(path: str, device: "str | None" = None) -> Module:
     if not isinstance(root, dict):
         raise PersistenceError(f"Cannot load model from '{path}': malformed metadata (missing 'root').")
 
+    # Reconstructing a module tree calls each registered type's ordinary
+    # constructor (e.g. `Conv2d.__init__`), which draws an initial-weights
+    # sample from `forge.random.default_generator()` -- immediately
+    # overwritten below by this file's own saved parameter values, so the
+    # draw itself is wasted, not meaningful. Snapshotting/restoring
+    # `forge.random`'s state around reconstruction (the same get_state()/
+    # set_state() mechanism `forge.serialization.checkpoint` already uses)
+    # makes `load_model()` a pure read with no observable side effect on
+    # unrelated future draws (e.g. a caller's next `Dropout` step) -- a
+    # real, previously-invisible leak Milestone 81 found: calling
+    # `load_model()` between two otherwise-identical training runs (e.g.
+    # via `save_and_verify()`) silently shifted their subsequent Dropout
+    # draws out of sync.
+    random_state = forge_random.get_state()
     try:
         return _build_load_node(root, prefix="", arrays=arrays, path=path, target_device=target_device)
     except PersistenceError:
         raise
     except (TypeError, ValueError, KeyError, AttributeError) as exc:
         raise PersistenceError(f"Cannot load model from '{path}': malformed metadata ({exc}).") from exc
+    finally:
+        forge_random.set_state(random_state)
 
 
 # -- save: recursive tree walk -------------------------------------------

@@ -886,3 +886,50 @@ def test_save_load_embedding_inside_sequential(tmp_path):
         post_load = loaded(idx).numpy()
 
     np.testing.assert_allclose(pre_save, post_load, atol=1e-6)
+
+
+# -- load_model() must not perturb forge.random (Milestone 81) ---------------
+
+
+def test_load_model_does_not_advance_forges_default_generator(tmp_path):
+    """Reconstructing a module tree calls each layer's ordinary constructor
+    (e.g. `Conv2d.__init__`), which draws an initial-weights sample from
+    `forge.random.default_generator()` before `load_model()` immediately
+    overwrites it with the file's own saved values -- that draw must not
+    leak out and shift whatever a caller draws next (e.g. a `Dropout` step
+    in a training loop that happens to reload a model mid-run, as
+    `forge.training.save_and_verify()`/`train_and_save()` do). Found via a
+    real bit-for-bit resume-equivalence regression in
+    `examples/image_folder_classification/train.py` (Milestone 81)."""
+    forge.random.seed(0)
+    model = Conv2d(1, 2, kernel_size=3)
+    path = tmp_path / "conv.forge"
+    save_model(model, str(path))
+
+    before = forge.random.get_state()
+    load_model(str(path))
+    after = forge.random.get_state()
+    assert before == after
+
+
+def test_load_model_restores_state_even_on_a_failed_load(tmp_path, monkeypatch):
+    """The same guarantee must hold when reconstruction raises partway
+    through -- `load_model()`'s `finally` must still restore the generator."""
+    model = Conv2d(1, 2, kernel_size=3)
+    path = tmp_path / "conv.forge"
+    save_model(model, str(path))
+
+    forge.random.seed(0)
+    before = forge.random.get_state()
+
+    import forge.serialization.model as model_module
+
+    def _boom(*args, **kwargs):
+        raise ValueError("simulated reconstruction failure")
+
+    monkeypatch.setattr(model_module, "_build_load_node", _boom)
+    with pytest.raises(PersistenceError):
+        load_model(str(path))
+
+    after = forge.random.get_state()
+    assert before == after

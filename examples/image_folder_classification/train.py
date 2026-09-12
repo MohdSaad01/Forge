@@ -1,12 +1,12 @@
-"""Forge Milestone 69/70/71/72/73/80: an end-to-end directory-based image
+"""Forge Milestone 69/70/71/72/73/80/81: an end-to-end directory-based image
 classification example, now with mixed-resolution source images, *persisted*
 preprocessing, a *self-describing* class vocabulary, and a single-call
-high-level training entry point for its common (non-`--resume`) path.
+train-to-verified-artifact entry point for its common (non-`--resume`) path.
 
 ```text
 generate_dataset() [mixed H, W] -> ImageFolder -> Resize+Normalize -> random_split -> DataLoader
-    -> forge.train() -> CNN -> CrossEntropyLoss -> Adam
-    -> save (model + preprocessing + classes) -> forge.predict() -> interpret_classification()
+    -> forge.train_and_save() -> CNN -> CrossEntropyLoss -> Adam
+    -> save + verify (model + preprocessing + classes) -> forge.predict() -> interpret_classification()
 ```
 
 This is the first Forge example whose data source is **ordinary image files
@@ -43,7 +43,12 @@ the fresh path now trains through `forge.train()` (Milestone 79) instead of
 `"data_loader_rng_state"` extra field via plain `forge.save_checkpoint()`
 (the exact key `start_training_session()`'s resume path already reads), so
 the Milestone 73 shuffle-resume-equivalence guarantee carries over with zero
-regression. See `docs/development/m80-train-to-artifact-workflow.md`.
+regression. See `docs/development/m80-train-to-artifact-workflow.md`. Milestone
+81 replaced the fresh path's `forge.train()` call + separate `save_and_verify()`
+call with one `forge.training.train_and_save()` call (`forge/training/api.py`)
+-- the identical two-call sequence this script and `examples/mnist/train.py`
+both independently ran, now written once. See
+`docs/development/m81-train-to-verified-artifact-workflow.md`.
 
 Every step below uses only public Forge APIs (`forge`, `forge.data`,
 `forge.nn`, `forge.optim`, `forge.training`, `forge.save_model`/
@@ -184,6 +189,12 @@ def main(argv=None) -> None:
     loss_fn = CrossEntropyLoss()
     test_loader = DataLoader(test_ds, batch_size=args.batch_size)
 
+    # Milestone 81: the sample save_and_verify()/train_and_save() need to
+    # prove the eventual artifact is portable -- picked once, up front, since
+    # both branches below end up saving+verifying against it.
+    query_x, query_y = test_ds[0]
+    query_x_batch = query_x.to(args.device).reshape(1, *query_x.shape)
+
     start = time.perf_counter()
     if args.resume:
         # Milestone 73: start_training_session() replaces this branch's own
@@ -211,14 +222,20 @@ def main(argv=None) -> None:
         history = session.trainer.fit(train_loader, epochs=args.epochs, validation_loader=test_loader)
         session.save_checkpoint(str(checkpoint_path))
         model = session.trainer.model
+        # Milestone 78: save_and_verify() saves the model and immediately
+        # proves it by reloading it fresh. The fresh (non-resume) branch
+        # below gets this for free from train_and_save() instead.
+        reloaded = save_and_verify(
+            model, str(model_path), query_x_batch,
+            preprocessing=build_transform(), classes=full_dataset.classes,
+        )
     else:
-        # Milestone 80: the fresh (non-resume) path now trains through
-        # forge.train() (forge/training/api.py) instead of hand-assembling
-        # Trainer(...) + trainer.fit(...) itself -- the same retrofit
-        # Milestone 79 applied to examples/mnist/train.py, extended here to
-        # Forge's other forge.train()-eligible flagship example (real image
-        # files, persisted preprocessing, persisted class metadata). This
-        # branch builds data_loader_rng itself (exactly what
+        # Milestone 81: the fresh (non-resume) path now trains through
+        # forge.train_and_save() (forge/training/api.py) instead of
+        # forge.train() followed by a separate save_and_verify() call
+        # (Milestone 80's own retrofit) -- the identical two-call sequence
+        # examples/mnist/train.py's fresh path also used, now written once.
+        # This branch builds data_loader_rng itself (exactly what
         # start_training_session() would have built internally) and saves
         # its state into the checkpoint's own "data_loader_rng_state" extra
         # field via plain forge.save_checkpoint() -- so a later --resume
@@ -232,7 +249,7 @@ def main(argv=None) -> None:
                                    generator=data_loader_rng)
         model = build_model(num_classes=len(full_dataset.classes)).to(args.device)
         optimizer = Adam(model.parameters(), lr=args.lr)
-        history = forge.train(
+        train_result = forge.train_and_save(
             model, train_loader,
             loss=loss_fn,
             optimizer=optimizer,
@@ -240,7 +257,13 @@ def main(argv=None) -> None:
             validation_dataset=test_loader,
             device=args.device,
             metrics=[Accuracy()],
+            path=str(model_path),
+            sample=query_x_batch,
+            preprocessing=build_transform(),
+            classes=full_dataset.classes,
         )
+        history = train_result.history
+        reloaded = train_result.model
         epoch, global_step = len(history), len(history) * len(train_loader)
         forge.save_checkpoint(
             str(checkpoint_path), model, optimizer, epoch=epoch, global_step=global_step,
@@ -272,19 +295,11 @@ def main(argv=None) -> None:
     # file alone -- not a hand-written `classes.json` sidecar a caller had
     # to remember to keep next to it -- is enough to turn a predicted index
     # back into a class name later. See `load_classes()` and
-    # `forge.training.interpret_classification()`. Milestone 78:
-    # `save_and_verify()` saves the model, then reloads it fresh and
-    # confirms the reload's prediction on `query_x_batch` matches the
-    # pre-save model -- the same "save -> reload -> predict() must agree"
-    # proof this script used to hand-write, now the shared Milestone 78
-    # abstraction (`forge/training/inference.py`) every retrofitted Forge
-    # example calls the same way.
-    query_x, query_y = test_ds[0]
-    query_x_batch = query_x.to(args.device).reshape(1, *query_x.shape)
-    reloaded = save_and_verify(
-        model, str(model_path), query_x_batch,
-        preprocessing=build_transform(), classes=full_dataset.classes,
-    )
+    # `forge.training.interpret_classification()`. Milestone 81:
+    # `train_and_save()`/`save_and_verify()` (the fresh/resume branches
+    # above) already saved the model, then reloaded it fresh and confirmed
+    # the reload's prediction on `query_x_batch` matches the pre-save model
+    # -- `reloaded` is that freshly-reloaded, verified `Module`.
     print(f"Saved + verified model + preprocessing + classes ({full_dataset.classes}) -> {model_path}")
 
     # Section 11: standalone single-image inference through forge.predict(),
