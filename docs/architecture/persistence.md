@@ -513,6 +513,16 @@ directions directly (a `.forge` archive with the `"preprocessing"` key
 deleted entirely still loads through both `load_model()` and
 `load_preprocessing()`).
 
+**Not just for images.** `preprocessing=` was designed against
+`image_folder_classification`'s `Resize`/`Normalize` pipeline, but nothing
+about the mechanism itself is image-specific -- `Normalize` alone (no
+`Resize`) is exactly the fitted feature-standardization transform
+`examples/regression/train.py` saves alongside its model as of **Milestone
+83**, consumed via `forge.predict_tensor_artifact()`
+(`docs/architecture/training-engine.md`'s **Portable-artifact inference for
+numeric input** section) rather than `predict_artifact()`'s image-file-
+specific consumption path.
+
 ## Class-label metadata (Milestone 72)
 `save_model()`/`load_model()`/`load_preprocessing()` together get a caller
 from a saved artifact to a raw prediction `Tensor` -- but for a

@@ -110,9 +110,11 @@ def make_datasets(
     """Build deterministic, non-overlapping train/val/test `TensorDataset`s.
 
     Returns `(train_ds, val_ds, test_ds, stats)`, where `stats` holds the
-    training-split feature `mean`/`std` (the same values baked into each
-    split's `Normalize` transform) and `y_train_mean`/`y_train_var` (used by
-    `train.py` to report a trivial predict-the-mean baseline MSE).
+    training-split feature `mean`/`std`, the `transform` (the same fitted
+    `Normalize` instance baked into each split's `TensorDataset`, Milestone
+    83 -- reused as-is for `preprocessing=` at persistence time rather than
+    reconstructed from `mean`/`std`), and `y_train_mean`/`y_train_var` (used
+    by `train.py` to report a trivial predict-the-mean baseline MSE).
     """
     total = n_train + n_val + n_test
     X, y = generate_raw(total, seed)
@@ -131,6 +133,13 @@ def make_datasets(
         "std": std,
         "y_train_mean": float(y_train.mean()),
         "y_train_var": float(y_train.var()),
+        # Milestone 83: the exact fitted Normalize instance every split's
+        # TensorDataset already applies -- exposed so train.py can hand it to
+        # forge.save_model(..., preprocessing=...)/train_and_save(...,
+        # preprocessing=...) unchanged, rather than reconstructing an
+        # equivalent Normalize(mean=stats["mean"], std=stats["std"]) from the
+        # raw arrays above.
+        "transform": transform,
     }
     return train_ds, val_ds, test_ds, stats
 

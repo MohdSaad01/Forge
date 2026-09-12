@@ -13,7 +13,7 @@ this page is only an index so you can find the right one quickly.
 | [`mnist/`](mnist/README.md) | Image classification with a real convolutional network on a real external dataset -- Forge's flagship example, (Milestone 77) the second example (after `image_folder_classification`) whose saved model file carries its own preprocessing + class vocabulary, with a standalone `infer.py` proving fresh-process portability, (Milestone 79) the first real consumer of the high-level `forge.train()` entry point for its non-`--resume` path, and (Milestone 81) now `forge.train_and_save()` for that same path. | CNN (`Conv2d`, `MaxPool2d`) | + `nn.Conv2d`/`MaxPool2d`/`Flatten`, `optim.Adam`, `training.train_and_save()` (Milestone 81), checkpoint/resume, `serialization.save_model(..., preprocessing=..., classes=...)`/`load_model` | CPU and CUDA (hardware-verified) |
 | [`char_rnn/`](char_rnn/README.md) | Character-level language modeling: a hand-written multi-timestep training loop over a recurrent cell. | Vanilla RNN (`RNNCell`) | + `nn.RNNCell`, `Tensor.tanh()`, model persistence | CPU and CUDA (hardware-verified) |
 | [`word_rnn/`](word_rnn/README.md) | Word-level language modeling over a real (1,806-word) vocabulary. | `Embedding` → RNN | + `nn.Embedding`, `Tensor.embedding_lookup()` | CPU and CUDA (hardware-verified) |
-| [`regression/`](regression/README.md) | Tabular regression: continuous features with linear, interaction, and quadratic structure. | MLP (`Linear`/`ReLU` stack) | Same as `mnist/` (`Trainer`, `Adam`, checkpoint/resume, persistence) applied to a regression loss/metrics | CPU and CUDA (hardware-verified) |
+| [`regression/`](regression/README.md) | Tabular regression: continuous features with linear, interaction, and quadratic structure -- (Milestone 83) its fresh-training path now trains and saves through `forge.train_and_save()`, with the fitted `Normalize` feature transform persisted as `preprocessing=`, and a portable artifact consumed via `forge.predict_tensor_artifact()`, the non-classification counterpart to `image_folder_classification`'s `forge.predict_artifact()`. | MLP (`Linear`/`ReLU` stack) | Same as `mnist/` (`Trainer`, `Adam`, checkpoint/resume, persistence) applied to a regression loss/metrics, plus `training.train_and_save()`/`predict_tensor_artifact()` (Milestone 83) | CPU and CUDA (hardware-verified) |
 | [`waveform_classification/`](waveform_classification/README.md) | Classifying fixed-length 1D time series (noisy sine/square/sawtooth/triangle waveforms) by shape. | 1D CNN (`Conv1d`, `MaxPool1d`) | + `nn.Conv1d`/`MaxPool1d` (Milestone 62), same `Trainer`/`Adam`/checkpoint/resume/persistence pipeline as `mnist/` | CPU and CUDA (hardware-verified) |
 | [`autoencoder/`](autoencoder/README.md) | Unsupervised image reconstruction through a compressed bottleneck, on real MNIST images -- the first example with no label/target beyond its own input. | Convolutional autoencoder (`Conv2d`/`MaxPool2d` encoder, `UpsampleNearest2d`/`Conv2d` decoder) | + `nn.UpsampleNearest2d` (Milestone 63), same `Trainer`/`Adam`/checkpoint/resume/persistence pipeline as `mnist/` | CPU and CUDA (hardware-verified) |
 | [`long_range_recall/`](long_range_recall/README.md) | `RNNCell` vs. `LSTMCell` on a synthetic long-range-dependency task -- measures and demonstrates the vanishing-gradient gap `LSTMCell` closes. | Vanilla RNN (`RNNCell`) or LSTM (`LSTMCell`) | + `nn.LSTMCell`, `Tensor.sigmoid()` (Milestone 67), model persistence | CPU and CUDA (hardware-verified) |
@@ -51,23 +51,21 @@ If you're evaluating whether Forge can support a workload shaped like
 yours, read the closest match's own README first; the model/data code is
 designed to be a starting point you copy and adapt, not a fixed template.
 
-## The shared training workflow (Milestones 73/78/79/80/81)
+## The shared training workflow (Milestones 73/78/79/80/81/82/83)
 
 Every `Trainer`-based example above drives shared abstractions rather than
-hand-rolling its own plumbing: `regression` builds its `Trainer` entirely via
-`forge.training.start_training_session()` (Milestone 73), which builds a
-fresh `Trainer` or resumes one from a checkpoint -- including exact
-`DataLoader`-shuffle resume-equivalence -- in one call. `mnist` (Milestone
-79/81) and `image_folder_classification` (Milestone 80/81) both instead
+hand-rolling its own plumbing. `mnist` (Milestone 79/81), `regression`
+(Milestone 83), and `image_folder_classification` (Milestone 80/81) all
 split into two branches: the common, non-`--resume` case trains through
 `forge.train_and_save()` (`forge/training/api.py`, Milestone 81), the
 single call that trains via `forge.train()` (building its own `DataLoader`(s)
 and driving `Trainer.fit()` underneath) and then immediately saves + verifies
 the result via `save_and_verify()`, while `--resume` keeps using the
 lower-level API each script already needed (`mnist`: a plain `Trainer` +
-`trainer.resume()` + `save_and_verify()`; `image_folder_classification`:
-`start_training_session()` + `save_and_verify()`, preserving its own
-Milestone 73 shuffle-resume-equivalence guarantee -- see `docs/architecture/
+`trainer.resume()` + `save_and_verify()`; `regression`/
+`image_folder_classification`: `forge.training.start_training_session()`
+(Milestone 73) + `save_and_verify()`, preserving Milestone 73's exact
+`DataLoader`-shuffle resume-equivalence guarantee -- see `docs/architecture/
 training-engine.md`'s **Single-call high-level training** and **Train,
 evaluate, persist, verify in one call** sections for exactly how the fresh
 path keeps that guarantee). Every `Trainer`-based example's saved model,
@@ -80,10 +78,21 @@ raising `forge.PersistenceError` (not a bare `assert`) if it ever doesn't.
 `mnist` and `image_folder_classification` additionally have automated,
 subprocess-based tests that launch their `infer.py` as a genuinely separate
 OS process (Milestone 80 -- see `docs/architecture/training-engine.md`'s
-**Fresh-process verification** section). See `docs/architecture/
-training-engine.md`'s **Reusable training sessions**, **Single-call
-high-level training**, **Portable-artifact save + verify**, and **Train,
-evaluate, persist, verify in one call** sections for the full contract.
+**Fresh-process verification** section); `regression` has an equivalent
+subprocess-based test that calls `forge.predict_tensor_artifact()` directly
+(Milestone 83, no separate `infer.py`; see `tests/
+test_regression_artifact_workflow.py`). Two portable-artifact inference
+functions now exist for the two materially different artifact shapes
+Forge's examples produce: `forge.predict_artifact()` (Milestone 82, image
+files, mandatory preprocessing, class interpretation -- `mnist`/
+`image_folder_classification`) and `forge.predict_tensor_artifact()`
+(Milestone 83, plain numeric input, optional preprocessing, no class
+concept -- `regression`). See `docs/architecture/training-engine.md`'s
+**Reusable training sessions**, **Single-call high-level training**,
+**Portable-artifact save + verify**, **Train, evaluate, persist, verify in
+one call**, **Portable-artifact inference in one call**, and
+**Portable-artifact inference for numeric input** sections for the full
+contract.
 
 ## Running the tests for these examples
 

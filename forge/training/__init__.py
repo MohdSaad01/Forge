@@ -14,6 +14,7 @@ from .inference import (
     interpret_classification,
     predict,
     predict_artifact,
+    predict_tensor_artifact,
     save_and_verify,
 )
 from .metrics import Accuracy, MeanAbsoluteError, MeanSquaredError, Metric
@@ -35,6 +36,7 @@ __all__ = [
     "predict",
     "save_and_verify",
     "predict_artifact",
+    "predict_tensor_artifact",
     "generate_sequence",
     "interpret_classification",
     "ClassificationPrediction",

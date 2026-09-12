@@ -1,8 +1,8 @@
-"""Forge Milestone 60: an end-to-end tabular regression example.
+"""Forge Milestone 60/65/83: an end-to-end tabular regression example.
 
 ```text
 make_datasets() -> DataLoader -> Trainer -> MLP (Linear/ReLU/Linear/ReLU/Linear)
-    -> MSELoss -> Adam
+    -> MSELoss -> Adam -> forge.train_and_save() -> forge.predict_tensor_artifact()
 ```
 
 Every step uses only public Forge APIs (`forge`, `forge.data`, `forge.nn`,
@@ -10,16 +10,25 @@ Every step uses only public Forge APIs (`forge`, `forge.data`, `forge.nn`,
 no framework logic of its own, only example wiring, exactly like
 `examples/mnist/train.py`. See `examples/regression/README.md` for
 prerequisites, expected behavior, and how to reproduce checkpoint/resume and
-model persistence from this one entry point.
+model persistence from this one entry point. **Milestone 83** split this
+script's single `start_training_session()` call into the same
+`--resume`-or-fresh two-branch shape `examples/mnist/train.py` and
+`examples/image_folder_classification/train.py` already have (Milestones
+80/81): the fresh path now trains and saves through one
+`forge.train_and_save()` call -- including the fitted `Normalize` feature
+transform as `preprocessing=`, so the saved artifact alone is enough to
+standardize a brand-new raw feature vector -- while `--resume` keeps using
+`start_training_session()` unchanged. See
+`docs/development/m83-regression-artifact-workflow.md`.
 
 ## Determinism
 
-`forge.training.start_training_session(..., seed=args.seed)` calls
-`forge.random.seed(args.seed)` (governing `Linear` parameter initialization
-at model construction) and builds `session.data_loader_rng` -- the generator
-`DataLoader` shuffling uses below. `examples.regression.dataset.
-generate_raw()` uses its own explicit `numpy.random.default_rng(args.seed)`
-for the synthetic data -- three separate deterministic streams, matching
+`forge.random.seed(args.seed)` (called directly on the fresh path, or via
+`start_training_session()` on `--resume`) governs `Linear` parameter
+initialization at model construction; the `DataLoader` shuffle generator is
+a second, independent stream; `examples.regression.dataset.generate_raw()`
+uses its own explicit `numpy.random.default_rng(args.seed)` for the
+synthetic data -- three separate deterministic streams, matching
 `examples/mnist/train.py`'s documented policy (see
 `docs/architecture/persistence.md`'s checkpoint RNG policy).
 
@@ -29,12 +38,15 @@ stream is saved into `save_checkpoint(..., extra=...)` and restored on
 investigation found (a resumed run previously re-seeded a *fresh*
 `--seed`-derived generator rather than continuing the interrupted run's
 shuffle stream -- see `docs/development/m65-reproducible-training.md`). As of
-**Milestone 73**, this save/restore is `forge.training.TrainingSession`'s own
-behavior (`session.save_checkpoint()`), not code local to this script -- see
-`docs/development/m73-reusable-training-workflow.md`. Every run also writes a
-JSON "run record" (config + per-epoch metrics history + final evaluation +
-runtime) next to its checkpoint -- see `experiment.py` -- so two runs can be
-compared with `compare.py` without parsing terminal output.
+**Milestone 83**, the fresh path writes this "data_loader_rng_state" extra
+field itself via plain `forge.save_checkpoint()` (the exact key
+`start_training_session()`'s resume path already reads), exactly like
+`examples/image_folder_classification/train.py`'s own Milestone 80 fresh
+path -- so a later `--resume` continues this run's exact shuffle stream with
+zero regression. Every run also writes a JSON "run record" (config +
+per-epoch metrics history + final evaluation + runtime) next to its
+checkpoint -- see `experiment.py` -- so two runs can be compared with
+`compare.py` without parsing terminal output.
 
 ## Usage
 
@@ -60,17 +72,20 @@ import math
 import time
 from pathlib import Path
 
+import numpy as np
+
+import forge
 from forge.data import DataLoader
 from forge.nn import MSELoss
 from forge.optim import Adam
-from forge.training import MeanAbsoluteError, save_and_verify, start_training_session
+from forge.training import MeanAbsoluteError, Trainer, save_and_verify, start_training_session
 
 try:
-    from .dataset import N_FEATURES, make_datasets
+    from .dataset import N_FEATURES, generate_raw, make_datasets
     from .experiment import extend_run_record, load_run_record, new_run_record, save_run_record
     from .model import build_model
 except ImportError:  # running as a plain script (`python examples/regression/train.py`)
-    from dataset import N_FEATURES, make_datasets
+    from dataset import N_FEATURES, generate_raw, make_datasets
     from experiment import extend_run_record, load_run_record, new_run_record, save_run_record
     from model import build_model
 
@@ -104,66 +119,17 @@ def main(argv=None) -> None:
     baseline_mse = stats["y_train_var"]
     print(f"Trivial baseline (predict train mean): MSE = {baseline_mse:.4f}, RMSE = {math.sqrt(baseline_mse):.4f}")
 
-    # Milestone 73: start_training_session() replaces this script's own
-    # hand-rolled "--resume ? load_checkpoint()+Trainer.resume() :
-    # build_model()+Adam+Trainer" branch, including the Milestone 65
-    # data_loader_rng_state save/restore this script pioneered by hand --
-    # both now live once in forge/training/session.py.
-    session = start_training_session(
-        build_model=build_model,
-        build_optimizer=lambda params: Adam(params, lr=args.lr),
-        loss_fn=MSELoss(),
-        seed=args.seed,
-        device=args.device,
-        metrics=[MeanAbsoluteError()],
-        resume=args.resume,
-    )
-    if session.resumed:
-        print(f"Resumed from checkpoint '{args.resume}' at epoch={session.trainer.epoch}, "
-              f"global_step={session.trainer.global_step}")
-        run_record = load_run_record(history_path)
-        if run_record is None:
-            print(f"(no existing run record at '{history_path}' -- starting a new one)")
-            run_record = new_run_record(vars(args))
-    else:
-        run_record = new_run_record(vars(args))
-
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, generator=session.data_loader_rng)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size)
+    loss_fn = MSELoss()
 
-    start = time.perf_counter()
-    history = session.trainer.fit(train_loader, epochs=args.epochs, validation_loader=val_loader)
-    duration = time.perf_counter() - start
-
-    samples_per_sec = (len(train_ds) * args.epochs) / duration if duration > 0 else float("inf")
-    print(f"\nTrained {args.epochs} epoch(s) on '{args.device}' in {duration:.1f}s "
-          f"({samples_per_sec:.0f} train samples/sec).")
-    print(f"train MSE: {history[0].train_loss:.4f} -> {history[-1].train_loss:.4f}")
-    print(f"val MSE:   {history[-1].val_loss:.4f}  (RMSE {math.sqrt(history[-1].val_loss):.4f})")
-    print(f"val MAE:   {history[-1].val_metrics['mae']:.4f}")
-
-    final_eval = session.trainer.evaluate(test_loader)
-    test_mse = final_eval.loss
-    print(f"\nFinal test evaluation: MSE={test_mse:.4f}, RMSE={math.sqrt(test_mse):.4f}, "
-          f"MAE={final_eval.metrics['mae']:.4f}")
-    print(f"Trivial baseline MSE was {baseline_mse:.4f} -- "
-          f"model achieves a {(1 - test_mse / baseline_mse):.1%} reduction over predicting the mean.")
-
-    # Milestone 73: session.save_checkpoint() folds data_loader_rng_state in
-    # automatically -- see forge/training/session.py.
-    session.save_checkpoint(str(checkpoint_path))
-    print(f"\nSaved checkpoint -> {checkpoint_path}")
-
-    extend_run_record(run_record, history=history, final_eval=final_eval, duration_seconds=duration)
-    save_run_record(history_path, run_record)
-    print(f"Saved run record -> {history_path}")
-
-    # Milestone 78: save_and_verify() saves the model, then reloads it fresh
-    # and confirms the reload's prediction on query_x matches the model that
-    # was just saved -- the same "save -> reload -> predict() must agree"
-    # round trip `examples/mnist/train.py` demonstrates, now the shared
-    # Milestone 78 abstraction (`forge/training/inference.py`).
+    # Milestone 81/83: the sample save_and_verify()/train_and_save() need to
+    # prove the eventual artifact is portable -- picked once, up front, since
+    # both branches below end up saving+verifying against it. Already
+    # normalized (test_ds applies the fitted Normalize transform on
+    # __getitem__), matching predict()'s "already-prepared input" calling
+    # convention exactly like image_folder_classification's own
+    # already-Resize+Normalize'd query image.
     # `-1`-inferred reshape is a CPU-`Tensor.reshape` convenience only
     # (`CUDABackend.reshape` requires every dim explicit, see
     # `forge/backend/cuda/backend.py`); pass `N_FEATURES` explicitly so this
@@ -173,15 +139,145 @@ def main(argv=None) -> None:
     # changes) fixed here using the same pattern
     # `examples/waveform_classification/train.py` uses for the same reason.
     query_x, _ = test_ds[0]
-    query_x = query_x.to(args.device).reshape(1, N_FEATURES)
-    save_and_verify(session.trainer.model, str(model_path), query_x)
-    print(f"Saved + verified model -> {model_path}")
+    query_x_batch = query_x.to(args.device).reshape(1, N_FEATURES)
+
+    start = time.perf_counter()
+    if args.resume:
+        # Milestone 73: start_training_session() replaces this branch's own
+        # hand-rolled load_checkpoint()+Trainer.resume() sequence, restoring
+        # session.data_loader_rng's shuffle-stream position from the
+        # checkpoint's "data_loader_rng_state" extra field (Milestone 83: now
+        # written on the fresh path below via plain forge.save_checkpoint(),
+        # but the same key, so this branch reads either kind of checkpoint
+        # identically).
+        session = start_training_session(
+            build_model=build_model,
+            build_optimizer=lambda params: Adam(params, lr=args.lr),
+            loss_fn=loss_fn,
+            seed=args.seed,
+            device=args.device,
+            metrics=[MeanAbsoluteError()],
+            resume=args.resume,
+        )
+        print(f"Resumed from checkpoint '{args.resume}' at epoch={session.trainer.epoch}, "
+              f"global_step={session.trainer.global_step}")
+        run_record = load_run_record(history_path)
+        if run_record is None:
+            print(f"(no existing run record at '{history_path}' -- starting a new one)")
+            run_record = new_run_record(vars(args))
+
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
+                                   generator=session.data_loader_rng)
+        history = session.trainer.fit(train_loader, epochs=args.epochs, validation_loader=val_loader)
+        session.save_checkpoint(str(checkpoint_path))
+        final_eval = session.trainer.evaluate(test_loader)
+        # Milestone 78/83: save_and_verify() saves the model (+ the fitted
+        # Normalize transform as preprocessing=, Milestone 83) then reloads
+        # it fresh and confirms the reload's prediction on query_x_batch
+        # matches the model that was just saved. The fresh (non-resume)
+        # branch below gets this for free from train_and_save() instead.
+        save_and_verify(
+            session.trainer.model, str(model_path), query_x_batch, preprocessing=stats["transform"],
+        )
+    else:
+        # Milestone 83: the fresh (non-resume) path now trains through
+        # forge.train_and_save() (forge/training/api.py, Milestone 81)
+        # instead of building its Trainer via start_training_session() --
+        # the same fresh/resume split examples/mnist/train.py and
+        # examples/image_folder_classification/train.py already have
+        # (Milestone 80). This branch builds data_loader_rng itself (exactly
+        # what start_training_session() would have built internally) and
+        # saves its state into the checkpoint's own "data_loader_rng_state"
+        # extra field via plain forge.save_checkpoint() -- so a later
+        # --resume (the branch above) still continues this run's exact
+        # shuffle stream, preserving the Milestone 65/73 resume-equivalence
+        # guarantee this example has had since Milestone 73, with zero
+        # regression.
+        run_record = new_run_record(vars(args))
+
+        forge.random.seed(args.seed)
+        data_loader_rng = np.random.default_rng(args.seed)
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, generator=data_loader_rng)
+        model = build_model().to(args.device)
+        optimizer = Adam(model.parameters(), lr=args.lr)
+        train_result = forge.train_and_save(
+            model, train_loader,
+            loss=loss_fn,
+            optimizer=optimizer,
+            epochs=args.epochs,
+            validation_dataset=val_loader,
+            device=args.device,
+            metrics=[MeanAbsoluteError()],
+            path=str(model_path),
+            sample=query_x_batch,
+            # Milestone 83: the fitted train-split Normalize transform
+            # (dataset.py's make_datasets()) is saved alongside the model so
+            # a later process can standardize a brand-new raw feature vector
+            # the same way -- see forge.predict_tensor_artifact() below --
+            # mirroring image_folder_classification's Resize/Normalize
+            # preprocessing persistence (Milestones 71/81). No classes= --
+            # a regression model has no class vocabulary (see
+            # forge/training/inference.py's predict_tensor_artifact()
+            # docstring).
+            preprocessing=stats["transform"],
+        )
+        history = train_result.history
+
+        epoch, global_step = len(history), len(history) * len(train_loader)
+        forge.save_checkpoint(
+            str(checkpoint_path), model, optimizer, epoch=epoch, global_step=global_step,
+            extra={"data_loader_rng_state": data_loader_rng.bit_generator.state},
+        )
+        # The held-out test split (distinct from the val split
+        # train_and_save() already validated against every epoch) still
+        # needs its own final evaluation -- train_and_save()/train() only
+        # ever evaluate validation_dataset (mirroring Trainer.fit()'s own
+        # contract). Reuses the already-trained `model`/`optimizer` (still
+        # in scope; train_and_save() mutates `model` in place, exactly like
+        # train()) through a throwaway Trainer purely for its existing
+        # evaluate() -- no new evaluation logic.
+        final_eval = Trainer(
+            model, loss_fn, optimizer, device=args.device, metrics=[MeanAbsoluteError()], verbose=False,
+        ).evaluate(test_loader)
+    duration = time.perf_counter() - start
+
+    samples_per_sec = (len(train_ds) * args.epochs) / duration if duration > 0 else float("inf")
+    print(f"\nTrained {args.epochs} epoch(s) on '{args.device}' in {duration:.1f}s "
+          f"({samples_per_sec:.0f} train samples/sec).")
+    print(f"train MSE: {history[0].train_loss:.4f} -> {history[-1].train_loss:.4f}")
+    print(f"val MSE:   {history[-1].val_loss:.4f}  (RMSE {math.sqrt(history[-1].val_loss):.4f})")
+    print(f"val MAE:   {history[-1].val_metrics['mae']:.4f}")
+
+    test_mse = final_eval.loss
+    print(f"\nFinal test evaluation: MSE={test_mse:.4f}, RMSE={math.sqrt(test_mse):.4f}, "
+          f"MAE={final_eval.metrics['mae']:.4f}")
+    print(f"Trivial baseline MSE was {baseline_mse:.4f} -- "
+          f"model achieves a {(1 - test_mse / baseline_mse):.1%} reduction over predicting the mean.")
+
+    print(f"\nSaved checkpoint -> {checkpoint_path}")
+
+    extend_run_record(run_record, history=history, final_eval=final_eval, duration_seconds=duration)
+    save_run_record(history_path, run_record)
+    print(f"Saved run record -> {history_path}")
+
+    print(f"Saved + verified model + preprocessing -> {model_path}")
 
     print("\nInspect the generated artifacts with the Milestone 19 CLI:")
     print(f"  python -m forge model inspect {model_path}")
     print(f"  python -m forge checkpoint inspect {checkpoint_path}")
     print("\nCompare this run against another with the Milestone 65 tool:")
     print(f"  python -m examples.regression.compare {history_path} <other_run>/regression_history.json")
+
+    # Milestone 83: fresh-process-style, high-level artifact inference on a
+    # brand-new *raw* feature vector -- the model file alone (not this
+    # process's in-memory stats["transform"]) standardizes and predicts,
+    # mirroring image_folder_classification's forge.predict_artifact() demo
+    # (Milestone 82) for this example's own artifact shape.
+    new_raw_x, _ = generate_raw(1, seed=args.seed + 1000)
+    prediction = forge.predict_tensor_artifact(str(model_path), new_raw_x, device=args.device)
+    print(f"\nNew raw feature vector {new_raw_x[0].tolist()}, "
+          f"preprocessing reconstructed from '{model_path}':")
+    print(f"Prediction: {float(prediction.numpy()[0, 0]):.4f}")
 
 
 if __name__ == "__main__":

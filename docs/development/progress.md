@@ -4954,3 +4954,72 @@ test_artifact_inference_cuda.py` (3/3), `tests/
 test_image_folder_classification_cuda_integration.py` (5/5, unmodified,
 confirming the CLI/infer.py retrofit is behavior-preserving on CUDA too).
 Full report: `docs/development/m82-artifact-inference.md`.
+
+### M83 — `forge.predict_tensor_artifact()`: the end-to-end regression artifact workflow
+
+Brief asked whether Forge's high-level train -> save -> fresh-process ->
+predict workflow (M79-M82) generalizes beyond image classification, proven
+by building a second, complete, materially different workflow around
+`examples/regression/` rather than another readiness assessment. Inspection
+found two real gaps: (1) `examples/regression/train.py` never used `forge.
+train_and_save()` -- it predates M80's fresh/resume split and still built
+its `Trainer` via `start_training_session()` on every run; (2)
+`save_and_verify()` was called with no `preprocessing=`, so the saved
+artifact never carried the fitted `Normalize` feature-standardization
+transform `make_datasets()` already fits and applies internally -- a fresh
+process holding just the file had no way to standardize a brand-new raw
+feature vector. `forge/serialization`'s `preprocessing=`/`load_preprocessing()`
+mechanism (M71) and `Normalize` itself were already fully generic (not
+image-specific); no persistence format change was needed.
+
+Fixed (1) by splitting `train.py` into the same `--resume`-or-fresh
+two-branch shape `mnist`/`image_folder_classification` already have: the
+fresh path now trains via `forge.train_and_save()`, builds its own
+`data_loader_rng`, and writes `data_loader_rng_state` via plain `forge.
+save_checkpoint()` (same key `start_training_session()`'s resume path
+reads), while `--resume` keeps `start_training_session()` unchanged. The
+example's genuine three-way train/val/test split (unlike `mnist`/
+`image_folder_classification`'s two-way split) was preserved, not collapsed
+to fit `train_and_save()`'s shape -- the fresh branch's final test-split
+evaluation runs through a throwaway `Trainer(...).evaluate(test_loader)`
+after `train_and_save()` returns. Fixed (2) by exposing the already-built
+`Normalize` instance as `stats["transform"]` from `dataset.py`'s
+`make_datasets()` and passing it as `preprocessing=` on both branches.
+
+Built `forge.training.predict_tensor_artifact(path, input_data, *,
+device=None)` (`forge/training/inference.py`) -- the non-classification
+counterpart to `predict_artifact()` (M82): composes `load_model()`/
+`load_preprocessing()`/`predict()`, with preprocessing **optional** (unlike
+`predict_artifact()`'s mandatory requirement) and no class-vocabulary
+concept, returning the model's raw numeric prediction `Tensor` directly.
+Deliberately a separate function rather than a second branch inside
+`predict_artifact()` -- the two artifact shapes differ in more than input
+type (mandatory-vs-optional preprocessing, file-decode-vs-none,
+`ClassificationPrediction`-vs-raw-`Tensor` output), and branching one
+function across that much difference was judged the "awkward task
+detection" the brief warns against. `input_data` must already be batched
+(matching `predict()`'s own contract) since, unlike a decoded image file, a
+numeric input has no canonical "add a batch dimension for me" convention.
+`examples/regression/train.py`'s end-of-run demo now calls it on a
+brand-new raw feature vector, mirroring `image_folder_classification/
+train.py`'s own `predict_artifact()` demo.
+
+Files changed: `forge/training/inference.py` (`predict_tensor_artifact()`),
+`forge/training/__init__.py`, `forge/__init__.py` (re-exports);
+`examples/regression/dataset.py` (`stats["transform"]`); `examples/
+regression/train.py` (fresh/resume split, `preprocessing=` on both
+branches, new inference demo); `docs/architecture/training-engine.md` (new
+**Portable-artifact inference for numeric input** section); `examples/
+regression/README.md`, `examples/README.md`, root `README.md` updated. 17
+new tests (13 CPU in `tests/test_tensor_artifact_inference.py`, general
+contract coverage independent of the example; 4 CPU in `tests/
+test_regression_artifact_workflow.py`, the real acceptance test including a
+genuine `subprocess` fresh-process run). Full suite: **2,338 collected,
+2,337 passed, 1 failed** (2,308 + 17 new + 13 M82 tests already counted) --
+the same pre-existing `test_dataloader_prefetch.py` allocator-measurement
+flake documented since M63, reproduced passing cleanly in isolation, no M83
+regression. Every pre-existing regression test (CPU and CUDA, including the
+`shuffle=True` resume-equivalence bitwise-parameter test) passed unmodified
+after the `train.py` retrofit; CUDA hardware-verified (940MX): `tests/
+test_regression_example_cuda_integration.py` (6/6). Full report:
+`docs/development/m83-regression-artifact-workflow.md`.

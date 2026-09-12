@@ -72,7 +72,12 @@ See `docs/architecture/architecture.md` for the full design rules and
   resume-or-fresh-start branch every checkpoint-capable example used to
   hand-roll (`train()`/`train_and_save()` themselves have no
   checkpoint/resume -- use `start_training_session()`/`Trainer` directly
-  for that).
+  for that); `predict_artifact()`, which turns a portable `.forge`
+  image-classification artifact and one new image file directly into a
+  human-readable prediction; and `predict_tensor_artifact()`, its
+  non-classification counterpart for a portable artifact whose input is a
+  plain numeric array (e.g. a regression model) -- preprocessing optional,
+  no class-vocabulary concept, returns the raw numeric prediction `Tensor`.
 - **`forge.serialization`** -- `save_model`/`load_model` (architecture +
   parameters, via an explicit module registry -- never arbitrary code
   execution) and `save_checkpoint`/`load_checkpoint` (adds optimizer state,
@@ -235,11 +240,18 @@ proves the file round-trips by reloading it fresh and comparing a
 prediction, and `forge.train_and_save(model, dataset, loss=..., optimizer=
 ..., epochs=..., path=..., sample=..., preprocessing=..., classes=...)`
 composes `train()` + `save_and_verify()` into the one call every
-Trainer-based example's `train.py` ends with. Every example under
-`examples/` demonstrates both paths -- see `docs/architecture/persistence.md`
-for the file format and trust model (no arbitrary code execution on load)
-and `docs/architecture/training-engine.md` for `train()`/`train_and_save()`'s
-full contract and their `Trainer`/`TrainingSession` boundary.
+Trainer-based example's `train.py` ends with. On the consuming side,
+`forge.predict_artifact(path, image_path)` turns a saved image-classification
+artifact and one new image file into a prediction in one call, and
+`forge.predict_tensor_artifact(path, input_data)` does the same for a
+non-classification artifact (e.g. `examples/regression/`) whose input is a
+plain numeric array rather than a file. Every example under `examples/`
+demonstrates the producing side; `mnist`/`image_folder_classification` and
+`regression` respectively demonstrate the two consuming functions -- see
+`docs/architecture/persistence.md` for the file format and trust model (no
+arbitrary code execution on load) and `docs/architecture/training-engine.md`
+for `train()`/`train_and_save()`/`predict_artifact()`/`predict_tensor_artifact()`'s
+full contracts and their `Trainer`/`TrainingSession` boundary.
 
 ## Testing
 

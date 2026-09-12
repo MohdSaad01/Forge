@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82; single-call numeric-artifact inference via `predict_tensor_artifact()` as of Milestone 83)
 
 ## Package layout
 ```
@@ -6,7 +6,7 @@ forge/
     training/
         trainer.py     Trainer, EpochResult, EvaluationResult, TrainingHistory
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
-        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78), predict_artifact() (Milestone 82)
+        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78), predict_artifact() (Milestone 82), predict_tensor_artifact() (Milestone 83)
         session.py     TrainingSession, start_training_session() (Milestone 73)
         api.py         train() (Milestone 79), train_and_save(), TrainAndSaveResult (Milestone 81)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
@@ -1012,6 +1012,73 @@ integration.py::test_infer_cli_runs_in_a_genuinely_separate_process`
 own subprocess.
 
 See `docs/development/m82-artifact-inference.md`.
+
+## Portable-artifact inference for numeric input: `predict_tensor_artifact()` (Milestone 83)
+
+`predict_artifact()` (above) covers exactly one artifact shape: an
+image-classification model saved with `preprocessing=`, where the input is
+always a single image file and the output is always interpreted against a
+class vocabulary. Milestone 82's own docstring named tabular rows as a shape
+that "shape[s] differently" and has "no single canonical 'new input file'
+convention" -- `examples/regression/train.py` is that shape's real consumer:
+its input is already a plain numeric feature vector, not a file, and its
+output is a number, not a class label. `forge.training.
+predict_tensor_artifact()` (`forge/training/inference.py`) is the
+non-classification counterpart:
+```python
+prediction = forge.predict_tensor_artifact("price_model.forge", input_batch)
+```
+1. `input_data` is converted to a `Tensor` if it isn't already one
+   (`Tensor`, NumPy array, or nested list/tuple of numbers) -- raising
+   `forge.DataError` for anything else. Unlike a decoded image file (always
+   exactly one sample), a numeric input has no canonical "add a batch
+   dimension for me" convention, so `input_data` must already be batched
+   the same way a direct `forge.predict(model, input_data)` call requires.
+2. `load_preprocessing(path)` -- **optional here**, unlike
+   `predict_artifact()`: a numeric artifact with no saved preprocessing is a
+   real, valid state (there is no universal standardization every numeric
+   model needs), so `input_data` is passed to the model unchanged when
+   absent, and standardized via the reconstructed transform when present.
+3. `load_model(path, device=device)`.
+4. `predict(model, prepared)` -- the raw output `Tensor`, returned directly.
+
+**No class vocabulary is ever consulted.** There is no `classes=` analogue
+for a numeric result -- fabricating one would be exactly the "pretend every
+model is a classification model" failure mode Milestone 83's own brief
+warned against avoiding.
+
+**Why a separate function, not a generalized `predict_artifact()`.** The two
+artifact shapes differ in more than input type: preprocessing is mandatory
+for one and optional for the other, one decodes a file and the other never
+touches a filesystem, and one produces a `ClassificationPrediction`/`int`
+while the other produces a raw `Tensor`. Branching a single function on the
+type of its second argument to select between these two materially
+different contracts was rejected as exactly the "awkward task detection"
+Milestone 83's brief warns against -- a second, small, honestly-scoped
+function is clearer than one function silently living a double life.
+
+**Real consumer.** `examples/regression/train.py`'s fresh (non-`--resume`)
+path saves the fitted train-split `Normalize` transform as `preprocessing=`
+via `forge.train_and_save()`, then demonstrates a brand-new *raw* feature
+vector (never standardized by this process) being standardized and
+predicted through one `forge.predict_tensor_artifact()` call -- mirroring
+`image_folder_classification/train.py`'s own `predict_artifact()` demo for
+its artifact shape.
+
+**Fresh-process verification.** `tests/test_regression_artifact_workflow.py::
+test_predict_tensor_artifact_agrees_with_a_genuinely_separate_process`
+trains and saves a real regression artifact via `forge.train_and_save()`,
+then launches a real `subprocess` that only imports `forge`/`numpy` and
+calls `forge.predict_tensor_artifact()` directly, comparing its printed
+prediction against this process's own prediction on the identical raw input
+-- proving the `.forge` file's persisted model + preprocessing, with no
+in-memory state from training, reproduces the same numerical result.
+`tests/test_tensor_artifact_inference.py` covers the function's general
+contract (input-type acceptance, optional preprocessing, error handling,
+and pre-save/post-load numerical equivalence) independent of any one
+example.
+
+See `docs/development/m83-regression-artifact-workflow.md`.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

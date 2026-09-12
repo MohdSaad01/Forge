@@ -1,4 +1,4 @@
-# Forge Tabular Regression Example (Milestones 60, 65)
+# Forge Tabular Regression Example (Milestones 60, 65, 83)
 
 An end-to-end, production-quality validation of Forge's third vision-named
 workload family -- tabular regression (`docs/product/vision.md`,
@@ -7,7 +7,7 @@ workload family -- tabular regression (`docs/product/vision.md`,
 
 ```text
 make_datasets() -> DataLoader -> Trainer -> MLP (Linear/ReLU/Linear/ReLU/Linear)
-    -> MSELoss -> Adam
+    -> MSELoss -> Adam -> forge.train_and_save() -> forge.predict_tensor_artifact()
 ```
 
 Every step uses only public Forge APIs (`forge`, `forge.data`, `forge.nn`,
@@ -209,12 +209,18 @@ of Milestone 65 -- before this milestone, a resumed run re-seeded a *fresh*
 interrupted run's shuffle stream, and measurably diverged (see
 `docs/development/m65-reproducible-training.md`'s baseline investigation).
 The `data_loader_rng_state` saved into `save_checkpoint(..., extra=...)`
-closes this gap; as of Milestone 73 this save/restore is
+closes this gap; as of Milestone 73 the *restore* side of this is
 `forge.training.TrainingSession`'s own behavior
-(`session.save_checkpoint()`/`start_training_session(..., resume=...)`),
-extracted from this script into `forge/training/session.py` since six other
-examples independently needed the identical fix -- see
-`docs/development/m73-reusable-training-workflow.md`.
+(`start_training_session(..., resume=...)`), extracted from this script into
+`forge/training/session.py` since six other examples independently needed
+the identical fix -- see `docs/development/m73-reusable-training-workflow.md`.
+As of **Milestone 83**, the *save* side differs by branch: `--resume` still
+saves via `session.save_checkpoint()`, while the fresh path (now trained via
+`forge.train_and_save()`, which has no checkpoint/resume concept of its own)
+writes the same `"data_loader_rng_state"` key by hand via plain
+`forge.save_checkpoint(..., extra=...)` -- the identical key, so `--resume`
+reads either kind of checkpoint identically. This mirrors `examples/
+image_folder_classification/train.py`'s own Milestone 80 fresh path exactly.
 `tests/test_regression_example_integration.py::test_resume_equivalence_matches_continuous_training`
 (`shuffle=False`, Milestone 60) and
 `tests/test_regression_reproducible_training.py::test_full_training_matches_partial_then_resume_with_shuffle`
@@ -261,15 +267,59 @@ for the full investigation and design rationale.
 
 ## Model persistence
 
-`train.py` also demonstrates the plain (optimizer-free) persistence path:
-after training, it calls `forge.training.save_and_verify()` (Milestone 78),
-which saves the model, then reloads it fresh and confirms the reload's
-prediction matches the pre-save model -- printed as `Saved + verified model
--> ...` at the end of every run, raising `forge.PersistenceError` instead
-if the reload ever disagrees. The same property is covered
+`train.py`'s fresh (non-`--resume`) path trains and saves through one
+`forge.train_and_save()` call (Milestone 81); `--resume` calls `forge.
+training.save_and_verify()` (Milestone 78) directly. Either way, the model
+is saved, then reloaded fresh and its prediction confirmed to match the
+pre-save model -- printed as `Saved + verified model + preprocessing ->
+...` at the end of every run, raising `forge.PersistenceError` instead if
+the reload ever disagrees. The same property is covered
 by `tests/test_regression_example_integration.py::test_model_persistence_preserves_predictions`
 (CPU) and `tests/test_regression_example_cuda_integration.py::test_model_persistence_preserves_predictions_on_cuda`
 (CUDA).
+
+**Milestone 83**: the artifact also carries the fitted, training-split
+`Normalize` feature-standardization transform (`dataset.py`'s
+`make_datasets()`, exposed as `stats["transform"]`) as `preprocessing=` --
+previously the saved model recorded only the trained weights, so a fresh
+process holding just `regression_model.forge` had no way to standardize a
+brand-new *raw* feature vector the way training data was standardized. A
+regression model has no class vocabulary, so `classes=` is never passed.
+
+## Portable-artifact inference: `forge.predict_tensor_artifact()` (Milestone 83)
+
+A developer holding only `regression_model.forge` -- no access to this
+script, `dataset.py`, or any in-memory training state -- gets a numeric
+prediction on a brand-new raw feature vector in one call:
+
+```python
+import forge
+import numpy as np
+
+raw_features = np.array([[0.5, -1.2, 0.3, 1.8, -0.4, 2.0, -1.5, 0.9]], dtype=np.float32)
+prediction = forge.predict_tensor_artifact("examples/regression/artifacts/regression_model.forge", raw_features)
+print(prediction.numpy())  # (1, 1) array -- the model's raw numeric prediction
+```
+
+This composes `load_model()` + `load_preprocessing()` + `forge.predict()` --
+the persisted `Normalize` transform standardizes `raw_features` exactly as
+training data was standardized, with no manual reconstruction of `dataset.
+py`'s mean/std. `input_data` must already be batched (a leading dimension),
+matching `forge.predict()`'s own calling convention; unlike
+`forge.predict_artifact()` (the image-classification counterpart,
+Milestone 82), preprocessing here is optional and no class vocabulary is
+ever consulted -- there is no meaningful classification-style "label" or
+"confidence" for a regression output. `train.py`'s own end-of-run demo
+exercises this exact call on a brand-new raw sample. See
+`docs/architecture/training-engine.md`'s **Portable-artifact inference for
+numeric input** section and `docs/development/m83-regression-artifact-workflow.md`.
+
+`tests/test_regression_artifact_workflow.py` proves this end-to-end with a
+genuinely separate OS process: it trains and saves a real artifact in one
+process, then launches a `subprocess` that only imports `forge`/`numpy` and
+calls `forge.predict_tensor_artifact()` directly, confirming its printed
+prediction matches this process's own prediction on the identical raw
+input.
 
 ## CLI inspection
 

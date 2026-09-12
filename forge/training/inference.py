@@ -54,6 +54,16 @@ framework knowledge `docs/product/vision.md`'s portable-artifact workflow is
 supposed to hide. `predict_artifact(path, image)` is that entire sequence,
 written once, for the one artifact shape Forge can currently fully describe
 end-to-end: an image-classification model saved with `preprocessing=`.
+
+`predict_tensor_artifact()` (Milestone 83) is the equivalent one call for a
+materially different artifact shape: a regression (or any other Tensor-in,
+Tensor-out) model, whose input is already a plain numeric array rather than
+an image file, and whose output is a number, not a class label. It is
+deliberately a separate function rather than a second branch inside
+`predict_artifact()` -- see that function's own docstring's **Scope**
+paragraph for why forcing classification-specific semantics (mandatory
+preprocessing, file decoding, class interpretation) onto a numeric input
+would misrepresent what a regression artifact actually needs.
 """
 
 from __future__ import annotations
@@ -339,6 +349,90 @@ def predict_artifact(
     return int(np.argmax(output.numpy(), axis=1)[0])
 
 
+def predict_tensor_artifact(
+    path: str,
+    input_data: "Tensor | np.ndarray | Sequence[Any]",
+    *,
+    device: "str | Device | None" = None,
+) -> Tensor:
+    """Run one already-batched numeric input through a portable `.forge` artifact, in one call (Milestone 83).
+
+    ```python
+    prediction = forge.predict_tensor_artifact("price_model.forge", input_batch)
+    ```
+
+    The non-classification counterpart to `predict_artifact()` (Milestone
+    82): `examples/regression/train.py` needs the same "a developer holding
+    just the `.forge` file shouldn't have to know `load_model()`/
+    `load_preprocessing()`/`predict()` exist" guarantee, but its input is a
+    plain numeric feature vector, not an image file -- there is no file to
+    decode, no class vocabulary to interpret the output against, and
+    (unlike a decoded image, which is always exactly one sample) no single
+    canonical "add a batch dimension for me" convention to apply on the
+    caller's behalf. See `predict_artifact()`'s own docstring for why that
+    function is not generalized to also cover this shape instead of adding
+    this one.
+
+    `input_data` must already be batched exactly the way a direct
+    `forge.predict(model, input_data)` call requires -- a `Tensor`, or a
+    NumPy array / nested list or tuple of numbers convertible to one via
+    `Tensor(input_data)`, with a leading batch dimension matching what the
+    saved model's `forward()` expects. Anything else raises
+    `forge.DataError` before any file I/O.
+
+    **Preprocessing is optional here** (unlike `predict_artifact()`, where a
+    missing one is an error): a saved artifact may or may not have been
+    given `preprocessing=` at save time. When present, it is applied to
+    `input_data` before the forward pass -- e.g. `examples/regression/
+    train.py` saves the fitted `Normalize(mean=..., std=...)`
+    feature-standardization transform this way, so a brand-new raw feature
+    vector is standardized identically to how training data was; when
+    absent, `input_data` is passed to the model exactly as given.
+
+    No class vocabulary is ever consulted here -- there is no `classes=`
+    equivalent for a numeric result, and fabricating one would be exactly
+    the "pretend every model is a classification model" failure mode this
+    function exists to avoid. Returns `predict()`'s own raw output `Tensor`
+    (CPU-resident, same shape as `input_data`'s batch dimension) with no
+    further interpretation -- the honest final result for a model with no
+    class-label concept.
+
+    `device` defaults to the device recorded in the saved artifact
+    (`load_model()`'s own default) -- pass `device="cpu"`/`device="cuda"` to
+    override, exactly as `load_model()`/`predict_artifact()` themselves
+    accept.
+
+    Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
+    artifact or an unreconstructable `"preprocessing"` entry (the same
+    conditions `load_model()`/`load_preprocessing()` already raise).
+
+    **Scope.** Composes exactly `load_model()` + `load_preprocessing()` +
+    `predict()`, each called unchanged -- no new artifact format, generic
+    input abstraction, or task-detection machinery (see this module's own
+    docstring, and `docs/architecture/training-engine.md`'s own
+    Milestone-83 section).
+    """
+    from ..serialization.model import load_model as _load_model
+    from ..serialization.model import load_preprocessing as _load_preprocessing
+
+    if isinstance(input_data, Tensor):
+        prepared = input_data
+    elif isinstance(input_data, (np.ndarray, list, tuple)):
+        prepared = Tensor(input_data)
+    else:
+        raise DataError(
+            f"predict_tensor_artifact() requires input_data to be a Tensor, NumPy array, or "
+            f"list/tuple of numbers, got {type(input_data).__name__}."
+        )
+
+    preprocessing = _load_preprocessing(path)
+    if preprocessing is not None:
+        prepared = preprocessing(prepared)
+
+    model = _load_model(path, device=device.type if isinstance(device, Device) else device)
+    return predict(model, prepared)
+
+
 def generate_sequence(
     model: Module,
     seed: "Sequence[Any]",
@@ -532,6 +626,6 @@ def interpret_classification(output: Tensor, classes: "Sequence[str]") -> "list[
 
 
 __all__ = [
-    "predict", "save_and_verify", "predict_artifact", "generate_sequence",
+    "predict", "save_and_verify", "predict_artifact", "predict_tensor_artifact", "generate_sequence",
     "interpret_classification", "ClassificationPrediction",
 ]
