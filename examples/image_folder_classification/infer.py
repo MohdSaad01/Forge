@@ -1,4 +1,4 @@
-"""Milestone 71/72: standalone, fresh-process inference on one image file.
+"""Milestone 71/72/82: standalone, fresh-process inference on one image file.
 
 ```bash
 python -m examples.image_folder_classification.infer \
@@ -7,38 +7,32 @@ python -m examples.image_folder_classification.infer \
 ```
 
 This script is deliberately independent of `train.py`: it does not import
-`build_transform()`, `build_model()`, or `ImageFolder` as a *dataset* --
-only `forge.load_model()`, `forge.load_preprocessing()`, `forge.load_classes()`,
-`forge.predict()`, and `forge.interpret_classification()`, plus
-`ImageFolder._load_image` reused as its documented single-image decode
-helper (see `forge/data/image_folder.py`'s own docstring: "the right place
-to reuse... if a caller ever needs to preprocess one arbitrary image file
-the exact same way `ImageFolder` does"). Nothing here depends on any
-in-memory state `train.py` happened to build -- everything a caller needs
-(model architecture + weights, preprocessing configuration, and class-name
-vocabulary) comes from the one `.forge` file `train.py` wrote.
+`build_transform()`, `build_model()`, or `ImageFolder` as a *dataset* -- only
+`forge.training.predict_artifact()` (Milestone 82), which itself composes
+`load_model()`, `load_preprocessing()`, `load_classes()`,
+`ImageFolder._load_image()` (reused as its documented single-image decode
+helper -- see `forge/data/image_folder.py`'s own docstring), `predict()`, and
+`interpret_classification()`. Nothing here depends on any in-memory state
+`train.py` happened to build -- everything a caller needs (model architecture
++ weights, preprocessing configuration, and class-name vocabulary) comes from
+the one `.forge` file `train.py` wrote.
 
-This is the concrete Milestone 71/72 workflow: a developer trains and saves
-a model in one process, then -- potentially days later, in a completely
-separate process, on a completely new image -- loads it here and gets a
-human-readable prediction without having to remember or re-implement the
-`Resize`/`Normalize` steps `train.py` used, or keep a hand-written
-`classes.json` sidecar file next to the model (Milestone 72 -- before this,
-`--classes path/to/classes.json` was a required separate argument; see
-`docs/development/m72-classification-metadata.md`).
+This is the concrete Milestone 71/72/82 workflow: a developer trains and
+saves a model in one process, then -- potentially days later, in a
+completely separate process, on a completely new image -- loads it here and
+gets a human-readable prediction without having to remember or re-implement
+the `Resize`/`Normalize` steps `train.py` used, keep a hand-written
+`classes.json` sidecar file next to the model (Milestone 72), or manually
+re-assemble the load-preprocess-predict-interpret pipeline at all
+(Milestone 82 -- see `forge/training/inference.py::predict_artifact()`).
 """
 
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-
-import numpy as np
 
 import forge
-from forge.data import ImageFolder
-from forge.serialization import load_classes, load_model, load_preprocessing
-from forge.training import ClassificationPrediction, interpret_classification, predict
+from forge.training import ClassificationPrediction
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -51,34 +45,16 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 
 def run(model_path: str, image_path: str, device: "str | None" = None) -> "ClassificationPrediction | int":
-    """Load `model_path`'s model + preprocessing + classes, classify `image_path`.
+    """Classify `image_path` with the artifact at `model_path`.
 
-    Returns a `ClassificationPrediction` (`.label`, `.confidence`) if
-    `model_path` was saved with `classes=...`, otherwise the raw predicted
-    class index as an `int`. Raises `forge.PersistenceError` if `model_path`
-    was never saved with `preprocessing=` (i.e. `load_preprocessing()`
-    returns `None`) -- there is nothing to reproduce automatically in that
-    case, and silently skipping preprocessing would be exactly the
-    hidden-assumption failure mode Milestone 71 closed.
+    A thin wrapper over `forge.predict_artifact()` (Milestone 82) -- see that
+    function's docstring for the full behavior: returns a
+    `ClassificationPrediction` (`.label`, `.confidence`) if `model_path` was
+    saved with `classes=...`, otherwise the raw predicted class index as an
+    `int`; raises `forge.PersistenceError` if `model_path` was never saved
+    with `preprocessing=`.
     """
-    preprocessing = load_preprocessing(model_path)
-    if preprocessing is None:
-        raise forge.PersistenceError(
-            f"'{model_path}' was saved with no preprocessing configuration (see "
-            "save_model(..., preprocessing=...)) -- infer.py has no automatic way to prepare "
-            "the input image for this model."
-        )
-    model = load_model(model_path, device=device)
-
-    raw = ImageFolder._load_image(Path(image_path))
-    prepared = preprocessing(raw)
-    batch = prepared.reshape(1, *prepared.shape)
-    output = predict(model, batch)
-
-    classes = load_classes(model_path)
-    if classes is not None:
-        return interpret_classification(output, classes)[0]
-    return int(np.argmax(output.numpy(), axis=1)[0])
+    return forge.predict_artifact(model_path, image_path, device=device)
 
 
 def main(argv=None) -> None:

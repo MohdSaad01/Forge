@@ -5,17 +5,15 @@ never reconstructs a live `Module`, never requires CUDA, and never mutates
 anything. `convert` is a real device conversion and goes straight through
 `forge.load_model()` / `forge.save_model()`, exactly as a Python caller
 would -- no separate conversion logic lives here. `predict` (Milestone 72)
-is a thin CLI wrapper over `forge.load_model()` / `forge.load_preprocessing()`
-/ `forge.load_classes()` / `forge.predict()` /
-`forge.interpret_classification()` -- the exact same sequence
-`examples/image_folder_classification/infer.py` already demonstrates as a
-Python script, exposed as a command now that a `.forge` file can carry
-everything that sequence needs (preprocessing since Milestone 71, class
-labels since Milestone 72). Scoped to a single image file: Forge has no
-generic "input format" concept spanning its example workloads (images,
-tabular rows, raw sequences all shape differently), so this command only
-claims the one concrete input shape a saved artifact can already fully
-describe end-to-end.
+is a thin CLI wrapper over `forge.training.predict_artifact()` (Milestone
+82) -- the same "`load_model()` / `load_preprocessing()` / `load_classes()`
+/ decode image / `predict()` / `interpret_classification()`" sequence
+`examples/image_folder_classification/infer.py` and this command
+independently hand-wrote until Milestone 82 extracted it into one function
+both now share. Scoped to a single image file: Forge has no generic "input
+format" concept spanning its example workloads (images, tabular rows, raw
+sequences all shape differently), so this command only claims the one
+concrete input shape a saved artifact can already fully describe end-to-end.
 """
 
 from __future__ import annotations
@@ -23,13 +21,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 
-import numpy as np
-
-from ..data.image_folder import ImageFolder
 from ..serialization import load_classes, load_model, load_preprocessing, save_model
-from ..training import interpret_classification, predict
+from ..training import ClassificationPrediction, predict_artifact
 from ._archive_info import count_elements, module_training_state, read_model_metadata, walk_modules, walk_parameters
 from .errors import CLIError
 
@@ -150,28 +144,16 @@ def cmd_predict(args: argparse.Namespace) -> int:
     if not os.path.isfile(args.image):
         raise CLIError(f"Cannot predict: image '{args.image}' not found.")
 
-    preprocessing = load_preprocessing(args.model)
-    if preprocessing is None:
-        raise CLIError(
-            f"'{args.model}' was saved with no preprocessing configuration (see "
-            "forge.save_model(..., preprocessing=...)) -- 'forge model predict' has no "
-            "automatic way to prepare the input image for this model."
-        )
-    model = load_model(args.model, device=args.device)
-
-    raw = ImageFolder._load_image(Path(args.image))
-    prepared = preprocessing(raw)
-    batch = prepared.reshape(1, *prepared.shape)
-    output = predict(model, batch)
-
-    classes = load_classes(args.model)
-    if classes is not None:
-        result = interpret_classification(output, classes)[0]
+    # Milestone 82: forge.training.predict_artifact() is the same
+    # "load_preprocessing() -> load_model() -> decode image -> preprocess ->
+    # predict() -> load_classes() -> interpret_classification()" sequence
+    # this command used to hand-roll -- see this module's own docstring.
+    result = predict_artifact(args.model, args.image, device=args.device)
+    if isinstance(result, ClassificationPrediction):
         print(f"Predicted class: {result.label}")
         print(f"Confidence: {result.confidence:.1%}")
     else:
-        predicted_idx = int(np.argmax(output.numpy(), axis=1)[0])
-        print(f"Predicted class index: {predicted_idx}")
+        print(f"Predicted class index: {result}")
         print("(No class-name vocabulary was saved with this model -- see "
               "forge.save_model(..., classes=...) -- so only the raw index is available.)")
     return 0

@@ -1,12 +1,13 @@
-"""Forge Milestone 69/70/71/72/73/80/81: an end-to-end directory-based image
+"""Forge Milestone 69/70/71/72/73/80/81/82: an end-to-end directory-based image
 classification example, now with mixed-resolution source images, *persisted*
-preprocessing, a *self-describing* class vocabulary, and a single-call
-train-to-verified-artifact entry point for its common (non-`--resume`) path.
+preprocessing, a *self-describing* class vocabulary, a single-call
+train-to-verified-artifact entry point for its common (non-`--resume`) path,
+and single-call artifact inference on a brand-new image file.
 
 ```text
 generate_dataset() [mixed H, W] -> ImageFolder -> Resize+Normalize -> random_split -> DataLoader
     -> forge.train_and_save() -> CNN -> CrossEntropyLoss -> Adam
-    -> save + verify (model + preprocessing + classes) -> forge.predict() -> interpret_classification()
+    -> save + verify (model + preprocessing + classes) -> forge.predict_artifact(path, new_image.png)
 ```
 
 This is the first Forge example whose data source is **ordinary image files
@@ -48,7 +49,15 @@ regression. See `docs/development/m80-train-to-artifact-workflow.md`. Milestone
 call with one `forge.training.train_and_save()` call (`forge/training/api.py`)
 -- the identical two-call sequence this script and `examples/mnist/train.py`
 both independently ran, now written once. See
-`docs/development/m81-train-to-verified-artifact-workflow.md`.
+`docs/development/m81-train-to-verified-artifact-workflow.md`. Milestone 82
+replaced this script's own Section 12 hand-rolled `load_preprocessing()` ->
+`ImageFolder._load_image()` -> preprocess -> batch -> `predict()` ->
+`interpret_classification()` sequence for a brand-new image *file* (as
+opposed to Section 11's in-memory dataset sample, still hand-assembled since
+it has no file to point `predict_artifact()` at) with one
+`forge.predict_artifact(model_path, new_image_path)` call -- the same
+function `infer.py` and `forge model predict` now also delegate to. See
+`docs/development/m82-artifact-inference.md`.
 
 Every step below uses only public Forge APIs (`forge`, `forge.data`,
 `forge.nn`, `forge.optim`, `forge.training`, `forge.save_model`/
@@ -90,7 +99,7 @@ import forge
 from forge.data import Compose, DataLoader, ImageFolder, Normalize, Resize, random_split
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
-from forge.serialization import load_classes, load_preprocessing
+from forge.serialization import load_classes
 from forge.training import Accuracy, interpret_classification, predict, save_and_verify, start_training_session
 
 try:
@@ -315,31 +324,24 @@ def main(argv=None) -> None:
     print(f"Prediction: {result.label}")
     print(f"Confidence: {result.confidence:.1%}")
 
-    # Section 12 (Milestone 70, preprocessing reloaded from disk since
-    # Milestone 71): inference on a brand-new image that was never part of
+    # Section 12 (Milestone 70/71; consumed via forge.predict_artifact() since
+    # Milestone 82): inference on a brand-new image that was never part of
     # the dataset, at a resolution the model was never trained at
-    # (deliberately outside [--min-size, --max-size]) -- proving the *same*
-    # preprocessing, reconstructed from the saved file via
-    # `load_preprocessing()` rather than reused from this process's own
-    # `build_transform()` call, makes an arbitrary new image usable by the
-    # saved model. This is the in-process half of the M71/M72 proof;
-    # `infer.py` (run as a genuinely separate process below) is the other
-    # half, and now needs only `--model` and `--image` -- no separate
-    # `--classes` sidecar file (Milestone 72).
-    reloaded_preprocessing = load_preprocessing(str(model_path))
-
+    # (deliberately outside [--min-size, --max-size]) -- proving the
+    # persisted preprocessing + classes, reconstructed from `model_path`
+    # alone (not this process's own `build_transform()`/`full_dataset.classes`),
+    # make an arbitrary new image usable by the saved model with no manual
+    # load_preprocessing()/predict()/interpret_classification() assembly on
+    # this script's part. This is the in-process half of the M71/M72/M82
+    # proof; `infer.py` (run as a genuinely separate process below) is the
+    # other half, and itself delegates to the same `predict_artifact()`.
     new_image_shape = full_dataset.classes[0]
     new_image_rng = np.random.default_rng(args.seed + 1000)
     new_image = _render_image(new_image_rng, new_image_shape, width=200, height=140)
     new_image_path = output_dir / "new_mixed_resolution_query.png"
     new_image.save(new_image_path)
 
-    raw_query = ImageFolder._load_image(new_image_path)
-    preprocessed_query = reloaded_preprocessing(raw_query)
-    assert preprocessed_query.shape == (3, *_RESIZE_SIZE), "Resize did not normalize the new image's shape"
-    new_query_batch = preprocessed_query.to(args.device).reshape(1, *preprocessed_query.shape)
-    new_pred = predict(reloaded, new_query_batch)
-    new_result = interpret_classification(new_pred, reloaded_classes)[0]
+    new_result = forge.predict_artifact(str(model_path), str(new_image_path), device=args.device)
     print(f"\nNew mixed-resolution image (200x140, true class: {new_image_shape}, "
           f"never seen during training), preprocessing + classes reconstructed from '{model_path}':")
     print(f"Prediction: {new_result.label}")

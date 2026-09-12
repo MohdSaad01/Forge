@@ -8,7 +8,14 @@ logic of its own. See `docs/architecture/training-engine.md`.
 """
 
 from .api import TrainAndSaveResult, train, train_and_save
-from .inference import ClassificationPrediction, generate_sequence, interpret_classification, predict, save_and_verify
+from .inference import (
+    ClassificationPrediction,
+    generate_sequence,
+    interpret_classification,
+    predict,
+    predict_artifact,
+    save_and_verify,
+)
 from .metrics import Accuracy, MeanAbsoluteError, MeanSquaredError, Metric
 from .session import TrainingSession, start_training_session
 from .trainer import EpochResult, EvaluationResult, Trainer, TrainingHistory
@@ -27,6 +34,7 @@ __all__ = [
     "TrainAndSaveResult",
     "predict",
     "save_and_verify",
+    "predict_artifact",
     "generate_sequence",
     "interpret_classification",
     "ClassificationPrediction",

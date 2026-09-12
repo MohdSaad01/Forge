@@ -32,9 +32,15 @@ Public subpackages:
   needs to turn a trained model into new generated output; `save_and_verify()`
   (Milestone 78), which saves a model as a portable artifact and immediately
   proves it by reloading it fresh and confirming a sample prediction agrees
-  with the pre-save model; and `train_and_save()` (Milestone 81), which calls
+  with the pre-save model; `train_and_save()` (Milestone 81), which calls
   `train()` then `save_and_verify()` in one step, returning a
-  `TrainAndSaveResult` (history, final validation result, reloaded model).
+  `TrainAndSaveResult` (history, final validation result, reloaded model);
+  and `predict_artifact()` (Milestone 82), which turns a portable `.forge`
+  image-classification artifact and one new image file directly into a
+  `ClassificationPrediction` (or a raw class index, when no `classes=` was
+  saved) -- composing `load_model()`/`load_preprocessing()`/`load_classes()`/
+  `predict()`/`interpret_classification()` in one call, with no manual
+  reconstruction of the training-time preprocessing/interpretation pipeline.
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a
@@ -93,6 +99,7 @@ from .training import (
     generate_sequence,
     interpret_classification,
     predict,
+    predict_artifact,
     save_and_verify,
     train,
     train_and_save,
@@ -135,6 +142,7 @@ __all__ = [
     "Checkpoint",
     "predict",
     "save_and_verify",
+    "predict_artifact",
     "generate_sequence",
     "interpret_classification",
     "ClassificationPrediction",

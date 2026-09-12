@@ -1,4 +1,4 @@
-# Forge Image-Folder Classification Example (Milestone 69, extended in 70/71/72/80/81)
+# Forge Image-Folder Classification Example (Milestone 69, extended in 70/71/72/80/81/82)
 
 An end-to-end validation of `forge.data.ImageFolder` -- Forge's first
 dataset that discovers labeled samples from **ordinary image files on
@@ -16,9 +16,10 @@ no more a hand-written `classes.json` sidecar file, at inference time:
 ```text
 generate_dataset() [mixed H, W] -> ImageFolder -> Resize+Normalize -> random_split -> DataLoader
     -> forge.train_and_save() -> CNN (Conv2d/BatchNorm2d/MaxPool2d/Dropout) -> CrossEntropyLoss
-    -> Adam -> save + verify (model + preprocessing + classes) -> forge.predict() -> interpret_classification()
+    -> Adam -> save + verify (model + preprocessing + classes)
                                                                 ^
-                                infer.py / `forge model predict`: fresh process, everything from one file
+              forge.predict_artifact(path, new_image.png): fresh process, everything from one file
+              (infer.py / `forge model predict` both delegate to it -- Milestone 82)
 ```
 
 Milestone 80 retrofitted this script's fresh (non-`--resume`) path to train
@@ -34,7 +35,12 @@ by a direct `save_and_verify()` call, preserving this example's exact
 `DataLoader`-shuffle resume-equivalence guarantee with zero regression --
 see `docs/architecture/training-engine.md`'s **Single-call high-level
 training** and **Train, evaluate, persist, verify in one call** sections for
-exactly how the fresh path's checkpoint stays resumable.
+exactly how the fresh path's checkpoint stays resumable. Milestone 82
+replaced this script's own new-image inference demo (Section 12 below), plus
+`infer.py`'s and `forge model predict`'s entire bodies, with one shared
+`forge.predict_artifact(model_path, image_path)` call -- see
+`docs/architecture/training-engine.md`'s **Portable-artifact inference in
+one call** section.
 
 Every step uses only public Forge APIs (`forge`, `forge.data`, `forge.nn`,
 `forge.optim`, `forge.training`, `forge.save_model`/`save_checkpoint`/
@@ -57,15 +63,16 @@ small CNN from existing `forge.nn` layers.
   model + preprocessing + classes persistence, and standalone single-image
   inference on both a held-out test sample and a brand-new image at a
   resolution never seen in training.
-- `infer.py` (Milestone 71, extended in 72) -- a **separate, standalone
-  script**: given only a saved model path and an image path, reconstructs
-  the exact preprocessing used during training from the model file itself
-  (`forge.load_preprocessing()`) and the class-name vocabulary
+- `infer.py` (Milestone 71, extended in 72, simplified in 82) -- a
+  **separate, standalone script**: given only a saved model path and an
+  image path, calls `forge.predict_artifact()` (Milestone 82), which itself
+  reconstructs the exact preprocessing used during training from the model
+  file (`forge.load_preprocessing()`) and the class-name vocabulary
   (`forge.load_classes()`), then produces a human-readable prediction. Does
   not import `train.py`'s `build_transform()` or any other in-memory
-  training-time state -- see its own module docstring. (Before Milestone
-  72 this also needed a separate `--classes path/to/classes.json` argument;
-  the model file now carries that itself.)
+  training-time state -- see its own module docstring. (Before Milestone 72
+  this also needed a separate `--classes path/to/classes.json` argument; the
+  model file now carries that itself.)
 
 ## Prerequisites
 
@@ -231,12 +238,12 @@ Confidence: 71.4%
 (A misclassification here is expected some fraction of the time at this
 model's ~58% validation accuracy -- not a pipeline bug.)
 
-It then generates one brand-new image that was never part of the dataset,
-at a resolution (`200x140`) deliberately outside the `--min-size`/
-`--max-size` training range, loads it via the same `ImageFolder._load_image`
-decode step, applies the preprocessing pipeline **reconstructed from the
-just-saved model file** via `forge.load_preprocessing()` (Milestone 71 --
-not the in-process `build_transform()` function), and predicts:
+It then generates one brand-new image *file* that was never part of the
+dataset, at a resolution (`200x140`) deliberately outside the `--min-size`/
+`--max-size` training range, and classifies it with one
+`forge.predict_artifact(model_path, new_image_path)` call (Milestone 82) --
+no manual `load_preprocessing()`/`ImageFolder._load_image()`/`predict()`/
+`interpret_classification()` assembly on this script's part:
 
 ```text
 New mixed-resolution image (200x140, true class: circle, never seen during training), preprocessing + classes reconstructed from '...image_folder_model.forge':
@@ -246,13 +253,16 @@ Confidence: 88.9%
 
 This demonstrates the milestones' core claim: a caller does not need to
 manually pre-resize a new image to the model's trained resolution, remember
-which transform was used, or keep a separate class-name file next to the
-model -- everything is reconstructed automatically from the one saved file.
-Both demos use the same `forge.predict()`/`forge.interpret_classification()`
-used by every other Forge classification workflow -- no separate
-hand-written inference implementation.
+which transform was used, keep a separate class-name file next to the model,
+or know that `predict_artifact()` internally calls `load_model()`/
+`load_preprocessing()`/`load_classes()`/`predict()`/
+`interpret_classification()` at all -- everything is reconstructed
+automatically from the one saved file. (Section 11's *earlier* demo, on a
+held-out in-memory test-split sample rather than a new file on disk, still
+calls `forge.predict()`/`forge.interpret_classification()` directly -- there
+is no file for `predict_artifact()` to point at in that case.)
 
-### Fresh-process inference (`infer.py`, Milestone 71/72; `forge model predict` CLI, Milestone 72)
+### Fresh-process inference (`infer.py`, Milestone 71/72; `forge model predict` CLI, Milestone 72; both via `forge.predict_artifact()` since Milestone 82)
 
 `train.py` prints the exact commands at the end of its run. Both work from
 nothing but the saved model file and a path to any image -- no separate
@@ -283,13 +293,15 @@ Confidence: 88.9%
 ```
 
 `infer.py` never imports `train.py`'s `build_transform()` or reuses any
-in-memory object from the training run -- it calls `forge.load_model()`,
-`forge.load_preprocessing()`, and `forge.load_classes()` against the same
-file and nothing else, demonstrating the workflow across a genuine process
-boundary. Passing the path to a model saved *without* `preprocessing=`
-raises a clear `PersistenceError` rather than guessing or silently skipping
-preprocessing; a model saved without `classes=` still predicts, falling back
-to printing the raw class index (see `run()`'s own docstring).
+in-memory object from the training run -- it calls
+`forge.predict_artifact()` against the same file and nothing else (Milestone
+82), demonstrating the workflow across a genuine process boundary. The CLI's
+`predict` subcommand delegates to the identical function, so both entry
+points share one inference path. Passing the path to a model saved *without*
+`preprocessing=` raises a clear `PersistenceError` rather than guessing or
+silently skipping preprocessing; a model saved without `classes=` still
+predicts, falling back to printing the raw class index (see
+`predict_artifact()`'s own docstring).
 
 ## Integration tests (no dataset download required, generated on the fly)
 
@@ -324,7 +336,10 @@ integration) -- independent of this example -- `tests/
 test_preprocessing_persistence.py` (Milestone 71) for the preprocessing-
 persistence mechanism's own tests, including a real `ImageFolder` ->
 train -> save -> reload -> `forge.predict()` round trip against files on
-disk -- and `tests/test_classification_metadata.py` (Milestone 72) for
+disk -- `tests/test_classification_metadata.py` (Milestone 72) for
 `save_model(..., classes=...)`/`load_classes()`/`interpret_classification()`,
 the `forge model predict` CLI command, and this example's own
-`infer.py`/`train.py` fresh-process workflow.
+`infer.py`/`train.py` fresh-process workflow -- and `tests/
+test_artifact_inference.py`/`tests/test_artifact_inference_cuda.py`
+(Milestone 82) for `forge.predict_artifact()` itself, including a genuine
+subprocess fresh-process test.

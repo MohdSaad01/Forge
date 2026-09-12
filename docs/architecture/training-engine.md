@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82)
 
 ## Package layout
 ```
@@ -6,7 +6,7 @@ forge/
     training/
         trainer.py     Trainer, EpochResult, EvaluationResult, TrainingHistory
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
-        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78)
+        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78), predict_artifact() (Milestone 82)
         session.py     TrainingSession, start_training_session() (Milestone 73)
         api.py         train() (Milestone 79), train_and_save(), TrainAndSaveResult (Milestone 81)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
@@ -936,6 +936,82 @@ read with no observable effect on unrelated future random draws, regardless
 of when it happens relative to a checkpoint save. See
 `tests/test_serialization.py`'s **load_model() must not perturb forge.random**
 tests and `docs/development/m81-train-to-verified-artifact-workflow.md`.
+
+## Portable-artifact inference in one call: `predict_artifact()` (Milestone 82)
+
+`examples/image_folder_classification/infer.py` and `forge model predict`
+(`forge/cli/model.py`) each independently hand-wrote the identical closing
+sequence a developer holding a `.forge` file otherwise has to reconstruct by
+hand: `load_preprocessing()`, `load_model()`, decode the new image via
+`ImageFolder._load_image()`, apply the preprocessing, add a batch dimension,
+`predict()`, `load_classes()`, `interpret_classification()` -- exactly the
+internal framework knowledge `docs/product/vision.md`'s portable-artifact
+workflow is supposed to hide from a consumer of the file, not just its
+producer. `forge.training.predict_artifact()` (`forge/training/inference.py`)
+is that sequence, written once:
+```python
+result = forge.predict_artifact("model.forge", "new_photo.jpg")
+print(f"Prediction: {result.label}")
+print(f"Confidence: {result.confidence:.1%}")
+```
+1. `load_preprocessing(path)` -- raises `PersistenceError` if `path` was
+   saved with no preprocessing configuration; there is no automatic way to
+   prepare an arbitrary new image otherwise (the same hidden-assumption
+   failure mode Milestone 71 closed).
+2. `load_model(path, device=device)` -- a fresh reconstruction, honoring
+   `load_model()`'s own default-to-saved-device / explicit-override policy.
+3. `ImageFolder._load_image(Path(image))` -- the same single-image decode
+   step `ImageFolder.__getitem__` itself uses (see that method's own
+   docstring: "the right place to reuse... if a caller ever needs to
+   preprocess one arbitrary image file the exact same way `ImageFolder`
+   does").
+4. The reconstructed `preprocessing(raw)`, then a leading batch dimension.
+5. `predict(model, batch)`.
+6. `load_classes(path)` -- when present, `interpret_classification(output,
+   classes)[0]` turns the raw output into a `ClassificationPrediction`; when
+   absent, the raw predicted class index is returned as a plain `int`
+   instead of fabricating a placeholder label for an artifact that never
+   recorded a class vocabulary (a real, valid state -- see
+   `load_classes()`'s own docstring -- not an error condition).
+
+**Input.** `image` must be a path (`str` or `os.PathLike`) to one image file
+on disk -- the one input shape a saved artifact's persisted preprocessing can
+already fully describe end-to-end. Anything else raises `forge.DataError`
+before any file I/O, rather than failing deep inside image decoding.
+
+**Scope.** Composes exactly `load_model()` + `load_preprocessing()` +
+`load_classes()` + `ImageFolder._load_image()` + `predict()` +
+`interpret_classification()`, each called unchanged -- no new artifact
+format, generic input abstraction, task registry, or model-serving machinery.
+This is deliberately narrower than "any Forge artifact": it covers the one
+artifact shape Forge can currently fully describe end-to-end
+(image-classification models saved with `preprocessing=`), not a generic
+runtime for arbitrary model/input combinations (tabular rows, raw sequences,
+and stepwise-recurrence models all shape differently, and none has a single
+canonical "new input file" convention the way an image does).
+
+**Real consumers.** `examples/image_folder_classification/infer.py::run()`
+and `forge/cli/model.py::cmd_predict()` both now delegate to
+`predict_artifact()` instead of independently hand-assembling the same
+sequence -- the Python API and the CLI share the exact same inference path.
+`examples/image_folder_classification/train.py`'s own end-of-run demo on a
+brand-new, never-trained-on-resolution image (Section 12) also now calls
+`forge.predict_artifact(model_path, new_image_path)` directly instead of
+manually reloading preprocessing and re-running `predict()`/
+`interpret_classification()` itself.
+
+**Fresh-process verification.** `tests/test_artifact_inference.py::
+test_predict_artifact_works_from_a_genuinely_separate_process` launches a
+real `subprocess` that only imports `forge` and calls `forge.
+predict_artifact()` directly (built from pre-registered `forge.nn` types, so
+no custom `register_module()` call from the test module needs to exist in the
+fresh process) -- proving the `.forge` file alone, with no in-memory state
+from training, is enough. `tests/test_image_folder_classification_
+integration.py::test_infer_cli_runs_in_a_genuinely_separate_process`
+(Milestone 80) independently exercises the same code path via `infer.py`'s
+own subprocess.
+
+See `docs/development/m82-artifact-inference.md`.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

@@ -42,11 +42,25 @@ reason to own for pure inference, and attaching `.predict()` directly to
 `Module` would blur the line `docs/architecture/modules.md` draws between
 "what a Module computes" and "how it's orchestrated," the same distinction
 `Trainer` itself already exists to preserve.
+
+`predict_artifact()` (Milestone 82) is the next layer up: a portable `.forge`
+artifact already carries everything `predict()` + `interpret_classification()`
+need (model, and optionally preprocessing/classes -- Milestones 71/72), but a
+developer holding just the file still had to know to call `load_model()`,
+`load_preprocessing()`, `load_classes()`, decode the image the same way
+`ImageFolder` does, apply the preprocessing, batch it, call `predict()`, and
+call `interpret_classification()`, in that order -- exactly the internal
+framework knowledge `docs/product/vision.md`'s portable-artifact workflow is
+supposed to hide. `predict_artifact(path, image)` is that entire sequence,
+written once, for the one artifact shape Forge can currently fully describe
+end-to-end: an image-classification model saved with `preprocessing=`.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 import numpy as np
@@ -224,6 +238,105 @@ def save_and_verify(
             f"exceeds atol={atol})."
         )
     return reloaded
+
+
+def predict_artifact(
+    path: str,
+    image: "str | os.PathLike",
+    *,
+    device: "str | Device | None" = None,
+) -> "ClassificationPrediction | int":
+    """Classify one image file with a portable `.forge` artifact, in one call (Milestone 82).
+
+    ```python
+    result = forge.predict_artifact("model.forge", "new_photo.jpg")
+    print(f"Prediction: {result.label}")
+    print(f"Confidence: {result.confidence:.1%}")
+    ```
+
+    `examples/image_folder_classification/infer.py` and `forge model predict`
+    (`forge/cli/model.py`) each independently hand-wrote the identical
+    "`load_preprocessing()` -> `load_model()` -> decode the image via
+    `ImageFolder._load_image()` -> apply the preprocessing -> add a batch
+    dimension -> `predict()` -> `load_classes()` -> `interpret_classification()`"
+    sequence -- exactly the internal framework knowledge a developer holding a
+    `.forge` file should never need to reconstruct by hand
+    (`docs/product/vision.md`). `predict_artifact()` is that sequence, written
+    once; both call sites above now delegate to it instead of duplicating it.
+
+    `image` must be a path (`str` or `os.PathLike`) to one image file on disk
+    -- the one input shape a saved artifact's persisted preprocessing can
+    already fully describe end-to-end (**Milestone 82's** scope is
+    image-classification artifacts specifically, not a generic input/artifact
+    runtime; see this function's module docstring). Anything else raises
+    `forge.DataError` rather than failing deep inside image decoding.
+
+    **Preprocessing is mandatory.** `path` must have been saved with
+    `forge.save_model(..., preprocessing=...)` -- there is no way to prepare
+    an arbitrary new image for the model otherwise, and silently skipping
+    preprocessing would be exactly the hidden-assumption failure mode
+    Milestone 71 closed. A `path` saved with no preprocessing raises
+    `forge.PersistenceError` naming the missing configuration.
+
+    **Classes are optional, exactly like `forge model predict`.** When `path`
+    was also saved with `forge.save_model(..., classes=...)`, the raw
+    prediction is turned into a `ClassificationPrediction` via
+    `interpret_classification()` -- `.label`/`.index`/`.confidence`. When no
+    class vocabulary was saved, this returns the raw predicted class index as
+    a plain `int` instead: a classification model with no name for its
+    outputs (`load_classes()` returning `None`) is a real, valid artifact
+    state (see `load_classes()`'s own docstring) -- fabricating a placeholder
+    label for it would be exactly the "pretend it's a classification result"
+    failure mode this milestone's brief warns against, so this deliberately
+    returns *less* structured information rather than a dishonest one.
+
+    `device` defaults to the device recorded in the archive (`load_model()`'s
+    own default) -- pass `device="cpu"`/`device="cuda"` to override, exactly
+    as `load_model()` itself accepts.
+
+    Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
+    artifact (the same conditions `load_model()`/`load_preprocessing()`/
+    `load_classes()` already raise), and `forge.DataError` if `image` does
+    not point to a readable image file -- both by composing the existing
+    lower-level functions' own error handling, not by re-implementing it.
+
+    **Scope.** Composes exactly `load_model()` + `load_preprocessing()` +
+    `load_classes()` + `ImageFolder._load_image()` + `predict()` +
+    `interpret_classification()`, each called unchanged. No new artifact
+    format, input abstraction, or model-serving machinery is introduced --
+    see this module's own docstring for what Milestone 82 deliberately does
+    not build.
+    """
+    if not isinstance(image, (str, os.PathLike)):
+        raise DataError(
+            f"predict_artifact() requires image to be a file path (str or os.PathLike), "
+            f"got {type(image).__name__}."
+        )
+
+    from ..data.image_folder import ImageFolder
+    from ..serialization.model import load_classes as _load_classes
+    from ..serialization.model import load_model as _load_model
+    from ..serialization.model import load_preprocessing as _load_preprocessing
+
+    preprocessing = _load_preprocessing(path)
+    if preprocessing is None:
+        raise PersistenceError(
+            f"'{path}' was saved with no preprocessing configuration (see "
+            "forge.save_model(..., preprocessing=...)) -- predict_artifact() has no automatic "
+            "way to prepare the input image for this model."
+        )
+
+    model = _load_model(path, device=device.type if isinstance(device, Device) else device)
+
+    raw = ImageFolder._load_image(Path(image))
+    prepared = preprocessing(raw)
+    batch = prepared.reshape(1, *prepared.shape)
+    output = predict(model, batch)
+
+    classes = _load_classes(path)
+    if classes is not None:
+        return interpret_classification(output, classes)[0]
+    return int(np.argmax(output.numpy(), axis=1)[0])
 
 
 def generate_sequence(
@@ -418,4 +531,7 @@ def interpret_classification(output: Tensor, classes: "Sequence[str]") -> "list[
     ]
 
 
-__all__ = ["predict", "save_and_verify", "generate_sequence", "interpret_classification", "ClassificationPrediction"]
+__all__ = [
+    "predict", "save_and_verify", "predict_artifact", "generate_sequence",
+    "interpret_classification", "ClassificationPrediction",
+]

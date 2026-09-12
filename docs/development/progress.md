@@ -4912,3 +4912,45 @@ regression. CUDA hardware-verified (940MX): `tests/test_training_api_cuda.py`
 `tests/test_mnist_example_cuda_integration.py`, all passing against real CUDA
 kernels.
 Full report: `docs/development/m81-train-to-verified-artifact-workflow.md`.
+
+### M82 — `forge.predict_artifact()`: one-call portable-artifact inference
+
+Brief asked whether a developer holding only a `.forge` file can get a
+useful prediction on a new image without knowing how Forge internally
+stores, preprocesses, executes, or interprets the model. Inspection found
+`examples/image_folder_classification/infer.py::run()` and `forge/cli/
+model.py::cmd_predict()` had independently hand-written the identical
+seven-step sequence -- `load_preprocessing()`, `load_model()`, decode the
+image via `ImageFolder._load_image()`, apply the preprocessing, batch it,
+`predict()`, then `load_classes()`-gated `interpret_classification()` or a
+raw-index fallback -- in the same order, with the same fallback behavior,
+meeting the established "two real consumers, same shape" extraction bar.
+
+Built `forge.training.predict_artifact(path, image, *, device=None)`
+(`forge/training/inference.py`) -- a pure composition of the existing
+lower-level functions, with no new artifact format or input abstraction --
+and retrofitted both real consumers plus `examples/image_folder_
+classification/train.py`'s own new-image inference demo (Section 12) to
+delegate to it. `image` accepts only a file path (`str`/`os.PathLike`);
+missing preprocessing raises `PersistenceError`; missing classes returns the
+raw predicted index as a plain `int` (not an error), preserving both
+pre-existing consumers' exact prior behavior and its existing passing test
+(`test_cli_predict_without_classes_prints_index`).
+
+Files changed: `forge/training/inference.py` (`predict_artifact()`),
+`forge/training/__init__.py`, `forge/__init__.py` (re-exports); `forge/cli/
+model.py` (`cmd_predict()` retrofit); `examples/image_folder_classification/
+infer.py` (`run()` retrofit), `examples/image_folder_classification/
+train.py` (Section 12 retrofit); `docs/architecture/training-engine.md`
+(new **Portable-artifact inference in one call** section); `examples/
+image_folder_classification/README.md` updated. 16 new tests (13 CPU in
+`tests/test_artifact_inference.py`, including a genuine `subprocess`
+fresh-process test; 3 CUDA in `tests/test_artifact_inference_cuda.py`).
+Full suite: **2,324 collected, 2,323 passed, 1 failed** (2,308 + 16 new) --
+the same pre-existing `test_dataloader_prefetch.py` allocator-measurement
+flake documented since M63, reproduced passing cleanly in isolation, no M82
+regression. CUDA hardware-verified (940MX): `tests/
+test_artifact_inference_cuda.py` (3/3), `tests/
+test_image_folder_classification_cuda_integration.py` (5/5, unmodified,
+confirming the CLI/infer.py retrofit is behavior-preserving on CUDA too).
+Full report: `docs/development/m82-artifact-inference.md`.
