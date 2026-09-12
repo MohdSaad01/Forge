@@ -28,16 +28,33 @@ save and reconstruct a classification model's ordered class-name
 vocabulary the same way -- see `forge.training.interpret_classification()`
 for turning a raw prediction `Tensor` plus this vocabulary into a
 human-readable label.
+
+`inspect_model()` (Milestone 85) returns a structured, read-only `ModelInfo`
+summarizing what a saved artifact contains -- model identification,
+preprocessing (if any), classes (if any), and format/device -- without
+reconstructing a live model or requiring CUDA. See `forge.serialization.
+model`'s module docstring and `docs/architecture/persistence.md`'s **Model
+inspection** section.
 """
 
 from .checkpoint import Checkpoint, CHECKPOINT_FORMAT_VERSION, load_checkpoint, save_checkpoint
-from .model import load_classes, load_model, load_preprocessing, save_model
+from .model import (
+    ModelInfo,
+    ModelSummary,
+    PreprocessingInfo,
+    inspect_model,
+    load_classes,
+    load_model,
+    load_preprocessing,
+    save_model,
+)
 from .optimizer_registry import register_optimizer
 from .registry import register_module
 from .transforms import register_transform
 
 __all__ = [
     "save_model", "load_model", "load_preprocessing", "load_classes", "register_module",
+    "inspect_model", "ModelInfo", "ModelSummary", "PreprocessingInfo",
     "save_checkpoint", "load_checkpoint", "Checkpoint", "CHECKPOINT_FORMAT_VERSION",
     "register_optimizer", "register_transform",
 ]

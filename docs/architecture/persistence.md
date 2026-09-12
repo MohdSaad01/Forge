@@ -11,15 +11,17 @@ forge/
         transforms.py            TransformSpec, register_transform(), serialize_transform()/
                                  deserialize_transform() -- preprocessing-transform configuration (Milestone 71)
         archive.py               write_archive/read_archive -- the generic ZIP(json + .npy) file format
-        model.py                  save_model(), load_model(), load_preprocessing(), load_classes() -- tree walk, validation, reconstruction
+        model.py                  save_model(), load_model(), load_preprocessing(), load_classes(),
+                                 inspect_model() -- tree walk, validation, reconstruction (Milestone 85: read-only summary)
         checkpoint.py             save_checkpoint(), load_checkpoint() -- training-state persistence (Milestone 18)
 ```
 `forge.serialization` is exposed as a submodule of `forge`, alongside
 `forge.nn`/`forge.optim`/`forge.data`/`forge.training`. `save_model`,
-`load_model`, `save_checkpoint`, `load_checkpoint`, `Checkpoint`, and
-`PersistenceError` are also exposed at the top level (`forge.save_model`,
-`forge.load_model`, `forge.save_checkpoint`, `forge.load_checkpoint`,
-`forge.Checkpoint`, `forge.PersistenceError`).
+`load_model`, `save_checkpoint`, `load_checkpoint`, `Checkpoint`,
+`inspect_model`, `ModelInfo`, and `PersistenceError` are also exposed at the
+top level (`forge.save_model`, `forge.load_model`, `forge.save_checkpoint`,
+`forge.load_checkpoint`, `forge.Checkpoint`, `forge.inspect_model`,
+`forge.ModelInfo`, `forge.PersistenceError`).
 
 ## Public API
 ```python
@@ -595,6 +597,73 @@ exactly matching every pre-Milestone-72 call site and mirroring
 forward-compatible (an older Forge build never reads the key at all) and
 backward-compatible (`load_classes()` treats a missing key the same as an
 explicit `null`, returning `None`, not raising). No `FORMAT_VERSION` bump.
+
+## Model inspection (Milestone 85)
+`save_model()`/`load_model()`/`load_preprocessing()`/`load_classes()` give a
+caller everything needed to *use* a saved artifact -- but a developer who
+only just received a `.forge` file has no way to answer "what is this?"
+without already knowing which of `forge.predict_artifact()`/
+`predict_tensor_artifact()`/`predict_image_artifact()` applies, or opening
+the archive by hand. `inspect_model()` closes that gap: a single read-only
+call that turns the metadata `save_model()` already wrote into a structured,
+programmatically usable summary.
+
+### Public API
+```python
+info = forge.inspect_model(path)   # -> ModelInfo
+print(info)
+
+info.model.type              # "Sequential"
+info.model.module_types      # ("Sequential", "Conv2d", "ReLU", "MaxPool2d", "Linear")
+info.model.parameter_count   # 12345
+info.preprocessing           # PreprocessingInfo, or None
+info.preprocessing.description  # "Resize(size=(64, 64)) -> Normalize(mean=0.0, std=255.0)"
+info.preprocessing.transform    # the reconstructed Transform instance itself
+info.classes                 # ["cat", "dog"], or None
+info.format_version          # 2
+info.device                  # "cpu" or "cuda"
+```
+`ModelInfo`/`ModelSummary`/`PreprocessingInfo` are plain frozen dataclasses
+(`forge.serialization.model`), not a dict -- fields are meant to be read
+programmatically (`if info.classes: ...`), not just printed.
+
+### What `inspect_model()` deliberately does and does not do
+Reads only `metadata.json` via the same `read_archive()` primitive
+`load_model()`/`load_preprocessing()`/`load_classes()` already use
+internally -- it never reconstructs a live `Module` (no module-type registry
+required), never requires CUDA regardless of the device the artifact was
+saved for, and never touches `forge.random`'s state. This makes it cheap
+relative to `load_model()` and safe to call before deciding whether, or how,
+to load the model at all -- mirroring exactly why `forge/cli/_archive_info.py`
+already reads metadata this way for `forge model inspect`, rather than
+through `load_model()`/`load_checkpoint()`.
+
+Reconstructing the preprocessing pipeline (when present) does go through
+`deserialize_transform()`, the same reconstruction `load_preprocessing()`
+performs -- so a saved transform type must be registered in this process,
+exactly as `load_preprocessing()` already requires (a far smaller registry
+than `load_model()`'s full module-type one).
+
+`ModelInfo` deliberately omits per-parameter shapes/dtypes and dotted module
+names -- that lower-level detail remains `forge model inspect`'s own report
+(`walk_modules`/`walk_parameters` in `forge/cli/_archive_info.py`), which the
+CLI command still produces unchanged. `inspect_model()`'s contract is
+intentionally the smaller, product-level subset: enough to *decide* how to
+use an artifact, not a dump of the archive's internal representation.
+
+### Compatibility
+Works identically on artifacts saved before Milestones 71/72 existed:
+`info.preprocessing`/`info.classes` are simply `None`, exactly matching
+`load_preprocessing()`/`load_classes()`'s own backward-compatible behavior
+for a missing key. No `FORMAT_VERSION` change, and no new persisted data --
+`inspect_model()` only reads metadata `save_model()` already wrote.
+
+### CLI
+`forge model inspect model.forge` reports a "Preprocessing detail" line
+sourced from `inspect_model()`'s own `PreprocessingInfo.description` (in
+addition to its existing "Preprocessing: yes/no" line); `--json` mode adds
+the same string under `"preprocessing_description"`. The command's per-module
+and per-parameter listing is unchanged.
 
 ## Custom-module limitations
 See **Custom/composite modules** above: only module types registered via

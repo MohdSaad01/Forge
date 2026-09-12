@@ -27,6 +27,7 @@ will restore onto changed. See **Device semantics** in
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -520,6 +521,201 @@ def load_classes(path: str) -> "list[str] | None":
     return classes
 
 
+@dataclass(frozen=True)
+class ModelSummary:
+    """Identifies a saved module tree without exposing raw serialization internals (Milestone 85).
+
+    `type` is the root module's registered type name -- the same string
+    `save_model()` writes to `root["type"]` (`spec_for_class(...).type_name`),
+    e.g. `"Sequential"`, `"Linear"`, or a custom `register_module()` name.
+    `module_types` lists every module type in the tree, root first, in the
+    same depth-first order `_build_save_node` walks it -- e.g. `("Sequential",
+    "Conv2d", "ReLU", "MaxPool2d", "Linear")` -- letting a caller recognize an
+    architecture's shape without a full per-parameter dump (see `forge model
+    inspect` for that level of detail). `parameter_count` is the total number
+    of learnable parameter elements across the whole tree.
+    """
+
+    type: str
+    module_types: "tuple[str, ...]"
+    parameter_count: int
+
+
+@dataclass(frozen=True)
+class PreprocessingInfo:
+    """The preprocessing pipeline persisted alongside a model, reconstructed read-only (Milestone 85).
+
+    `description` is a human-readable rendering (e.g. `"Resize(size=(64,
+    64)) -> Normalize(mean=0.0, std=255.0)"`) built from each transform's own
+    `__repr__` -- a `Compose`'s steps are joined with `" -> "` rather than
+    shown as `Compose([...])`, matching how a caller actually thinks about a
+    pipeline. `transform` is the same reconstructed `forge.data.transforms.
+    Transform` instance `load_preprocessing()` returns, for a caller who
+    wants to apply it directly rather than just read about it.
+    """
+
+    description: str
+    transform: Any
+
+
+@dataclass(frozen=True)
+class ModelInfo:
+    """The structured, stable result of `inspect_model()` (Milestone 85).
+
+    What a developer holding a `.forge` file needs to know before deciding
+    how to use it -- without loading model parameters, requiring CUDA, or
+    knowing the archive's internal metadata shape. Deliberately does not
+    include per-parameter shapes/dtypes or dotted module names: that level of
+    serialization detail remains `forge model inspect`'s own CLI-only report
+    (`forge/cli/_archive_info.py`), not part of this smaller product-level
+    contract -- see `ModelSummary`.
+    """
+
+    model: ModelSummary
+    preprocessing: "PreprocessingInfo | None"
+    classes: "list[str] | None"
+    format_version: int
+    device: str
+
+    def __str__(self) -> str:
+        preprocessing_line = self.preprocessing.description if self.preprocessing is not None else "none"
+        classes_line = ", ".join(self.classes) if self.classes else "none"
+        return (
+            f"Model: {self.model.type} ({self.model.parameter_count:,} parameters)\n"
+            f"Input preprocessing: {preprocessing_line}\n"
+            f"Classes: {classes_line}\n"
+            f"Artifact format: version {self.format_version} (device={self.device})"
+        )
+
+
+def _module_types(node: dict) -> "list[str]":
+    types = [node.get("type", "?")]
+    children = node.get("children")
+    if isinstance(children, dict):
+        for child in children.values():
+            if isinstance(child, dict):
+                types.extend(_module_types(child))
+    return types
+
+
+def _count_parameters(node: dict) -> int:
+    total = 0
+    parameters = node.get("parameters")
+    if isinstance(parameters, dict):
+        for meta in parameters.values():
+            shape = meta.get("shape", []) if isinstance(meta, dict) else []
+            count = 1
+            for dim in shape:
+                count *= int(dim)
+            total += count
+    children = node.get("children")
+    if isinstance(children, dict):
+        for child in children.values():
+            if isinstance(child, dict):
+                total += _count_parameters(child)
+    return total
+
+
+def _describe_preprocessing(transform: Any) -> str:
+    from ..data.transforms import Compose
+
+    if isinstance(transform, Compose):
+        return " -> ".join(repr(step) for step in transform.transforms)
+    return repr(transform)
+
+
+def inspect_model(path: str) -> ModelInfo:
+    """Return a structured, read-only summary of the model artifact at `path` (Milestone 85).
+
+    ```python
+    info = forge.inspect_model("model.forge")
+    print(info)
+    info.model.type              # "Sequential"
+    info.preprocessing.description  # "Resize(size=(64, 64)) -> Normalize(mean=0.0, std=255.0)"
+    info.classes                 # ["cat", "dog"], or None
+    ```
+
+    Answers "what is this artifact?" -- a question a developer holding just a
+    `.forge` file needs to answer *before* choosing which of `forge.
+    predict_artifact()`/`predict_tensor_artifact()`/`predict_image_artifact()`
+    applies, without already knowing Forge's archive format or writing
+    `load_model()`/`load_preprocessing()`/`load_classes()` calls by hand.
+
+    Reads only `metadata.json` via `read_archive()` -- the same primitive
+    `load_model()`/`load_preprocessing()`/`load_classes()` themselves use
+    internally -- and never reconstructs a live `Module` (no registered
+    module types are required, unlike `load_model()`), never requires CUDA
+    regardless of the device the artifact was saved for, and never mutates
+    `forge.random`'s state. This makes it cheap relative to `load_model()`
+    and safe to call before deciding whether/how to load the model at all.
+    Reconstructing the preprocessing pipeline (when present) does still go
+    through `deserialize_transform()`, so a preprocessing transform type must
+    be registered in this process -- the same requirement `load_preprocessing()`
+    already has, and a much smaller registry than `load_model()`'s full
+    module-type registry.
+
+    Works identically on artifacts saved with or without `preprocessing=`/
+    `classes=` (Milestones 71/72), including files saved before either
+    existed: `preprocessing`/`classes` are simply `None` in that case, exactly
+    matching `load_preprocessing()`/`load_classes()`'s own behavior -- an
+    ordinary, expected outcome, never an error.
+
+    Raises `PersistenceError` for a missing/corrupt file, an unsupported
+    format version, or malformed metadata -- the same conditions `load_model()`
+    itself raises for these cases.
+    """
+    metadata, _ = read_archive(path, kind="model")
+    if not isinstance(metadata, dict):
+        raise PersistenceError(f"Cannot inspect model '{path}': metadata is not a JSON object.")
+
+    version = metadata.get("forge_format_version")
+    if version != FORMAT_VERSION:
+        raise PersistenceError(
+            f"Cannot inspect model '{path}': unsupported format version {version!r} "
+            f"(this build of Forge supports version {FORMAT_VERSION})."
+        )
+
+    device = metadata.get("device")
+    if device not in SUPPORTED_DEVICE_TYPES:
+        supported = ", ".join(SUPPORTED_DEVICE_TYPES)
+        raise PersistenceError(
+            f"Cannot inspect model '{path}': unrecognized recorded device {device!r} "
+            f"(expected one of: {supported})."
+        )
+
+    root = metadata.get("root")
+    if not isinstance(root, dict):
+        raise PersistenceError(f"Cannot inspect model '{path}': malformed metadata (missing 'root').")
+
+    model_summary = ModelSummary(
+        type=root.get("type", "?"),
+        module_types=tuple(_module_types(root)),
+        parameter_count=_count_parameters(root),
+    )
+
+    preprocessing_node = metadata.get("preprocessing")
+    preprocessing_info = None
+    if preprocessing_node is not None:
+        transform = deserialize_transform(preprocessing_node)
+        preprocessing_info = PreprocessingInfo(description=_describe_preprocessing(transform), transform=transform)
+
+    classes = metadata.get("classes")
+    if classes is not None and not (isinstance(classes, list) and all(isinstance(c, str) for c in classes)):
+        raise PersistenceError(
+            f"Cannot inspect model '{path}': malformed 'classes' metadata (expected a list of "
+            f"strings, got {classes!r})."
+        )
+
+    return ModelInfo(
+        model=model_summary,
+        preprocessing=preprocessing_info,
+        classes=list(classes) if classes is not None else None,
+        format_version=version,
+        device=device,
+    )
+
+
 __all__ = [
-    "save_model", "load_model", "load_preprocessing", "load_classes", "FORMAT_VERSION", "SUPPORTED_DEVICE_TYPES",
+    "save_model", "load_model", "load_preprocessing", "load_classes", "inspect_model",
+    "ModelInfo", "ModelSummary", "PreprocessingInfo", "FORMAT_VERSION", "SUPPORTED_DEVICE_TYPES",
 ]

@@ -2,7 +2,12 @@
 
 `inspect` reads archive metadata only (`forge/cli/_archive_info.py`) -- it
 never reconstructs a live `Module`, never requires CUDA, and never mutates
-anything. `convert` is a real device conversion and goes straight through
+anything. Its "Preprocessing detail" line (Milestone 85) delegates to
+`forge.inspect_model()` -- the public, structured inspection API -- rather
+than re-deriving a preprocessing description of its own; the rest of this
+command's per-module/per-parameter dump remains this file's own lower-level
+archive walk (`_archive_info.py`), which stays intentionally more detailed
+than `inspect_model()`'s product-level `ModelInfo` contract. `convert` is a real device conversion and goes straight through
 `forge.load_model()` / `forge.save_model()`, exactly as a Python caller
 would -- no separate conversion logic lives here. `predict` (Milestone 72)
 is a thin CLI wrapper over `forge.training.predict_artifact()` (Milestone
@@ -22,7 +27,7 @@ import argparse
 import json
 import os
 
-from ..serialization import load_classes, load_model, load_preprocessing, save_model
+from ..serialization import inspect_model, load_classes, load_model, load_preprocessing, save_model
 from ..training import ClassificationPrediction, predict_artifact
 from ._archive_info import count_elements, module_training_state, read_model_metadata, walk_modules, walk_parameters
 from .errors import CLIError
@@ -71,6 +76,12 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     has_preprocessing = metadata.get("preprocessing") is not None
     classes = metadata.get("classes")
 
+    # Milestone 85: the public inspection contract (forge.inspect_model())
+    # is reused here for the preprocessing description rather than
+    # re-deriving it -- "CLI must delegate to the public inspection API."
+    info = inspect_model(args.path)
+    preprocessing_description = info.preprocessing.description if info.preprocessing is not None else None
+
     if args.json:
         payload = {
             "path": args.path,
@@ -78,6 +89,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             "device": metadata["device"],
             "training": "train" if training else "eval",
             "has_preprocessing": has_preprocessing,
+            "preprocessing_description": preprocessing_description,
             "classes": classes,
             "modules": [{"name": name, "type": type_name} for name, type_name in modules],
             "parameters": [
@@ -99,6 +111,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     print(f"Device: {metadata['device']}")
     print(f"Training: {'train' if training else 'eval'}")
     print(f"Preprocessing: {'yes' if has_preprocessing else 'no'}")
+    if preprocessing_description is not None:
+        print(f"Preprocessing detail: {preprocessing_description}")
     print(f"Classes: {', '.join(classes) if classes else '(none)'}")
     print()
     print("Modules:")

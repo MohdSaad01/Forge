@@ -5087,3 +5087,62 @@ produced a predicted-mask PNG bit-for-bit identical to the one `train.py`
 wrote in-process, and that mask scored IoU=1.0 against ground truth on the
 brand-new, never-trained-on image. Full report:
 `docs/development/m84-segmentation-artifact-workflow.md`.
+
+### M85 — `forge.inspect_model()`: portable-artifact inspection
+
+Brief asked for a developer-facing gap distinct from M82-84's "how do I run
+this artifact?" question: a developer who receives a bare `.forge` file has
+no supported way to answer "what *is* this artifact?" (which model, whether
+preprocessing/classes are embedded, what workflow applies) without already
+knowing Forge's internal archive/metadata shape. `forge/cli/_archive_info.py`
+already read exactly this metadata for `forge model inspect`, but only as a
+CLI-internal implementation detail, not a public, programmatic contract.
+
+Built `forge.inspect_model(path) -> ModelInfo` (`forge/serialization/
+model.py`) -- a small, frozen-dataclass result: `ModelInfo(model:
+ModelSummary, preprocessing: PreprocessingInfo | None, classes: list[str] |
+None, format_version: int, device: str)`, with `ModelSummary(type,
+module_types, parameter_count)` and `PreprocessingInfo(description,
+transform)`. Reads only `metadata.json` via the same `read_archive()`
+primitive `load_model()`/`load_preprocessing()`/`load_classes()` already use
+-- never reconstructs a live `Module` (no module-type registry required,
+unlike `load_model()`), never requires CUDA regardless of the recorded
+device, and never touches `forge.random` state. `PreprocessingInfo.
+description` renders a `Compose` pipeline as `"Resize(size=(64, 64)) ->
+Normalize(mean=0.0, std=255.0)"` (steps joined by `" -> "`, not
+`Compose([...])`) -- this needed `__repr__` added to `Normalize`/`ToTensor`/
+`Reshape`/`Flatten` (`forge/data/transforms.py`), which previously fell back
+to the default `<object at 0x...>` repr; `Resize`/`Compose` already had one.
+
+`forge model inspect` (`forge/cli/model.py`) now delegates to
+`inspect_model()` for a new "Preprocessing detail" text line and
+`"preprocessing_description"` JSON field, additive to its existing output --
+its own per-module/per-parameter dump remains the CLI's own lower-level
+`_archive_info.py` walk, deliberately more detailed than `ModelInfo`'s
+smaller product-level contract (no per-parameter shapes/dtypes, no dotted
+module names in the public result).
+
+Verified against all three existing artifact-inference workflows (M82-84):
+a real `image_folder_classification` artifact reports preprocessing present
++ classes present; a real `regression` artifact reports preprocessing
+present + classes absent; a real `segmentation` artifact reports the same.
+Also verified: legacy archives missing the `"preprocessing"`/`"classes"`
+keys entirely (pre-M71/M72 shape), an artifact whose root module type was
+never registered in this process (inspectable, unlike `load_model()`, which
+correctly still raises), a CUDA-recorded archive inspected with no CUDA
+backend present, no `forge.random` state mutation, and a genuine
+`subprocess`-launched fresh-process inspection. No `FORMAT_VERSION` bump, no
+new persisted data -- purely a read of metadata `save_model()` already
+wrote.
+
+Files changed: `forge/serialization/model.py` (`inspect_model()`,
+`ModelInfo`, `ModelSummary`, `PreprocessingInfo`), `forge/serialization/
+__init__.py`, `forge/__init__.py` (re-exports); `forge/data/transforms.py`
+(`__repr__` for `Normalize`/`ToTensor`/`Reshape`/`Flatten`); `forge/cli/
+model.py` (`forge model inspect` delegation); `docs/architecture/
+persistence.md` (new **Model inspection** section). 32 new tests, all CPU
+(`tests/test_model_inspection.py`), including three real-artifact-workflow
+consumers and a genuine `subprocess` fresh-process test. Full suite: 2,390
+collected, 2,389 passed, 1 failed (2,358 + 32 new) -- the same pre-existing
+`test_dataloader_prefetch.py` allocator-measurement flake documented since
+M63, reproduced passing cleanly in isolation, no M85 regression.

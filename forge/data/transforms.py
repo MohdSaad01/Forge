@@ -58,6 +58,9 @@ class ToTensor(Transform):
     def __call__(self, sample: Any) -> Tensor:
         return Tensor(sample, dtype=self.dtype, device=self.device)
 
+    def __repr__(self) -> str:
+        return f"ToTensor(dtype={self.dtype!r}, device={self.device!r})"
+
 
 class Normalize(Transform):
     """Elementwise `(x - mean) / std`, applied to a single Tensor sample.
@@ -90,6 +93,9 @@ class Normalize(Transform):
         inv_std_t = Tensor(self._inv_std, dtype=sample.dtype, device=sample.device)
         return (sample - mean_t) * inv_std_t
 
+    def __repr__(self) -> str:
+        return f"Normalize(mean={self.mean!r}, std={self.std!r})"
+
 
 class Reshape(Transform):
     """Reshape a single Tensor sample to the given shape (see `Tensor.reshape`)."""
@@ -106,6 +112,9 @@ class Reshape(Transform):
             )
         return sample.reshape(*self.shape)
 
+    def __repr__(self) -> str:
+        return f"Reshape(shape={self.shape!r})"
+
 
 class Flatten(Transform):
     """Reshape a single Tensor sample to one dimension."""
@@ -119,6 +128,9 @@ class Flatten(Transform):
         for d in sample.shape:
             size *= d
         return sample.reshape(size)
+
+    def __repr__(self) -> str:
+        return "Flatten()"
 
 
 class Resize(Transform):

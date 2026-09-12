@@ -56,7 +56,12 @@ Public subpackages:
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a
   model, Milestone 71), `load_classes` (a classification model's saved
-  class-name vocabulary, Milestone 72), and the module/optimizer/transform
+  class-name vocabulary, Milestone 72), `inspect_model` (Milestone 85), which
+  returns a structured, read-only `ModelInfo` -- model identification,
+  preprocessing, classes, format/device -- from a saved artifact without
+  reconstructing a live model or requiring CUDA, so a developer holding a
+  `.forge` file can answer "what is this?" before choosing which
+  `predict_*_artifact()` workflow applies; and the module/optimizer/transform
   reconstruction registries -- see `docs/architecture/persistence.md`.
 - `forge.backend` -- device/backend dispatch (`forge.backend.device.Device`);
   `forge.backend.cuda` holds the real CUDA execution backend.
@@ -96,6 +101,8 @@ from .exceptions import (
 )
 from .serialization import (
     Checkpoint,
+    ModelInfo,
+    inspect_model,
     load_checkpoint,
     load_classes,
     load_model,
@@ -150,6 +157,8 @@ __all__ = [
     "load_model",
     "load_preprocessing",
     "load_classes",
+    "inspect_model",
+    "ModelInfo",
     "save_checkpoint",
     "load_checkpoint",
     "Checkpoint",
