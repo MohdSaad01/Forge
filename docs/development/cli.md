@@ -91,17 +91,18 @@ if convenient" behavior; requesting `--device cuda` with no CUDA backend
 available fails with a clear error and a non-zero exit status rather than
 silently falling back to CPU.
 
-## Model prediction (Milestone 72, made task-aware in Milestone 88)
+## Model prediction (Milestone 72, made task-aware in Milestone 88, extended to sequence generation in Milestone 90)
 ```bash
-forge model predict MODEL INPUT [--device {cpu,cuda}] [--output PATH] [--json]
+forge model predict MODEL INPUT [--device {cpu,cuda}] [--output PATH] [--length N] [--json]
 ```
 Predicts from a saved `.forge` artifact using only what the file itself
 already carries -- the developer never has to know or pass which of
-classification/regression/segmentation `MODEL` is. This command reads the
-artifact's own persisted `task` metadata (`forge.save_model(..., task=...)`,
-Milestone 87, via `forge.inspect_model()`) and delegates straight to
-`forge.predict_model()` (Milestone 86), which dispatches to the matching
-task-specific function unchanged. No new inference logic lives here.
+classification/regression/segmentation/sequence `MODEL` is. This command
+reads the artifact's own persisted `task` metadata (`forge.save_model(...,
+task=...)`, Milestone 87, via `forge.inspect_model()`) and delegates
+straight to `forge.predict_model()` (Milestone 86), which dispatches to the
+matching task-specific function unchanged. No new inference logic lives
+here.
 
 **`INPUT`'s shape depends on the artifact's task:**
 
@@ -132,16 +133,45 @@ task-specific function unchanged. No new inference logic lives here.
   ```text
   Predicted mask saved to: mask.png
   ```
+- **sequence** (Milestone 90) -- `INPUT` is literal seed text on the command
+  line, not a file path (there is nothing to decode); tokenized as
+  individual characters (`list(INPUT)`), matching the char-level vocabulary
+  `examples/char_rnn` uses. `--length N` (default 200) is the number of new
+  characters to generate. Prints the full generated text, seed included:
+  ```text
+  Generated: a tensor produces a sample...
+  ```
+  A word-level (or other custom-tokenized) sequence artifact is not
+  representable through this command's char-level convention -- call
+  `forge.predict_sequence_artifact()` directly with a pre-tokenized seed
+  list instead.
 
 `--json` prints a stable, machine-readable result instead of the text above,
 e.g. `{"task": "classification", "class": "dog", "confidence": 0.942}` (or
 `{"task": "regression", "prediction": [[0.8134]]}` /
-`{"task": "segmentation", "output_path": "mask.png"}`).
+`{"task": "segmentation", "output_path": "mask.png"}` /
+`{"task": "sequence", "seed": "a tensor", "generated": "a tensor produces..."}`).
 
 Requires `MODEL` to have been saved with `preprocessing=...` for
 classification/segmentation -- there is nothing to reproduce automatically
 otherwise, and this command never guesses or silently skips preprocessing;
-it fails with a clear error instead.
+it fails with a clear error instead. A sequence artifact has no
+preprocessing concept; it requires `classes=...` instead (the saved token
+vocabulary -- see **Model prediction** limitations below).
+
+**Custom model classes.** `MODEL` must be built entirely from module types
+already registered in the running `forge` CLI process (Forge's built-ins --
+`Linear`, `Conv2d`, `Sequential`, etc. -- are pre-registered; a hand-written
+composite class is not, per `docs/architecture/persistence.md`'s **Known
+limitations**). This is a pre-existing, general persistence requirement, not
+specific to any one task -- it already applied to `model convert` before
+Milestone 90. It does mean the bare CLI cannot `predict`/`convert` a
+custom-class artifact like `examples/char_rnn`'s `CharRNN`: that example's
+`infer.py` imports its own `model.py` (registering `CharRNN` as a side
+effect) before calling the same `forge.predict_model()` this command uses
+internally -- see that script and `examples/resnet`/`examples/autoencoder`'s
+READMEs, which document the identical constraint for their own custom
+classes.
 
 **Legacy artifacts (no `task=`, saved before Milestone 87).** This command
 never falls back to an architecture-based guess to pick a task: doing so
@@ -248,12 +278,16 @@ never silently swallowed.
   distributed-training commands, cloud storage, dataset downloading, job
   scheduling, daemon/server mode, model serving, or REST API -- all
   explicitly out of scope for this milestone.
-- **`model predict` supports exactly the three tasks `forge.predict_model()`
-  does** (Milestone 88): classification, regression, segmentation. There is
-  no generic `forge predict` command spanning every Forge workload
-  (autoencoders, sequence models, ...) -- each of those has a different
-  natural input shape with no single saved-artifact-describable file
-  convention yet.
+- **`model predict` supports exactly the four tasks `forge.predict_model()`
+  does** (Milestones 88/90): classification, regression, segmentation,
+  sequence. There is no generic `forge predict` command spanning every
+  Forge workload (autoencoders, ...) -- those have a different natural
+  input shape with no single saved-artifact-describable file convention yet.
+- **`model predict`'s sequence support is char-level-tokenization-only**
+  (Milestone 90): the CLI splits `INPUT` into individual characters; a
+  vocabulary tokenized a different way (e.g. `examples/word_rnn`'s
+  whole-word vocabulary) needs `forge.predict_sequence_artifact()` called
+  directly with a pre-tokenized seed list -- see **Model prediction** above.
 - **`model predict` requires explicit `task=` metadata** (Milestone 88): a
   legacy artifact saved before Milestone 87 (no `task=`) is not predictable
   through this command -- see **Model prediction** above for why, and

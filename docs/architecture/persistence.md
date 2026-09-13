@@ -599,7 +599,7 @@ forward-compatible (an older Forge build never reads the key at all) and
 backward-compatible (`load_classes()` treats a missing key the same as an
 explicit `null`, returning `None`, not raising). No `FORMAT_VERSION` bump.
 
-## Task metadata (Milestone 87)
+## Task metadata (Milestone 87, extended to `"sequence"` in Milestone 90)
 Milestone 86's `forge.predict_model()` had to guess which of the three
 portable-artifact workflows (classification/regression/segmentation) a
 `.forge` file represented, from `ModelInfo.classes`/`ModelInfo.model.
@@ -609,23 +609,31 @@ above) is `Linear`-terminated exactly like a regression model, with no saved
 `classes` to disambiguate it, so it was misidentified as regression. Task
 metadata closes this gap by letting a caller declare the artifact's intended
 workflow explicitly, rather than Forge inferring it from architecture.
+Milestone 90 added a fourth value, `"sequence"`, when a real char-RNN
+workload found that a stepwise-recurrence model (`model.step()`/`model.
+init_hidden()`, no `forward()`) has no architecture-based guess at all to
+fall back on -- see **Sequence-artifact prediction** below.
 
 ### Public API
 ```python
 forge.save_model(model, path, task="classification")  # optional kwarg, default None
 forge.save_model(model, path, task="regression")
 forge.save_model(model, path, task="segmentation")
+forge.save_model(model, path, task="sequence", classes=vocab)  # requires classes=
 info = forge.inspect_model(path)
-info.task                                              # "classification" / "regression" / "segmentation" / None
+info.task                                              # "classification" / "regression" / "segmentation" / "sequence" / None
 ```
 `task`, when given, must be one of `forge.serialization.model.TASK_TYPES` --
-`"classification"`, `"regression"`, `"segmentation"` -- a small, fixed
-vocabulary matching Forge's three existing portable-artifact inference
-workflows exactly (`predict_artifact()`/`predict_tensor_artifact()`/
-`predict_image_artifact()`, Milestones 82-84), not an open-ended task
-registry. Any other value raises `PersistenceError` before anything is
-written, the same "fail before writing" behavior `preprocessing=`/`classes=`
-already have.
+`"classification"`, `"regression"`, `"segmentation"`, `"sequence"` -- a
+small, fixed vocabulary matching Forge's four existing portable-artifact
+inference workflows exactly (`predict_artifact()`/`predict_tensor_artifact()`/
+`predict_image_artifact()`/`predict_sequence_artifact()`, Milestones
+82-84/90), not an open-ended task registry. Any other value raises
+`PersistenceError` before anything is written, the same "fail before
+writing" behavior `preprocessing=`/`classes=` already have. `"sequence"` is
+a genuinely distinct *prediction problem* (autoregressive next-token
+generation from a seed), not merely "this model uses an RNN/LSTM layer" --
+an RNN-based classifier is still saved with `task="classification"`.
 
 ### What is (and is not) validated
 `task="regression"` or `task="segmentation"` combined with a non-`None`
@@ -635,20 +643,28 @@ what the artifact is. `task="classification"` places **no** such restriction
 on `classes`: `classes=None` remains a real, valid classification-artifact
 state (see **Class-label metadata** above), and this is precisely the state
 `task=` now lets `predict_model()` recognize correctly instead of
-misidentifying as regression. `task` is never validated against `model`'s
-actual architecture (Forge does not introspect a module tree to guess its
-task, matching `classes`'s own "never validated against output width at save
-time" precedent above) -- an inaccurate `task` value is accepted at save time
-and only affects behavior the next time `predict_model()` dispatches on it.
+misidentifying as regression. `task="sequence"` is the opposite of
+regression/segmentation: it *requires* a non-`None` `classes=` (the token
+vocabulary `predict_sequence_artifact()` needs) and raises `PersistenceError`
+if omitted -- there is no way to encode/decode tokens without one. `task` is
+never validated against `model`'s actual architecture (Forge does not
+introspect a module tree to guess its task, matching `classes`'s own "never
+validated against output width at save time" precedent above) -- an
+inaccurate `task` value is accepted at save time and only affects behavior
+the next time `predict_model()` dispatches on it.
 
 ### Relationship to `classes`/`preprocessing`
 `task` is a third, independent sibling metadata entry alongside
 `"preprocessing"`/`"classes"` -- not merged into either. It describes the
 artifact's **intended use** ("this is a classification model"), while
 `classes` describes how to interpret a classification model's *output*
-indices, and `preprocessing` describes how to prepare its *input*. A
-classification artifact may combine all three; a regression or segmentation
-artifact combines `task` with `preprocessing` only (never `classes`).
+indices (or, for `task="sequence"`, the model's token vocabulary -- the same
+"index i names entry i" concept), and `preprocessing` describes how to
+prepare its *input*. A classification artifact may combine all three; a
+regression or segmentation artifact combines `task` with `preprocessing`
+only (never `classes`); a sequence artifact combines `task` with `classes`
+only (no `preprocessing` concept -- there is no file to decode, only a seed
+token sequence the caller has already tokenized).
 
 ### Compatibility: no format-version change
 Exactly the same story as `"preprocessing"` (Milestone 71) and `"classes"`
@@ -687,9 +703,76 @@ artifact, saved before Milestone 87)"` when absent) sourced from `inspect_
 model()`'s own `ModelInfo.task`; `--json` mode adds the same value under
 `"task"` (`null` when absent). `forge model convert` preserves `task` across
 a device conversion, alongside `preprocessing`/`classes`. `forge model
-predict` remains unaffected -- see `forge/cli/model.py`'s own module
-docstring for why it stays a thin wrapper over `predict_artifact()` directly
-rather than routing through `predict_model()`.
+predict` (made task-aware in Milestone 88) reads `info.task` as its sole
+routing signal and delegates straight to `forge.predict_model()` -- see
+`forge/cli/model.py`'s own module docstring, and `docs/development/
+cli.md`'s **Model prediction** section, for the full per-task input/output
+behavior (including `"sequence"`, Milestone 90).
+
+## Sequence-artifact prediction (Milestone 90)
+Milestones 82-84 gave every ordinary `forward(x) -> output` model an
+artifact-level prediction function (`predict_artifact()`/`predict_tensor_
+artifact()`/`predict_image_artifact()`). A stepwise-recurrence model
+(`examples/char_rnn`'s `CharRNN`, and every other sequence example in this
+repo) does not fit that shape: it has no `forward()` at all, only `model.
+step(x, state) -> (logits, state)` and `model.init_hidden(batch_size,
+device=...)` -- the protocol `forge.training.generate_sequence()`
+(Milestone 75) already samples from for an **in-memory** model. Nothing
+connected that protocol to a saved `.forge` file: `predict()`/`predict_
+tensor_artifact()` call `model(x)` directly, which raises `ModuleError`
+(`"... does not implement forward()"`) for a stepwise model, and `save_and_
+verify()`'s own docstring already documented this as explicitly out of its
+scope, for exactly this reason.
+
+### Public API
+```python
+forge.save_model(model, path, classes=vocab.chars, task="sequence")
+generated = forge.predict_sequence_artifact(path, seed=list("a tensor"), length=200)
+"".join(generated)
+```
+`predict_sequence_artifact(path, seed, length, *, device=None, rng=None)`
+composes `load_model()` + `load_classes()` (the saved token vocabulary) +
+`generate_sequence()`, building one-hot `encode`/`decode` closures over the
+vocabulary -- the same closure every stepwise sequence example in this repo
+already hand-wrote identically before this milestone
+(`examples/char_rnn/train.py::_one_hot`). `seed` is a non-empty sequence of
+tokens already split the way the saved vocabulary tokenizes (individual
+characters for a char-level vocabulary; whatever `classes` lists otherwise);
+this function does no tokenization of its own, mirroring `predict_tensor_
+artifact()`'s "input must already be batched" contract. An unknown seed
+token raises `DataError`; an artifact saved with no vocabulary, or whose
+loaded model does not implement `init_hidden`/`step`, raises
+`PersistenceError` with a clear, specific message -- never the raw
+`ModuleError`/`AttributeError` that would otherwise surface deep inside
+`generate_sequence()`.
+
+`forge.predict_model()` dispatches to it when `info.task == "sequence"`,
+via a new optional `length: int | None = None` keyword -- required (raises
+`DataError` if omitted) only for a sequence artifact, ignored for the other
+three. `forge model predict` (CLI) takes the seed as literal text on the
+command line rather than a file (there is no file to decode), tokenized as
+individual characters, plus a `--length` flag -- see `docs/development/
+cli.md`'s **Model prediction** section for the exact behavior and its
+documented char-level-only limitation.
+
+### A related, pre-existing constraint surfaced by this workload
+`classes=` validation used to reject any string that is empty after
+`.strip()` -- correct for a *classification label* (a label of `" "` is
+almost always a mistake), but wrong for a *token vocabulary*: a whitespace
+character (most commonly a space) is one of the most ordinary tokens a text
+vocabulary contains (`examples/char_rnn`'s own `Vocab.chars`, built from any
+corpus with word boundaries, includes `" "`). `_validate_classes()` now
+takes the `task` being saved and only requires "non-empty" (not
+"non-whitespace") for `task="sequence"` -- classification's stricter check
+is unchanged. See `docs/development/m90-sequence-artifact-inference.md` for
+how this was found (the very first artifact this milestone tried to save).
+
+See `docs/development/m90-sequence-artifact-inference.md` for the full
+workload-driven writeup: the workload attempted, the concrete blocker found
+(a real `.forge` artifact silently misidentified as regression, then
+failing with `ModuleError: CharRNN does not implement forward()`), and why
+`classes` (not a new `vocab=` parameter) was reused for the token
+vocabulary.
 
 ## Model inspection (Milestone 85)
 `save_model()`/`load_model()`/`load_preprocessing()`/`load_classes()` give a
@@ -883,13 +966,19 @@ a non-string or empty-string element, duplicate labels, and a malformed
 for a non-2-D output or an output whose class-score dimension does not
 match `len(classes)` (a *model/vocabulary* inconsistency discovered at
 interpretation time, not a persistence-format problem). `save_model(...,
-task=...)`/`inspect_model()` (Milestone 87) raise the same `PersistenceError`
-for: a `task` value not in `TASK_TYPES`, `task="regression"`/
-`task="segmentation"` combined with a non-`None` `classes=`, and a malformed
+task=...)`/`inspect_model()` (Milestone 87, extended in Milestone 90) raise
+the same `PersistenceError` for: a `task` value not in `TASK_TYPES`,
+`task="regression"`/`task="segmentation"` combined with a non-`None`
+`classes=`, `task="sequence"` combined with `classes=None`, and a malformed
 `"task"` metadata entry on load (see **Task metadata** above); `forge.
 predict_model()` raises `PersistenceError` when neither an explicit `task`
 nor the legacy architecture heuristic can determine a supported workflow (see
-`_legacy_infer_workflow()`'s own error message). A mixed-device
+`_legacy_infer_workflow()`'s own error message). `forge.predict_sequence_
+artifact()` (Milestone 90) raises the same `PersistenceError` for an
+artifact with no saved vocabulary or a loaded model missing the `step`/
+`init_hidden` protocol, and `DataError` for an empty seed or a seed token
+outside the saved vocabulary (see **Sequence-artifact prediction** above). A
+mixed-device
 module tree passed to `save_model()` raises
 `ModuleError` (from `Module.device`), not `PersistenceError` -- the same
 error that operation already raises everywhere else in Forge. Low-level
@@ -948,7 +1037,7 @@ never a raw exception surfaced to callers.
   never validated against `model`'s actual output width at save time (see
   **Class-label metadata**'s own note on why) -- only at first
   `interpret_classification()` call.
-- Task metadata (Milestone 87) is a fixed, closed three-value vocabulary
+- Task metadata (Milestones 87/90) is a fixed, closed four-value vocabulary
   (`TASK_TYPES`) -- no generic/open-ended task registry, and no automatic
   detection from a model's architecture for newly saved artifacts (see **Task
   metadata**'s own **Architecture Guardrails**). It is never validated
@@ -958,7 +1047,24 @@ never a raw exception surfaced to callers.
   deliberately omitted) that is a classification model saved with
   `classes=None` remains indistinguishable from a legacy regression artifact
   by `forge.predict_model()`'s fallback heuristic -- this cannot be resolved
-  retroactively without re-saving the artifact with an explicit `task=`.
+  retroactively without re-saving the artifact with an explicit `task=`. A
+  `task="sequence"` artifact has no equivalent legacy fallback at all --
+  there is no architecture-based guess for a stepwise-recurrence model, so
+  it always requires an explicit `task="sequence"` (see
+  **Sequence-artifact prediction**).
+- Sequence-artifact prediction (Milestone 90) is scoped to a saved token
+  vocabulary (`classes`) and one-hot encode/decode over it -- the same shape
+  `examples/char_rnn`/`examples/word_rnn` already use. A vocabulary-free
+  numeric sequence model (forecasting raw floats, not a fixed token
+  vocabulary) is not covered; it would need its own artifact-shape function.
+  `forge model predict`'s CLI tokenizes its seed as individual characters
+  only -- a word-level vocabulary (`examples/word_rnn`) needs `forge.
+  predict_sequence_artifact()` called directly with a pre-tokenized seed
+  list. Neither `examples/word_rnn` nor `examples/long_range_recall` were
+  retrofitted with `task="sequence"`/an `infer.py` by this milestone -- only
+  `examples/char_rnn`, the one workload this milestone actually built and
+  validated end-to-end; the same `save_model(classes=vocab, task="sequence")`
+  + `infer.py` pattern applies to them unchanged, whenever needed.
 - Checkpointing (Milestone 18) is itself further scoped down: only `SGD` and
   `Adam` are built-in registered optimizer types (any other type needs
   `register_optimizer()`, as `register_module()` requires for a custom

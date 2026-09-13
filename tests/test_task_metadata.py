@@ -87,14 +87,20 @@ def _make_image(path: Path, size=(8, 8), fill=100) -> None:
 
 
 def test_task_types_is_the_documented_vocabulary():
-    assert TASK_TYPES == ("classification", "regression", "segmentation")
+    # Milestone 90 added "sequence" as a fourth documented task -- see
+    # docs/architecture/persistence.md's Task metadata section.
+    assert TASK_TYPES == ("classification", "regression", "segmentation", "sequence")
 
 
 @pytest.mark.parametrize("task", list(TASK_TYPES))
 def test_save_model_accepts_each_documented_task(tmp_path, task):
     model = Linear(4, 3)
     path = tmp_path / "model.forge"
-    save_model(model, str(path), task=task)
+    # task="sequence" requires classes= (its token vocabulary) -- see
+    # tests/test_sequence_artifact_prediction.py for its own dedicated
+    # coverage; every other task is validated with no classes= here.
+    classes = ["a", "b", "c"] if task == "sequence" else None
+    save_model(model, str(path), task=task, classes=classes)
     assert inspect_model(str(path)).task == task
 
 

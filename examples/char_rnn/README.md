@@ -28,6 +28,9 @@ exposed.
 - `train.py` -- the runnable example: a hand-written multi-timestep training
   loop (not `Trainer.fit()` -- see that module's docstring for why),
   sampling, and model persistence.
+- `infer.py` (Milestone 90) -- standalone, fresh-process text generation from
+  a saved artifact alone, via `forge.predict_model()`. Independent of
+  `train.py`: no in-memory model, vocabulary, or training state required.
 
 ## Running it
 
@@ -79,6 +82,43 @@ types (`forge/serialization/registry.py`, `model.py`) -- `RNNCell` has no
 non-parameter state (no running statistics, unlike e.g. batch
 normalization), so the existing parameter-only save/load format already
 covers it completely.
+
+## Portable artifact + fresh-process generation (Milestone 90)
+
+`save_model(model, str(model_path), classes=vocab.chars, task="sequence")`
+saves the trained character vocabulary alongside the model (`classes`
+doubles as the vocabulary: index i -> `vocab.chars[i]`) and declares this a
+`task="sequence"` artifact, so `forge.predict_model()`/`forge model predict`
+(previously classification/regression/segmentation-only) can generate text
+from the artifact alone, with no access to `train.py`'s in-memory `Vocab` or
+model:
+
+```bash
+python -m examples.char_rnn.infer --model examples/char_rnn/artifacts/char_rnn_model.forge --seed "a tensor" --length 200
+```
+
+`infer.py` imports `examples.char_rnn.model` purely for its
+`register_module()` side effect (`CharRNN` is a custom composite `Module`,
+like `examples/resnet`/`examples/autoencoder`'s own custom classes) before
+calling the same `forge.predict_model()` the CLI uses internally. The bare
+`forge model predict`/`forge model convert` CLI cannot load a `CharRNN`
+artifact directly -- it never imports example-specific model modules, so
+this class is never registered in that process -- exactly the same
+pre-existing, general limitation (`docs/architecture/persistence.md`'s
+**Known limitations**) that already keeps `resnet`/`autoencoder`'s own
+READMEs from documenting bare-CLI `convert`/`predict`, only `inspect`
+(metadata-only, no reconstruction):
+
+```bash
+python -m forge model inspect examples/char_rnn/artifacts/char_rnn_model.forge
+```
+
+See `docs/development/m90-sequence-artifact-inference.md` for why generation
+also required a new artifact-level function (`forge.predict_sequence_
+artifact()`) rather than reusing `predict_tensor_artifact()`: `CharRNN`
+(like every stepwise-recurrence model in this repo) never implements
+`forward()`, only `step()`/`init_hidden()`, so `predict()`'s `model(x)` call
+raises `ModuleError` for it.
 
 ## Determinism
 

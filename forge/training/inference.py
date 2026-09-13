@@ -73,13 +73,25 @@ a scalar. See that function's own docstring for the one small, already-
 established output conversion it applies and why it is not a generalized
 "any image-to-image model" function.
 
-`predict_model()` (Milestone 86) is the single entry point over all three:
-a developer holding a `.forge` file no longer has to already know which of
-the three functions above applies -- `predict_model(path, input_data)`
-reads the artifact's own persisted metadata (via `forge.inspect_model()`,
-Milestone 85) to pick the one supported workflow it describes, then
-delegates unchanged to the matching function above. See its own docstring
-for exactly which persisted signal decides this, and why.
+`predict_sequence_artifact()` (Milestone 90) is the fourth artifact shape: a
+stepwise-recurrence sequence model (`examples/char_rnn`, whose forward pass
+is `model.step(x, state)`, not `model.forward(x)`), whose input is a seed
+sequence of vocabulary tokens and whose output is an autoregressively
+generated continuation, not a single label/number/mask. Composes
+`load_model()` + `load_classes()` (the artifact's persisted token vocabulary)
++ `generate_sequence()` (Milestone 75) rather than `predict()` -- `predict()`
+calls `model(x)` directly, which raises for a model with no `forward()`; see
+that function's own docstring for why this needed a dedicated artifact-level
+function rather than reusing `predict_tensor_artifact()`.
+
+`predict_model()` (Milestone 86, extended in Milestone 90) is the single
+entry point over all four: a developer holding a `.forge` file no longer has
+to already know which of the four functions above applies --
+`predict_model(path, input_data)` reads the artifact's own persisted metadata
+(via `forge.inspect_model()`, Milestone 85) to pick the one supported
+workflow it describes, then delegates unchanged to the matching function
+above. See its own docstring for exactly which persisted signal decides
+this, and why.
 """
 
 from __future__ import annotations
@@ -552,6 +564,123 @@ def predict_image_artifact(
     return Tensor(mask[0], device="cpu")
 
 
+def predict_sequence_artifact(
+    path: str,
+    seed: "Sequence[str]",
+    length: int,
+    *,
+    device: "str | Device | None" = None,
+    rng: "np.random.Generator | None" = None,
+) -> list:
+    """Autoregressively generate tokens from a portable stepwise-recurrence `.forge` artifact (Milestone 90).
+
+    ```python
+    generated = forge.predict_sequence_artifact("char_rnn_model.forge", seed=list("a tensor"), length=200)
+    print("".join(generated))
+    ```
+
+    The fourth artifact-shape-specific function alongside `predict_artifact()`/
+    `predict_tensor_artifact()`/`predict_image_artifact()` (Milestones 82-84):
+    `examples/char_rnn`/`examples/word_rnn`/`examples/long_range_recall` are
+    stepwise-recurrence models (`model.init_hidden(batch_size, device=...)` +
+    `model.step(x, state) -> (logits, state)`, the same duck-typed protocol
+    `generate_sequence()` (Milestone 75) already samples from) rather than
+    ordinary `forward(x) -> output` models -- `predict()`/`predict_tensor_
+    artifact()` call `model(x)` directly, which raises `ModuleError` for one of
+    these (they never implement `forward()`; only `step()`), and `save_and_
+    verify()`'s own docstring already documents this as out of its scope for
+    exactly this reason. `predict_sequence_artifact()` is the missing artifact-
+    level counterpart: it loads the model and its saved vocabulary (`classes=`,
+    required at save time for `task="sequence"` -- see `save_model()`'s own
+    docstring for why this reuses `classes` rather than a separate `vocab=`),
+    builds one-hot `encode`/`decode` closures over that vocabulary, and calls
+    `generate_sequence()` unchanged.
+
+    `seed` is a non-empty sequence of tokens already split the way the saved
+    vocabulary tokenizes (individual characters for a char-level vocabulary
+    like `examples/char_rnn`'s; whatever `classes` actually lists otherwise --
+    e.g. whole words for a word-level vocabulary like `examples/word_rnn`'s).
+    This function does no tokenization of its own: exactly like
+    `predict_tensor_artifact()`'s "input must already be batched" contract,
+    the caller is responsible for splitting a raw string into the artifact's
+    token unit before calling. Every token in `seed` must already be present
+    in the saved vocabulary; an unknown token raises `forge.DataError` naming
+    it, rather than failing deep inside a `KeyError` during encoding.
+
+    `length` is the number of *new* tokens to sample after priming on `seed`
+    -- passed straight through to `generate_sequence()`, whose own docstring
+    documents the sampling behavior (draws from the model's own softmax
+    output distribution via `rng`, not greedy argmax) and the returned list's
+    shape (`list(seed)` followed by `length` newly generated tokens).
+
+    `device`/`rng` are passed straight through to `load_model()`/
+    `generate_sequence()` respectively, with the same defaults.
+
+    Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
+    artifact, for an artifact saved with no vocabulary (`classes=None` --
+    every valid `task="sequence"` artifact has one; see `save_model()`), and
+    for a loaded model that does not implement the stepwise-recurrence
+    protocol (`init_hidden`/`step`) this function requires -- checked
+    explicitly here, before calling `generate_sequence()`, specifically so
+    that failure is this clear message rather than a raw `AttributeError`
+    from deep inside the sampling loop. Raises `forge.DataError` for an empty
+    `seed` or a `seed` token outside the saved vocabulary.
+
+    **Scope.** Composes exactly `load_model()` + `load_classes()` +
+    `generate_sequence()`, plus the one-hot encode/decode closures every
+    stepwise sequence example in this repo already hand-wrote identically
+    (`examples/char_rnn/train.py::_one_hot`, `examples/word_rnn/train.py`'s
+    equivalent) -- no new artifact format, tokenization convention, or
+    model-serving machinery. A vocabulary-free numeric sequence model (e.g.
+    forecasting raw floats rather than a fixed token vocabulary) is not
+    covered by this function; it would need its own artifact-shape function,
+    following the same task-specific-boundary discipline `predict_artifact()`/
+    `predict_tensor_artifact()`/`predict_image_artifact()` already established.
+    """
+    from ..serialization.model import load_classes as _load_classes
+    from ..serialization.model import load_model as _load_model
+
+    if not isinstance(seed, (list, tuple)) or not seed:
+        raise DataError("predict_sequence_artifact() requires seed to be a non-empty sequence of tokens.")
+
+    vocab = _load_classes(path)
+    if vocab is None:
+        raise PersistenceError(
+            f"'{path}' was saved with no vocabulary (see forge.save_model(..., classes=..., "
+            "task='sequence')) -- predict_sequence_artifact() has no way to encode/decode tokens "
+            "for this model."
+        )
+
+    token_to_index = {token: i for i, token in enumerate(vocab)}
+    unknown = [token for token in seed if token not in token_to_index]
+    if unknown:
+        raise DataError(
+            f"predict_sequence_artifact() seed contains token(s) not in '{path}''s saved "
+            f"vocabulary: {unknown!r}."
+        )
+
+    model = _load_model(path, device=device.type if isinstance(device, Device) else device)
+    if not hasattr(model, "init_hidden") or not hasattr(model, "step"):
+        raise PersistenceError(
+            f"'{path}' does not implement the stepwise-recurrence protocol "
+            "(model.init_hidden(batch_size, device=...) and model.step(x, state)) that "
+            "predict_sequence_artifact() requires -- see forge.training.generate_sequence()'s "
+            "own docstring for the full protocol."
+        )
+
+    vocab_size = len(vocab)
+
+    def _encode(token: str) -> Tensor:
+        one_hot = np.zeros((1, vocab_size), dtype=np.float32)
+        one_hot[0, token_to_index[token]] = 1.0
+        return Tensor(one_hot)
+
+    def _decode(index: int) -> str:
+        return vocab[index]
+
+    return generate_sequence(model, seed=list(seed), encode=_encode, decode=_decode, length=length, rng=rng)
+
+
 def _legacy_infer_workflow(info: "Any") -> str:
     """The pre-Milestone-87 architecture-based guess, kept **only** as an
     isolated fallback for artifacts with no explicit `"task"` metadata.
@@ -650,8 +779,9 @@ def predict_model(
     input_data: Any,
     *,
     device: "str | Device | None" = None,
-) -> "ClassificationPrediction | int | Tensor":
-    """Predict from any supported portable `.forge` artifact, in one call, with no manual workflow choice (Milestones 86/87).
+    length: "int | None" = None,
+) -> "ClassificationPrediction | int | Tensor | list":
+    """Predict from any supported portable `.forge` artifact, in one call, with no manual workflow choice (Milestones 86/87/90).
 
     ```python
     result = forge.predict_model("model.forge", input_data)
@@ -659,49 +789,60 @@ def predict_model(
 
     Before this function, a developer holding a `.forge` file first had to
     call `forge.inspect_model()` (Milestone 85) -- or already know, out of
-    band -- whether it was a classification, regression, or segmentation
-    artifact, in order to pick the right one of `predict_artifact()`/
-    `predict_tensor_artifact()`/`predict_image_artifact()` (Milestones
-    82-84). `predict_model()` closes that gap: it inspects `path` itself via
-    `inspect_model()`, determines which of the three workflows the artifact's
-    own persisted metadata supports (see `_determine_workflow()` above for
-    the exact signal and why it is reliable), and delegates to that function
-    unchanged -- returning exactly what it would have returned. This function
-    adds no new inference logic, artifact format, or input-conversion
-    machinery of its own.
+    band -- whether it was a classification, regression, segmentation, or
+    sequence artifact, in order to pick the right one of `predict_artifact()`/
+    `predict_tensor_artifact()`/`predict_image_artifact()`/
+    `predict_sequence_artifact()` (Milestones 82-84/90). `predict_model()`
+    closes that gap: it inspects `path` itself via `inspect_model()`,
+    determines which of the four workflows the artifact's own persisted
+    metadata supports (see `_determine_workflow()` above for the exact signal
+    and why it is reliable), and delegates to that function unchanged --
+    returning exactly what it would have returned. This function adds no new
+    inference logic, artifact format, or input-conversion machinery of its
+    own.
 
     `input_data` is whatever the *selected* workflow's own function expects
-    -- a `str`/`os.PathLike` image path for classification or segmentation,
-    or a `Tensor`/NumPy array/nested list for regression -- and is validated
-    exactly as strictly as calling that function directly would be: an
-    incompatible input still raises `forge.DataError` with that function's
-    own message (e.g. a `Tensor` given to a classification artifact raises
-    the same error `predict_artifact()` itself raises for a non-path
-    `image`). `predict_model()` deliberately does not re-validate `input_data`
-    itself -- the artifact's workflow, not the input's type, decides
-    dispatch (see the module's own Milestone 86 paragraph): input type is
-    only ever used, by the delegated function, to check compatibility with
-    the workflow the artifact's metadata already selected.
+    -- a `str`/`os.PathLike` image path for classification or segmentation, a
+    `Tensor`/NumPy array/nested list for regression, or a non-empty sequence
+    of vocabulary tokens for sequence generation (`predict_sequence_
+    artifact()`'s own `seed`) -- and is validated exactly as strictly as
+    calling that function directly would be: an incompatible input still
+    raises `forge.DataError` with that function's own message (e.g. a
+    `Tensor` given to a classification artifact raises the same error
+    `predict_artifact()` itself raises for a non-path `image`).
+    `predict_model()` deliberately does not re-validate `input_data` itself
+    -- the artifact's workflow, not the input's type, decides dispatch (see
+    the module's own Milestone 86 paragraph): input type is only ever used,
+    by the delegated function, to check compatibility with the workflow the
+    artifact's metadata already selected.
+
+    `length` (Milestone 90) is required, and used, only for a `task="sequence"`
+    artifact -- the number of new tokens to generate, passed straight through
+    to `predict_sequence_artifact()`. Omitting it for a sequence artifact
+    raises `forge.DataError` immediately (there is no sensible default number
+    of tokens to generate); it is silently ignored for the other three
+    workflows, exactly as `device` already is when a workflow doesn't need it.
 
     `device` is passed through unchanged to the selected function --
     defaults to the device recorded in the archive, exactly like
-    `predict_artifact()`/`predict_tensor_artifact()`/`predict_image_artifact()`
-    themselves.
+    `predict_artifact()`/`predict_tensor_artifact()`/`predict_image_artifact()`/
+    `predict_sequence_artifact()` themselves.
 
     Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
     artifact (the same conditions `inspect_model()` itself raises), and also
     `forge.PersistenceError` when the artifact's metadata does not reliably
-    identify one of the three supported workflows (see
+    identify one of the four supported workflows (see
     `_determine_workflow()`) -- this is a deliberate refusal to guess, not a
     bug: an unsupported artifact should fail clearly rather than silently
     produce a result under the wrong interpretation.
 
-    **Scope.** Supports exactly the three workflows `predict_artifact()`/
-    `predict_tensor_artifact()`/`predict_image_artifact()` already implement
-    -- no generic task registry, no model-architecture discovery beyond
-    `inspect_model()`'s existing `ModelSummary.module_types`, no automatic
-    input conversion between shapes. A future artifact shape none of the
-    three functions covers stays unsupported here too, until Forge has one.
+    **Scope.** Supports exactly the four workflows `predict_artifact()`/
+    `predict_tensor_artifact()`/`predict_image_artifact()`/
+    `predict_sequence_artifact()` already implement -- no generic task
+    registry, no model-architecture discovery beyond `inspect_model()`'s
+    existing `ModelSummary.module_types`, no automatic input conversion
+    between shapes. A future artifact shape none of the four functions covers
+    stays unsupported here too, until Forge has one.
     """
     from ..serialization.model import inspect_model as _inspect_model
 
@@ -712,7 +853,15 @@ def predict_model(
         return predict_artifact(path, input_data, device=device)
     if workflow == "regression":
         return predict_tensor_artifact(path, input_data, device=device)
-    return predict_image_artifact(path, input_data, device=device)
+    if workflow == "segmentation":
+        return predict_image_artifact(path, input_data, device=device)
+
+    if length is None:
+        raise DataError(
+            "predict_model() requires length= for a sequence artifact -- the number of new "
+            "tokens to generate (see forge.predict_sequence_artifact()'s own length parameter)."
+        )
+    return predict_sequence_artifact(path, input_data, length, device=device)
 
 
 def generate_sequence(
@@ -909,5 +1058,6 @@ def interpret_classification(output: Tensor, classes: "Sequence[str]") -> "list[
 
 __all__ = [
     "predict", "save_and_verify", "predict_artifact", "predict_tensor_artifact", "predict_image_artifact",
-    "predict_model", "generate_sequence", "interpret_classification", "ClassificationPrediction",
+    "predict_sequence_artifact", "predict_model", "generate_sequence", "interpret_classification",
+    "ClassificationPrediction",
 ]

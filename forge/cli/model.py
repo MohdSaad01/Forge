@@ -55,6 +55,17 @@ numeric data, parsed here and handed to `predict_tensor_artifact()` as a
 to save the predicted mask via `forge.data.save_image()`. See
 `docs/development/cli.md` and `docs/development/
 m88-unified-artifact-prediction-cli.md` for the full command reference.
+
+`sequence` (Milestone 90) takes the seed as literal text on the command
+line, not a file -- unlike the other three tasks, there is no file to
+decode; `--length` (default 200) controls how many new tokens to generate.
+This command tokenizes the seed as individual characters (`list(seed)`),
+matching the char-level vocabulary convention `examples/char_rnn` uses --
+the one real sequence workload this milestone built end-to-end. A
+different tokenization convention (e.g. `examples/word_rnn`'s whole-word
+vocabulary) is not something this command can infer from the artifact
+alone; call `forge.predict_sequence_artifact()` directly with a
+pre-tokenized seed list for that case.
 """
 
 from __future__ import annotations
@@ -100,7 +111,7 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
     predict_parser.add_argument(
         "input",
         help="Input for the prediction: an image file for classification/segmentation, "
-        "or a JSON file of numeric data for regression",
+        "a JSON file of numeric data for regression, or literal seed text for sequence generation",
     )
     predict_parser.add_argument(
         "--device", default=None, choices=["cpu", "cuda"],
@@ -108,6 +119,10 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
     )
     predict_parser.add_argument(
         "--output", default=None, help="Where to save the predicted mask (required for segmentation artifacts)"
+    )
+    predict_parser.add_argument(
+        "--length", type=int, default=200,
+        help="Number of new tokens to generate (sequence artifacts only; default 200)",
     )
     predict_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of text")
     predict_parser.set_defaults(func=cmd_predict)
@@ -272,8 +287,6 @@ def _print_classification_result(result: "ClassificationPrediction | int", as_js
 def cmd_predict(args: argparse.Namespace) -> int:
     if not os.path.isfile(args.model):
         raise CLIError(f"artifact not found: {args.model}")
-    if not os.path.isfile(args.input):
-        raise CLIError(f"input file not found: {args.input}")
 
     # Milestone 88: the artifact's own persisted task metadata is the sole
     # routing signal -- see this module's own docstring for why a missing
@@ -285,6 +298,24 @@ def cmd_predict(args: argparse.Namespace) -> int:
             "artifact does not declare a task.\n"
             "Use the task-specific prediction API or resave the model with task metadata."
         )
+
+    if task == "sequence":
+        # Milestone 90: unlike the other three tasks, the input is literal
+        # seed text on the command line, not a file -- see this module's own
+        # docstring for the char-level tokenization convention this applies.
+        seed_tokens = list(args.input)
+        if not seed_tokens:
+            raise CLIError("sequence prediction requires a non-empty seed string.")
+        generated = predict_model(args.model, seed_tokens, device=args.device, length=args.length)
+        text = "".join(generated)
+        if args.json:
+            print(json.dumps({"task": "sequence", "seed": args.input, "generated": text}, indent=2))
+        else:
+            print(f"Generated: {text}")
+        return 0
+
+    if not os.path.isfile(args.input):
+        raise CLIError(f"input file not found: {args.input}")
 
     if task == "classification":
         result = predict_model(args.model, args.input, device=args.device)

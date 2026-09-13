@@ -45,14 +45,20 @@ from .transforms import deserialize_transform, serialize_transform
 
 FORMAT_VERSION = 2
 
-# Milestone 87: the fixed, small vocabulary of prediction workflows a saved
+# Milestone 87 (classification/regression/segmentation) + Milestone 90
+# (sequence): the fixed, small vocabulary of prediction workflows a saved
 # artifact can explicitly declare -- see save_model()'s `task=` parameter and
 # `docs/architecture/persistence.md`'s **Task metadata** section. Each name
-# corresponds directly to one of Forge's three existing artifact inference
+# corresponds directly to one of Forge's four existing artifact inference
 # workflows (`forge.predict_artifact()`/`predict_tensor_artifact()`/
-# `predict_image_artifact()`, Milestones 82-84) -- not a generic/open-ended
-# task registry.
-TASK_TYPES = ("classification", "regression", "segmentation")
+# `predict_image_artifact()`/`predict_sequence_artifact()`, Milestones
+# 82-84/90) -- not a generic/open-ended task registry. `"sequence"` is a
+# genuinely distinct *prediction problem* from the other three (autoregressive
+# next-token generation from a seed, over a stepwise `model.step()`/
+# `model.init_hidden()` recurrence -- see `predict_sequence_artifact()`), not
+# merely "uses an RNN/LSTM layer" -- an RNN-based classifier would still be
+# saved with `task="classification"`.
+TASK_TYPES = ("classification", "regression", "segmentation", "sequence")
 
 
 def _validate_task(task: "str | None", classes: "list[str] | None") -> None:
@@ -65,11 +71,18 @@ def _validate_task(task: "str | None", classes: "list[str] | None") -> None:
     if task in ("regression", "segmentation") and classes is not None:
         raise PersistenceError(
             f"save_model() task={task!r} is incompatible with classes= -- {task} artifacts have "
-            f"no class vocabulary (only task='classification' may be saved with classes=)."
+            f"no class vocabulary (only task='classification'/'sequence' may be saved with classes=)."
+        )
+    if task == "sequence" and classes is None:
+        raise PersistenceError(
+            "save_model() task='sequence' requires classes= -- a sequence artifact's vocabulary "
+            "(index i -> classes[i] token), the same list `predict_sequence_artifact()` needs to "
+            "encode/decode tokens. There is no automatic way to derive a token vocabulary from "
+            "model architecture alone."
         )
 
 
-def _validate_classes(classes: "list[str] | None") -> None:
+def _validate_classes(classes: "list[str] | None", task: "str | None" = None) -> None:
     if classes is None:
         return
     if not isinstance(classes, list) or not classes:
@@ -77,9 +90,19 @@ def _validate_classes(classes: "list[str] | None") -> None:
             f"save_model() classes= must be a non-empty list of strings, got {classes!r}."
         )
     for label in classes:
-        if not isinstance(label, str) or not label.strip():
+        # A classification label that is empty or all whitespace is almost
+        # certainly a mistake (`label.strip()` catches both) -- but for
+        # task="sequence", `classes` is a *token vocabulary*, not a set of
+        # human-readable names, and a whitespace character (a space, most
+        # commonly) is one of the most ordinary tokens a text vocabulary can
+        # contain (discovered via this milestone's own char-RNN artifact:
+        # `Vocab.chars` for any real corpus with word boundaries includes
+        # `" "`). Only the genuinely empty string (no token content at all)
+        # is rejected for a sequence vocabulary.
+        if not isinstance(label, str) or (label == "" if task == "sequence" else not label.strip()):
+            what = "tokens" if task == "sequence" else "strings"
             raise PersistenceError(
-                f"save_model() classes= must contain only non-empty strings, got {label!r} "
+                f"save_model() classes= must contain only non-empty {what}, got {label!r} "
                 f"in {classes!r}."
             )
     if len(set(classes)) != len(classes):
@@ -132,45 +155,60 @@ def save_model(
     equivalent in this respect and remain loadable by `load_model()`
     unchanged -- see `load_preprocessing()`.
 
-    `classes` (Milestone 72) optionally records the ordered list of
-    human-readable class names a classification model's output indices
-    refer to -- `output[..., i]` means `classes[i]`, matching
+    `classes` (Milestone 72; reused for `task="sequence"` in Milestone 90)
+    optionally records the ordered list of human-readable strings a model's
+    output indices refer to -- `output[..., i]` means `classes[i]`, matching
     `forge.data.ImageFolder.classes`'s own index convention exactly, so a
-    caller can pass `some_image_folder.classes` directly. Must be a
-    non-empty list of non-empty, unique strings; anything else raises
-    `PersistenceError` before anything is written. Stored as a plain
+    caller can pass `some_image_folder.classes` directly. For a
+    `task="sequence"` artifact, this same index-to-string list *is* the
+    model's token vocabulary (e.g. `Vocab.chars` in `examples/char_rnn`) --
+    the concept ("index i names token/class i") is identical, so Milestone 90
+    reused `classes` rather than inventing a parallel `vocab=` parameter. Must
+    be a non-empty list of unique strings; anything else raises
+    `PersistenceError` before anything is written. For `task="classification"`
+    (or no task), each string must also be non-whitespace (a label of `" "`
+    is almost always a mistake); `task="sequence"` relaxes this to "non-empty"
+    only, since a whitespace character is an ordinary, common vocabulary
+    token (e.g. `" "` in `examples/char_rnn`'s vocabulary) rather than a
+    human-readable label. Stored as a plain
     JSON-safe list, a sibling metadata entry alongside `"preprocessing"` --
     never inferred from `model`'s architecture (Forge does not introspect a
     module tree to guess an output-class count), and never merged into
     `preprocessing` (a class vocabulary is not "how to prepare an input",
-    it is how to interpret an output). See `load_classes()` and
-    `forge.training.interpret_classification()`.
+    it is how to interpret an output). See `load_classes()`,
+    `forge.training.interpret_classification()`, and
+    `forge.training.predict_sequence_artifact()`.
 
-    `task` (Milestone 87) optionally declares which of Forge's three
-    portable-artifact inference workflows this file represents --
-    `"classification"`, `"regression"`, or `"segmentation"`
-    (`forge.serialization.model.TASK_TYPES`) -- so `forge.predict_model()`
-    can dispatch to the right one of `predict_artifact()`/
-    `predict_tensor_artifact()`/`predict_image_artifact()` reliably, from the
-    artifact's own metadata, rather than guessing from its module
-    architecture (see `docs/architecture/persistence.md`'s **Task metadata**
-    section for why the pre-Milestone-87 architecture-based guess was
-    unreliable). Any other string raises `PersistenceError` before anything
-    is written -- this is a small, fixed vocabulary matching Forge's three
-    existing inference workflows exactly, not an open-ended task registry.
+    `task` (Milestone 87; extended in Milestone 90) optionally declares which
+    of Forge's four portable-artifact inference workflows this file
+    represents -- `"classification"`, `"regression"`, `"segmentation"`, or
+    `"sequence"` (`forge.serialization.model.TASK_TYPES`) -- so `forge.
+    predict_model()` can dispatch to the right one of `predict_artifact()`/
+    `predict_tensor_artifact()`/`predict_image_artifact()`/
+    `predict_sequence_artifact()` reliably, from the artifact's own metadata,
+    rather than guessing from its module architecture (see
+    `docs/architecture/persistence.md`'s **Task metadata** section for why
+    the pre-Milestone-87 architecture-based guess was unreliable, and why
+    Milestone 90's stepwise-recurrence models cannot use that guess at all --
+    they have no `forward()`). Any other string raises `PersistenceError`
+    before anything is written -- this is a small, fixed vocabulary matching
+    Forge's four existing inference workflows exactly, not an open-ended task
+    registry.
 
     `task="regression"` or `task="segmentation"` combined with a non-`None`
     `classes=` raises `PersistenceError` immediately: neither workflow has a
     class-vocabulary concept (see `predict_tensor_artifact()`/
     `predict_image_artifact()`'s own docstrings), so saving both together
     would describe an artifact whose two pieces of metadata disagree about
-    what it is. `task="classification"` places no such restriction on
-    `classes` -- `classes=None` remains a real, valid classification-artifact
-    state (see `predict_artifact()`'s own docstring), and `task=` is what now
-    lets `predict_model()` recognize that state correctly instead of
-    misidentifying it as regression (the M86 ambiguity `docs/development/
-    m86-unified-artifact-prediction.md` documented and this milestone
-    closes).
+    what it is. `task="sequence"` is the opposite: it *requires* `classes=`
+    (the token vocabulary `predict_sequence_artifact()` needs) and raises
+    `PersistenceError` if omitted. `task="classification"` places no such
+    restriction on `classes` -- `classes=None` remains a real, valid
+    classification-artifact state (see `predict_artifact()`'s own docstring),
+    and `task=` is what now lets `predict_model()` recognize that state
+    correctly instead of misidentifying it as regression (the M86 ambiguity
+    `docs/development/m86-unified-artifact-prediction.md` documented and
+    Milestone 87 closes).
 
     Omitting `task` (the default) writes no `"task"` key at all -- exactly
     like `preprocessing=`/`classes=`'s own optional-key convention -- so
@@ -183,7 +221,7 @@ def save_model(
     """
     if not isinstance(model, Module):
         raise PersistenceError(f"save_model() requires a forge.nn.Module, got {type(model).__name__}.")
-    _validate_classes(classes)
+    _validate_classes(classes, task)
     _validate_task(task, classes)
 
     model_device = model.device

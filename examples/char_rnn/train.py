@@ -41,6 +41,43 @@ below is the entire "workaround."
 python -m examples.char_rnn.train --epochs 30 --device cpu
 python -m examples.char_rnn.train --epochs 30 --device cuda
 ```
+
+## Portable artifact + fresh-process generation (Milestone 90)
+
+Until Milestone 90, this script's `save_model(model, str(model_path))` call
+wrote a portable weights file, but nothing else in Forge could *use* it:
+`forge.predict_model()`/`forge model predict` (Milestones 86-88) only
+understood classification/regression/segmentation artifacts, and
+misidentified this one as regression (both are `Linear`-terminated) before
+failing with `ModuleError: CharRNN does not implement forward()` deep inside
+-- `CharRNN` only implements the stepwise `step()`/`init_hidden()` protocol
+`generate_sequence()` uses, not `forward()`. There was also no standalone
+`infer.py`, unlike every other example with a real artifact-based inference
+story -- generation only ever happened inline in this same training process.
+
+`save_model(..., classes=vocab.chars, task="sequence")` below closes that
+gap: `classes` doubles as the saved token vocabulary (index i -> `vocab.
+chars[i]`, the same index convention classification's `classes=` already
+uses), and `task="sequence"` lets `forge.predict_model()`/`forge model
+predict` dispatch to the new `forge.predict_sequence_artifact()` reliably.
+See `examples/char_rnn/infer.py` for the resulting fresh-process workflow,
+and `docs/development/m90-sequence-artifact-inference.md` for the full
+writeup.
+
+**Note on the bare `forge model predict` CLI.** `CharRNN` is a custom
+composite `Module` (like `examples/resnet`/`examples/autoencoder`'s own
+custom classes), which must be registered with `register_module()` before
+`load_model()` can reconstruct it -- a pre-existing, general persistence
+requirement (`docs/architecture/persistence.md`'s **Known limitations**),
+not something Milestone 90 introduces. The bare `forge` CLI process never
+imports example-specific model modules, so `forge model predict`/`forge
+model convert` cannot load a `CharRNN` artifact directly -- exactly the
+same reason `examples/resnet`/`examples/autoencoder`'s own READMEs only
+document `forge model inspect` (metadata-only, no reconstruction) via the
+bare CLI, never `convert`/`predict`. `examples/char_rnn/infer.py` is the
+real, working fresh-process equivalent: it imports `examples.char_rnn.model`
+for its registration side effect, then calls the same `forge.predict_model()`
+the CLI itself calls internally.
 """
 
 from __future__ import annotations
@@ -197,7 +234,7 @@ def main(argv=None) -> None:
     print("\nSample generation (seed 'a tensor'):")
     print(generate(model, vocab, seed_text="a tensor", length=200, device=args.device, rng=sample_rng))
 
-    save_model(model, str(model_path))
+    save_model(model, str(model_path), classes=vocab.chars, task="sequence")
     print(f"\nSaved model -> {model_path}")
 
     # Model-persistence round trip: load fresh and confirm predictions match,
@@ -220,6 +257,8 @@ def main(argv=None) -> None:
 
     print("\nInspect the generated artifact with the M19 CLI:")
     print(f"  python -m forge model inspect {model_path}")
+    print("\nGenerate from the saved artifact alone, in a fresh process (Milestone 90):")
+    print(f"  python -m examples.char_rnn.infer --model {model_path} --seed \"a tensor\" --length 200")
 
 
 if __name__ == "__main__":

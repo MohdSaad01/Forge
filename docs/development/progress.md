@@ -5389,3 +5389,67 @@ fixes are internal to `forge/cli/`. 2,478 collected (2 new tests over M88's
 ~M63, reproduced passing cleanly in isolation, no M89 regression.
 
 Full report: `docs/development/m89-external-developer-workflow-validation.md`.
+
+### M90 — Sequence-artifact inference: `forge.predict_sequence_artifact()`
+Workload-driven milestone: selected a genuinely new, materially different
+workload (sequence generation, using the existing `examples/char_rnn`
+character-level RNN) and attempted it with existing Forge APIs before
+writing any framework code. **Blocker found and reproduced against a real
+retrained artifact**: `forge.predict_model()` silently misidentified a
+`CharRNN` artifact as regression -- `_legacy_infer_workflow()`'s `"Linear"
+in module_types -> regression` rule also matches `CharRNN` (`RNNCell` is
+itself built from two `Linear` layers) -- then failed deep inside
+`predict()`'s `model(x)` call with `ModuleError: CharRNN does not implement
+forward()`, since a stepwise-recurrence model (`model.step()`/`model.
+init_hidden()`, the protocol `generate_sequence()` -- M75 -- already
+samples from) has no `forward()` at all. No `infer.py` existed for any of
+the three stepwise sequence examples (`char_rnn`/`word_rnn`/`long_range_
+recall`) either -- generation only ever happened inline in `train.py`,
+never from a saved artifact alone. Fixed at the root: added `"sequence"` as
+a fourth `TASK_TYPES` value (`forge/serialization/model.py`) -- a genuinely
+distinct *prediction problem* (autoregressive generation from a seed), not
+merely "uses an RNN layer" -- which, unlike regression/segmentation,
+*requires* `classes=` (reusing the existing class-vocabulary metadata slot
+as the model's token vocabulary, index i -> `classes[i]`, rather than a new
+parallel `vocab=` parameter). Added `forge.predict_sequence_artifact(path,
+seed, length, *, device=None, rng=None)` (`forge/training/inference.py`),
+the fourth artifact-shape function alongside `predict_artifact()`/
+`predict_tensor_artifact()`/`predict_image_artifact()`: composes
+`load_model()` + `load_classes()` + `generate_sequence()` (unchanged) with
+one-hot encode/decode closures built from the saved vocabulary, validating
+seed non-emptiness, every seed token's vocabulary membership, saved-
+vocabulary presence, and the loaded model's `init_hidden`/`step` protocol
+before ever calling into the sampling loop. `forge.predict_model()` gained
+an optional `length=` keyword (required only for a sequence artifact, a
+no-op for the other three, fully backward-compatible) and now dispatches to
+it; `forge model predict` gained a `--length` flag and a sequence branch
+whose `INPUT` is literal seed text (not a file -- the CLI's file-existence
+check is skipped for this task), tokenized as individual characters.
+**A second, smaller finding surfaced while implementing the fix**:
+`classes=` validation rejected any string that is empty after `.strip()`
+-- correct for a classification label, but wrong for a token vocabulary,
+where a whitespace character (a space, in `char_rnn`'s own real corpus
+vocabulary) is an entirely ordinary token; `_validate_classes()` now takes
+the `task` being saved and only requires "non-empty" (not "non-whitespace")
+for `task="sequence"`. Retrofitted `examples/char_rnn/train.py` (`save_
+model(..., classes=vocab.chars, task="sequence")`) and added `examples/
+char_rnn/infer.py`, the first standalone fresh-process inference script for
+a stepwise sequence example -- it imports `examples.char_rnn.model` only
+for its `register_module()` side effect (`CharRNN` is a custom composite
+`Module`, like `resnet`/`autoencoder`'s own custom classes, so the bare
+`forge` CLI process -- which never imports example model modules --
+still cannot load it directly; a pre-existing, general persistence
+constraint, not new to this milestone). `examples/word_rnn`/`examples/
+long_range_recall` were deliberately not retrofitted (same pattern applies
+unchanged, whenever needed -- no framework work required). No `FORMAT_
+VERSION` bump; fully backward/forward-compatible. 22 new CPU tests
+(`tests/test_sequence_artifact_prediction.py`) + 3 new CUDA tests
+(`tests/test_sequence_artifact_prediction_cuda.py`, hardware-verified on
+the reference GeForce 940MX), plus 2 pre-existing `tests/
+test_task_metadata.py` tests updated for the new 4th `TASK_TYPES` value.
+2,504 collected (26 new over M89's 2,478); full suite: 2,501 passed, 1
+failed -- the same pre-existing `test_dataloader_prefetch.py` allocator-
+measurement flake documented since ~M63, no M90 regression (classification/
+regression/segmentation's own test files re-run clean and unchanged).
+
+Full report: `docs/development/m90-sequence-artifact-inference.md`.
