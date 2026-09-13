@@ -166,6 +166,20 @@ def test_cli_predict_regression_accepts_nested_list_as_already_batched(tmp_path)
     assert array.shape == (2, 4)
 
 
+def test_cli_predict_regression_accepts_utf8_bom(tmp_path):
+    """Milestone 89 external-workflow finding: Windows tools (PowerShell's
+    `Out-File`/`>`, Notepad's "UTF-8" save option) commonly write a leading
+    UTF-8 BOM. A numerically valid JSON file with a BOM must parse the same
+    as one without -- not fail with the generic "not numeric JSON" error."""
+    input_path = tmp_path / "input.json"
+    input_path.write_bytes(b"\xef\xbb\xbf" + json.dumps([1.2, 3.4, 5.6, 7.8]).encode("utf-8"))
+
+    from forge.cli.model import _parse_regression_input
+    array = _parse_regression_input(str(input_path))
+    assert array.shape == (1, 4)
+    np.testing.assert_allclose(array, [[1.2, 3.4, 5.6, 7.8]], rtol=1e-6)
+
+
 def test_cli_predict_regression_malformed_json_fails_clearly(tmp_path, capsys):
     model_path = _saved_regression_model(tmp_path)
     input_path = tmp_path / "input.json"

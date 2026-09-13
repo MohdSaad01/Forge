@@ -5334,3 +5334,58 @@ prediction. 2,476 collected (23 new tests over M87's 2,453); full suite
 result recorded in `docs/development/m88-unified-artifact-prediction-cli.md`.
 
 Full report: `docs/development/m88-unified-artifact-prediction-cli.md`.
+
+### M89 — External developer workflow validation and friction removal
+Treated Forge as a product rather than a framework under construction:
+retrained all three vision-named workload families (classification via
+`examples/image_folder_classification`, regression via `examples/regression`,
+segmentation via `examples/segmentation`, smoke configurations) and drove
+each through `forge model inspect`/`forge model predict` from a genuinely
+separate, freshly created Python virtual environment (`numpy`/`pillow`/`forge`
+only, no dev dependencies), with the resulting `.forge` artifacts and query
+inputs copied into a directory outside the repository -- no example source
+code, no live training process, no internal Forge API used anywhere in the
+consuming side. Found and fixed two real pieces of friction. **Blocker**:
+`forge model predict`'s regression path (`forge/cli/model.py::
+_parse_regression_input()`) opened its JSON input file with
+`encoding="utf-8"`, so a file carrying a leading UTF-8 byte-order mark --
+which PowerShell's `Out-File`/`>` and Notepad's "UTF-8" option both write by
+default, on this project's own primary development platform -- failed with
+the same generic "not numeric JSON" error a truly malformed file gets, even
+though the data was valid. Fixed by opening with `encoding="utf-8-sig"`
+(transparently strips a BOM if present, identical behavior otherwise).
+**Significant friction**: `forge model inspect`/`checkpoint inspect` (text
+and `--json`) reported a `Sequential` module's children in the archive's
+on-disk key order -- `metadata.json` is written with `json.dumps(...,
+sort_keys=True)` for stable diffs, which sorts numeric child names as plain
+strings (`0, 1, 10, 11, 12, 2, ...`), not construction order. Demonstrated
+directly against this milestone's own retrained `image_folder_classification`
+artifact (13 layers), scrambling the printed architecture -- undermining
+`inspect`'s core "what model is this?" promise for any nontrivial-depth
+model, though never affecting actual model reconstruction (`load_model()`
+keys children by name, not iteration order -- confirmed by every prediction
+in this milestone matching expectations throughout). Fixed with a
+numeric-aware sort in `forge/cli/_archive_info.py::walk_modules()`/
+`walk_parameters()`. A third candidate -- `forge.predict_model()` (Python)
+still applying its documented legacy architecture-heuristic fallback for a
+no-`task` artifact while `forge model predict` (CLI) refuses outright -- was
+investigated and confirmed to be M86/87/88's own intentional, already-
+documented design, not new friction, and was left unchanged. Also verified
+clean with no changes needed: artifact portability across the fresh-venv
+boundary for all three tasks; CUDA training/inspection/prediction (a
+940MX-trained regression artifact predicted correctly via `--device cuda`,
+`--device cpu`, and the omitted-device default, all agreeing exactly, with
+`inspect` requiring no CUDA at all); the README's "First model" snippet run
+verbatim in the fresh venv; and every error case tested (missing
+artifact/input, wrong input type, malformed JSON, missing task metadata,
+invalid `--device`, missing/invalid segmentation `--output`) already
+producing a clear, specific message. Two new regression tests:
+`tests/test_cli_predict.py::test_cli_predict_regression_accepts_utf8_bom`,
+`tests/test_cli.py::test_model_inspect_orders_ten_or_more_sequential_children_numerically`
+(a 13-child `Sequential`, text and `--json`). No public API changes; both
+fixes are internal to `forge/cli/`. 2,478 collected (2 new tests over M88's
+2,476); full suite: 2,477 passed, 1 failed -- the same pre-existing
+`test_dataloader_prefetch.py` allocator-measurement flake documented since
+~M63, reproduced passing cleanly in isolation, no M89 regression.
+
+Full report: `docs/development/m89-external-developer-workflow-validation.md`.

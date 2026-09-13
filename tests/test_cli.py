@@ -119,6 +119,34 @@ def test_model_inspect_json_output(model_path, capsys):
     assert types == {"Sequential", "Linear", "ReLU"}
 
 
+def test_model_inspect_orders_ten_or_more_sequential_children_numerically(tmp_path, capsys):
+    """Milestone 89 external-workflow finding: `metadata.json` is written
+    with `json.dumps(..., sort_keys=True)`, so a `Sequential` with 10+
+    children (an entirely ordinary case -- e.g. `examples/
+    image_folder_classification`'s 13-layer CNN) had its numeric child names
+    ("0".."12") sorted as plain strings ("0", "1", "10", "11", "12", "2", ...)
+    -- scrambling the printed architecture order in both text and `--json`
+    output. `forge model inspect` must report children in construction
+    order, not lexicographic order."""
+    forge.random.seed(0)
+    model = Sequential(*(Linear(1, 1) if i % 2 == 0 else ReLU() for i in range(13)))
+    path = tmp_path / "wide_model.forge"
+    forge.save_model(model, str(path))
+
+    code = main(["model", "inspect", str(path)])
+    assert code == 0
+    out = capsys.readouterr().out
+    module_lines = [line.strip() for line in out.splitlines() if line.strip().split(":")[0].strip().isdigit()]
+    names = [line.split(":")[0].strip() for line in module_lines]
+    assert names == [str(i) for i in range(13)]
+
+    code = main(["model", "inspect", str(path), "--json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    numeric_names = [m["name"] for m in payload["modules"] if m["name"].isdigit()]
+    assert numeric_names == [str(i) for i in range(13)]
+
+
 def test_model_inspect_is_read_only(model_path):
     """Inspecting must not mutate the saved file on disk."""
     before = model_path.read_bytes()

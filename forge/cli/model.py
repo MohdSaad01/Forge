@@ -221,7 +221,13 @@ def _parse_regression_input(path: str) -> np.ndarray:
     given where a regression artifact expects numeric input, all identically.
     """
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        # "utf-8-sig" transparently strips a leading UTF-8 BOM if present and
+        # behaves identically to "utf-8" otherwise -- Windows tools (e.g.
+        # PowerShell's `Out-File`/`>`, Notepad's "UTF-8" save option) commonly
+        # write a BOM, and without this a numerically valid JSON file failed
+        # with the same misleading "not numeric JSON" error as truly malformed
+        # input (discovered during Milestone 89 external-workflow validation).
+        with open(path, "r", encoding="utf-8-sig") as fh:
             raw = json.load(fh)
     except (OSError, ValueError, UnicodeDecodeError):
         # ValueError covers json.JSONDecodeError; UnicodeDecodeError covers a

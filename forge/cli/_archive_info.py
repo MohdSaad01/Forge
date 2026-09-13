@@ -101,6 +101,27 @@ def read_checkpoint_metadata(path: str) -> dict:
     return metadata
 
 
+def _child_sort_key(name: str) -> "tuple[int, object]":
+    """Order a module's children the way `forge.nn.Sequential` built them.
+
+    `metadata.json` is written with `json.dumps(..., sort_keys=True)`
+    (`forge/serialization/archive.py`) for stable diffs, which sorts a
+    `Sequential`'s numeric child names (`"0", "1", ..., "12"`) as plain
+    strings -- `"10"` sorts before `"2"`. Discovered during Milestone 89
+    external-workflow validation: any inspected model with 10+ `Sequential`
+    children (a completely ordinary case -- e.g. `examples/
+    image_folder_classification`'s CNN) printed its module tree and
+    parameter list in a scrambled, non-architectural order. Digit-only names
+    sort numerically first (recovering the original construction order);
+    any other name falls back to plain alphabetical order after them.
+    """
+    return (0, int(name)) if name.isdigit() else (1, name)
+
+
+def _sorted_children(children: dict) -> "list[tuple[str, dict]]":
+    return sorted(children.items(), key=lambda item: _child_sort_key(item[0]))
+
+
 def walk_modules(node: dict, prefix: str = "") -> "Iterator[tuple[str, str]]":
     """Yield `(dotted_name, type_name)` for `node` and every descendant, self first.
 
@@ -115,7 +136,7 @@ def walk_modules(node: dict, prefix: str = "") -> "Iterator[tuple[str, str]]":
     children = node["children"]
     if not isinstance(children, dict):
         raise CLIError("Malformed module metadata: 'children' is not an object.")
-    for name, child in children.items():
+    for name, child in _sorted_children(children):
         child_prefix = name if not prefix else f"{prefix}.{name}"
         yield from walk_modules(child, child_prefix)
 
@@ -131,7 +152,7 @@ def walk_parameters(node: dict, prefix: str = "") -> "Iterator[tuple[str, dict]]
         dotted = name if not prefix else f"{prefix}.{name}"
         yield dotted, meta
     children = node["children"]
-    for name, child in children.items():
+    for name, child in _sorted_children(children):
         child_prefix = name if not prefix else f"{prefix}.{name}"
         yield from walk_parameters(child, child_prefix)
 

@@ -46,6 +46,11 @@ pipeline was saved (`forge.save_model(..., preprocessing=...)`, Milestone
 71), and the saved class-name vocabulary if any (`forge.save_model(...,
 classes=...)`, Milestone 72). Never prints tensor values.
 
+The module tree and parameter list (text and `--json`) are always ordered by
+construction order (e.g. a `Sequential`'s children as `0, 1, 2, ..., 12`, not
+`0, 1, 10, 11, 12, 2, ...`) regardless of the archive's on-disk key order --
+see Milestone 89.
+
 **Never requires CUDA, regardless of the model's recorded device**, and
 never reconstructs a live `Module` or runs any computation: it reads only
 `metadata.json` from the archive (via `forge.serialization.archive
@@ -114,7 +119,10 @@ task-specific function unchanged. No new inference logic lives here.
 - **regression** -- `INPUT` is a path to a JSON file of numeric data: a flat
   list (`[1.2, 3.4, 5.6, 7.8]`) is treated as one unbatched sample and given
   a leading batch dimension; a nested list (`[[1.2, 3.4], [5.6, 7.8]]`) is
-  treated as already batched. Prints the raw numeric prediction:
+  treated as already batched. A leading UTF-8 byte-order mark (BOM) is
+  tolerated and stripped (Milestone 89) -- common on Windows, where
+  `Out-File`/`>`/Notepad's "UTF-8" option all write one by default. Prints
+  the raw numeric prediction:
   ```text
   Prediction: [[0.8134]]
   ```
