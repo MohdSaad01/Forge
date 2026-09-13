@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82; single-call numeric-artifact inference via `predict_tensor_artifact()` as of Milestone 83; single-call image-to-image artifact inference via `predict_image_artifact()` as of Milestone 84; unified portable-artifact prediction via `predict_model()` as of Milestone 86)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82; single-call numeric-artifact inference via `predict_tensor_artifact()` as of Milestone 83; single-call image-to-image artifact inference via `predict_image_artifact()` as of Milestone 84; unified portable-artifact prediction via `predict_model()` as of Milestone 86; explicit task-metadata dispatch as of Milestone 87)
 
 ## Package layout
 ```
@@ -6,7 +6,7 @@ forge/
     training/
         trainer.py     Trainer, EpochResult, EvaluationResult, TrainingHistory
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
-        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78), predict_artifact() (Milestone 82), predict_tensor_artifact() (Milestone 83), predict_image_artifact() (Milestone 84), predict_model() (Milestone 86)
+        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78, task= as of 87), predict_artifact() (Milestone 82), predict_tensor_artifact() (Milestone 83), predict_image_artifact() (Milestone 84), predict_model() (Milestone 86, task-first dispatch as of 87)
         session.py     TrainingSession, start_training_session() (Milestone 73)
         api.py         train() (Milestone 79), train_and_save(), TrainAndSaveResult (Milestone 81)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
@@ -680,14 +680,16 @@ sequence, written once:
 reloaded = forge.save_and_verify(
     trainer.model, str(model_path), query_x,
     preprocessing=build_transform(), classes=full_dataset.classes,
+    task="classification",
 )
 result = interpret_classification(predict(reloaded, new_image), reloaded_classes)
 ```
 1. `predict(model, sample, device=...)` -- the pre-save prediction, from the
    live, just-trained model.
-2. `save_model(model, path, preprocessing=preprocessing, classes=classes)`
-   (Milestones 71/72's unmodified persistence call -- no new serialization
-   logic).
+2. `save_model(model, path, preprocessing=preprocessing, classes=classes,
+   task=task)` (Milestones 71/72's unmodified persistence call, plus
+   Milestone 87's `task=`, passed straight through -- no new serialization
+   logic here either).
 3. `load_model(path, device=...)` -- a genuinely fresh reconstruction.
 4. `predict(reloaded, sample)` -- the post-load prediction.
 5. `numpy.allclose(pre_save, post_load, atol=atol)`; a mismatch raises
@@ -891,6 +893,7 @@ result = forge.train_and_save(
     sample=query_x_batch,
     preprocessing=build_transform(),
     classes=full_dataset.classes,
+    task="classification",
 )
 result.history       # train()'s own TrainingHistory
 result.val_metrics    # the last epoch's validation metrics, e.g. {"accuracy": 0.97}
@@ -1138,7 +1141,7 @@ identical image file, bit-for-bit.
 
 See `docs/development/m84-segmentation-artifact-workflow.md`.
 
-## Unified portable-artifact prediction: `predict_model()` (Milestone 86)
+## Unified portable-artifact prediction: `predict_model()` (Milestones 86/87)
 
 `predict_artifact()`/`predict_tensor_artifact()`/`predict_image_artifact()`
 (above) each fully describe one artifact shape, but a developer holding a
@@ -1159,9 +1162,16 @@ result = forge.predict_model("model.forge", input_data)
    `predict_tensor_artifact()`/`predict_image_artifact()` -- **unchanged**,
    returning its result unchanged.
 
-**The dispatch signal, and why it is reliable.** Two fields `ModelInfo`
-already exposes, never model weights, a trial forward pass, or a guess from
-tensor dimensions:
+**The dispatch signal, and why it is reliable (Milestone 87).**
+`_determine_workflow()` checks `info.task` first: when a caller declared it
+explicitly via `forge.save_model(..., task=...)` (`docs/architecture/
+persistence.md`'s **Task metadata** section), it is already one of `forge.
+serialization.model.TASK_TYPES` (`inspect_model()` validates this), and is
+returned directly -- no architecture inspection at all. Only when `info.task
+is None` (a genuinely legacy artifact, saved before Milestone 87, or one
+where `task=` was deliberately omitted) does dispatch fall back to
+`_legacy_infer_workflow()`, the exact Milestone 86 heuristic below, kept
+isolated in its own function:
 
 - `info.classes is not None` -> `"classification"`. Unambiguous: `save_model()`
   never populates `classes` for anything but a classification model, and
@@ -1180,18 +1190,20 @@ tensor dimensions:
   undetermined; raises `forge.PersistenceError` naming what was available
   and which three workflows are supported, rather than guessing.
 
-**Documented limitation.** A classification model saved with `classes=None`
-(a real, valid state -- see `predict_artifact()`'s own docstring) is still
-`Linear`-terminated, exactly like a regression model, and has no `classes`
-left to disambiguate it -- `predict_model()` misidentifies it as
-`"regression"`. No current Forge example's own `train.py` produces this
-state (every classification example always saves `classes=`), but it is a
-real, synthetically-tested state (`tests/test_classification_metadata.py`),
-which is exactly why `forge model predict` (below) was not retrofitted onto
-`predict_model()`. Resolving this would need a persisted task flag
-`save_model()` does not write today -- deliberately not added speculatively
-(see **Rejected alternatives** below); `predict_artifact()` itself remains
-fully correct for this case, called directly.
+**Milestone 86's documented limitation, closed for artifacts saved with an
+explicit task.** A classification model saved with `classes=None` (a real,
+valid state -- see `predict_artifact()`'s own docstring) is `Linear`
+-terminated, exactly like a regression model, and has no `classes` left to
+disambiguate it via the legacy heuristic alone. As of Milestone 87, saving
+such a model with `task="classification"` makes `predict_model()` identify it
+correctly -- `info.task` is checked before `info.classes`/`module_types` are
+ever consulted. The ambiguity persists **only** for a genuinely legacy
+artifact (no `task` key at all) that also has no `classes`: it is
+architecturally indistinguishable from a legacy regression artifact, and this
+cannot be resolved retroactively without re-saving with `task=`. This
+remaining gap is exactly why `forge model predict` (below) still is not
+retrofitted onto `predict_model()`; `predict_artifact()` itself remains fully
+correct for this case, called directly.
 
 **Input validation is not duplicated.** `predict_model()` does not
 re-validate `input_data`'s type itself -- the artifact's own metadata
@@ -1208,8 +1220,13 @@ as the three underlying functions already do.
 infer.py` call `forge.predict_model()` instead of naming the task-specific
 function directly; `examples/regression/train.py`'s own end-of-run demo
 does too -- proving dispatch is driven by each artifact's real, saved
-metadata (classification-with-classes, `Linear`-only regression, `Conv2d`
--only segmentation), not by which example happens to call it.
+metadata, not by which example happens to call it. As of Milestone 87, all
+four classification/regression/segmentation-producing examples (`mnist`,
+`image_folder_classification`, `regression`, `segmentation`, plus
+`waveform_classification`/`resnet`'s classification artifacts) save an
+explicit `task=` alongside `preprocessing=`/`classes=`, so dispatch for every
+real Forge-produced artifact now goes through the explicit-task path, not the
+legacy heuristic.
 
 **`forge model predict` (Milestone 72's CLI) was evaluated and deliberately
 not retrofitted** onto `predict_model()` -- see the documented limitation
@@ -1237,8 +1254,18 @@ call, bit-for-bit / index-for-index.
   doing so here would reintroduce exactly the CUDA/registry requirements
   it was built to avoid (Milestone 85).
 - *Retrofitting `forge model predict`* -- rejected; see above.
+- *Automatically inferring `task` from architecture for newly saved
+  artifacts* (Milestone 87) -- rejected: this is precisely the guessing
+  Milestone 87 exists to replace with an explicit contract; architecture
+  -based inference remains only as `_legacy_infer_workflow()`'s isolated,
+  clearly-labeled fallback for artifacts with no `task` metadata at all.
+- *Retroactively "fixing" a legacy classification-without-classes artifact's
+  misdispatch* -- rejected: with no `task` key and no `classes`, it is
+  structurally identical to a legacy regression artifact; there is no
+  metadata left to decide correctly without the caller re-saving the file.
 
-See `docs/development/m86-unified-artifact-prediction.md`.
+See `docs/development/m86-unified-artifact-prediction.md` and
+`docs/development/m87-explicit-task-metadata.md`.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

@@ -183,12 +183,14 @@ same property is covered on a synthetic dataset by
 (CPU) and `tests/test_mnist_example_cuda_integration.py::test_model_persistence_preserves_predictions_on_cuda`
 (CUDA).
 
-**Preprocessing + classes (Milestone 77).** `train.py` now saves the exact
+**Preprocessing + classes + task (Milestone 77/87).** `train.py` now saves the exact
 `Normalize`-based preprocessing pipeline (`forge.save_model(..., preprocessing=
-build_transform())`) and the digit-index-to-label vocabulary
-(`classes=["0", ..., "9"]`) alongside the model -- the same mechanism
+build_transform())`), the digit-index-to-label vocabulary
+(`classes=["0", ..., "9"]`), and an explicit `task="classification"`
+alongside the model -- the same mechanism
 `examples/image_folder_classification` established in Milestones 71/72,
-applied here for the first time. Earlier, `build_transform()`'s pixel
+applied here for the first time, plus Milestone 87's explicit task
+declaration so `forge.predict_model()` dispatches reliably. Earlier, `build_transform()`'s pixel
 scaling used `Lambda(lambda x: x * (1/255))`, which cannot be saved (`Lambda`
 wraps an arbitrary Python callable); it is now `Normalize(mean=0.0,
 std=255.0)`, computing exactly the same value, so this file's saved model

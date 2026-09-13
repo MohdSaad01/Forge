@@ -134,7 +134,7 @@ def main(argv=None) -> None:
     # explicitly so this round trip works identically on both devices.
     query_x, _ = test_ds[0]
     query_x = query_x.to(args.device).reshape(1, 1, LENGTH)
-    save_and_verify(model, str(model_path), query_x)
+    save_and_verify(model, str(model_path), query_x, task="classification")
     print(f"Saved + verified model -> {model_path}")
 
     print("\nInspect the generated artifacts with the M19 CLI:")

@@ -31,10 +31,17 @@ human-readable label.
 
 `inspect_model()` (Milestone 85) returns a structured, read-only `ModelInfo`
 summarizing what a saved artifact contains -- model identification,
-preprocessing (if any), classes (if any), and format/device -- without
-reconstructing a live model or requiring CUDA. See `forge.serialization.
+preprocessing (if any), classes (if any), task (if any), and format/device --
+without reconstructing a live model or requiring CUDA. See `forge.serialization.
 model`'s module docstring and `docs/architecture/persistence.md`'s **Model
 inspection** section.
+
+`save_model(..., task=...)` (Milestone 87) optionally declares which of
+Forge's three portable-artifact inference workflows a saved file represents
+(`TASK_TYPES`: `"classification"`, `"regression"`, `"segmentation"`) -- the
+authoritative signal `forge.predict_model()` uses to dispatch reliably,
+replacing the architecture-based guess Milestone 86 had to fall back on. See
+`docs/architecture/persistence.md`'s **Task metadata** section.
 """
 
 from .checkpoint import Checkpoint, CHECKPOINT_FORMAT_VERSION, load_checkpoint, save_checkpoint
@@ -42,6 +49,7 @@ from .model import (
     ModelInfo,
     ModelSummary,
     PreprocessingInfo,
+    TASK_TYPES,
     inspect_model,
     load_classes,
     load_model,
@@ -54,7 +62,7 @@ from .transforms import register_transform
 
 __all__ = [
     "save_model", "load_model", "load_preprocessing", "load_classes", "register_module",
-    "inspect_model", "ModelInfo", "ModelSummary", "PreprocessingInfo",
+    "inspect_model", "ModelInfo", "ModelSummary", "PreprocessingInfo", "TASK_TYPES",
     "save_checkpoint", "load_checkpoint", "Checkpoint", "CHECKPOINT_FORMAT_VERSION",
     "register_optimizer", "register_transform",
 ]

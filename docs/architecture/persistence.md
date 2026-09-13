@@ -12,7 +12,8 @@ forge/
                                  deserialize_transform() -- preprocessing-transform configuration (Milestone 71)
         archive.py               write_archive/read_archive -- the generic ZIP(json + .npy) file format
         model.py                  save_model(), load_model(), load_preprocessing(), load_classes(),
-                                 inspect_model() -- tree walk, validation, reconstruction (Milestone 85: read-only summary)
+                                 inspect_model() -- tree walk, validation, reconstruction (Milestone 85: read-only
+                                 summary; Milestone 87: explicit task= metadata, TASK_TYPES)
         checkpoint.py             save_checkpoint(), load_checkpoint() -- training-state persistence (Milestone 18)
 ```
 `forge.serialization` is exposed as a submodule of `forge`, alongside
@@ -598,6 +599,98 @@ forward-compatible (an older Forge build never reads the key at all) and
 backward-compatible (`load_classes()` treats a missing key the same as an
 explicit `null`, returning `None`, not raising). No `FORMAT_VERSION` bump.
 
+## Task metadata (Milestone 87)
+Milestone 86's `forge.predict_model()` had to guess which of the three
+portable-artifact workflows (classification/regression/segmentation) a
+`.forge` file represented, from `ModelInfo.classes`/`ModelInfo.model.
+module_types` -- and that guess had a real, documented gap: a classification
+model saved with `classes=None` (a valid state, see **Class-label metadata**
+above) is `Linear`-terminated exactly like a regression model, with no saved
+`classes` to disambiguate it, so it was misidentified as regression. Task
+metadata closes this gap by letting a caller declare the artifact's intended
+workflow explicitly, rather than Forge inferring it from architecture.
+
+### Public API
+```python
+forge.save_model(model, path, task="classification")  # optional kwarg, default None
+forge.save_model(model, path, task="regression")
+forge.save_model(model, path, task="segmentation")
+info = forge.inspect_model(path)
+info.task                                              # "classification" / "regression" / "segmentation" / None
+```
+`task`, when given, must be one of `forge.serialization.model.TASK_TYPES` --
+`"classification"`, `"regression"`, `"segmentation"` -- a small, fixed
+vocabulary matching Forge's three existing portable-artifact inference
+workflows exactly (`predict_artifact()`/`predict_tensor_artifact()`/
+`predict_image_artifact()`, Milestones 82-84), not an open-ended task
+registry. Any other value raises `PersistenceError` before anything is
+written, the same "fail before writing" behavior `preprocessing=`/`classes=`
+already have.
+
+### What is (and is not) validated
+`task="regression"` or `task="segmentation"` combined with a non-`None`
+`classes=` raises `PersistenceError` immediately -- neither workflow has a
+class-vocabulary concept, so the two pieces of metadata would disagree about
+what the artifact is. `task="classification"` places **no** such restriction
+on `classes`: `classes=None` remains a real, valid classification-artifact
+state (see **Class-label metadata** above), and this is precisely the state
+`task=` now lets `predict_model()` recognize correctly instead of
+misidentifying as regression. `task` is never validated against `model`'s
+actual architecture (Forge does not introspect a module tree to guess its
+task, matching `classes`'s own "never validated against output width at save
+time" precedent above) -- an inaccurate `task` value is accepted at save time
+and only affects behavior the next time `predict_model()` dispatches on it.
+
+### Relationship to `classes`/`preprocessing`
+`task` is a third, independent sibling metadata entry alongside
+`"preprocessing"`/`"classes"` -- not merged into either. It describes the
+artifact's **intended use** ("this is a classification model"), while
+`classes` describes how to interpret a classification model's *output*
+indices, and `preprocessing` describes how to prepare its *input*. A
+classification artifact may combine all three; a regression or segmentation
+artifact combines `task` with `preprocessing` only (never `classes`).
+
+### Compatibility: no format-version change
+Exactly the same story as `"preprocessing"` (Milestone 71) and `"classes"`
+(Milestone 72): `"task"` is a new, optional top-level metadata key -- `null`
+(equivalently, absent) when `save_model()` is called without `task=`, so
+files saved before Milestone 87 and files saved with no task metadata are
+byte-for-byte equivalent in this respect. Forward-compatible (an older Forge
+build never reads the key at all) and backward-compatible (`inspect_model()`
+treats a missing key the same as an explicit `null`, returning `None`, not
+raising). No `FORMAT_VERSION` bump -- consistent with this document's own
+**Versioning** policy below, which reserves a bump for changes to the
+*required* shape of every module node (e.g. Milestone 53's `"buffers"` key),
+not for a new optional top-level key with full forward/backward compatibility
+in both directions.
+
+### Legacy artifacts and `forge.predict_model()`'s fallback
+`info.task is None` means exactly "this artifact never declared an explicit
+task" -- `inspect_model()` never guesses one from architecture. `forge.
+predict_model()` (`forge/training/inference.py`) uses `info.task` as its
+primary, authoritative dispatch signal when present, going straight to the
+matching workflow with no architecture inspection at all -- this is what
+finally lets a classification artifact saved with `classes=None` dispatch
+correctly. Only when `task` is absent does it fall back to `_legacy_infer_
+workflow()`, the exact Milestone 86 heuristic, kept isolated in its own
+function and documented as a legacy-only mechanism: a genuinely pre-Milestone
+-87 classification artifact saved with `classes=None` is still
+architecturally indistinguishable from a legacy regression artifact (both are
+`Linear`-terminated with no saved `classes`), so that specific ambiguity
+persists for artifacts with no explicit task -- it cannot be resolved
+retroactively without the caller re-saving with `task=`. See
+`docs/development/m87-explicit-task-metadata.md` for the full reasoning.
+
+### CLI
+`forge model inspect model.forge` reports a "Task" line (`"unknown (legacy
+artifact, saved before Milestone 87)"` when absent) sourced from `inspect_
+model()`'s own `ModelInfo.task`; `--json` mode adds the same value under
+`"task"` (`null` when absent). `forge model convert` preserves `task` across
+a device conversion, alongside `preprocessing`/`classes`. `forge model
+predict` remains unaffected -- see `forge/cli/model.py`'s own module
+docstring for why it stays a thin wrapper over `predict_artifact()` directly
+rather than routing through `predict_model()`.
+
 ## Model inspection (Milestone 85)
 `save_model()`/`load_model()`/`load_preprocessing()`/`load_classes()` give a
 caller everything needed to *use* a saved artifact -- but a developer who
@@ -611,7 +704,10 @@ even has to read `ModelInfo` themselves to pick the right function --
 `forge.predict_model()` (`docs/architecture/training-engine.md`'s own
 **Unified portable-artifact prediction** section) calls `inspect_model()`
 internally and dispatches on `ModelInfo.classes`/`ModelInfo.model.
-module_types` for them.
+module_types` for them. As of **Milestone 87**, `ModelInfo.task` -- when
+present -- is consulted first and is authoritative; the `classes`/
+`module_types` heuristic is now an isolated legacy fallback only (see **Task
+metadata** above).
 
 ### Public API
 ```python
@@ -625,6 +721,7 @@ info.preprocessing           # PreprocessingInfo, or None
 info.preprocessing.description  # "Resize(size=(64, 64)) -> Normalize(mean=0.0, std=255.0)"
 info.preprocessing.transform    # the reconstructed Transform instance itself
 info.classes                 # ["cat", "dog"], or None
+info.task                    # "classification" / "regression" / "segmentation" / None
 info.format_version          # 2
 info.device                  # "cpu" or "cuda"
 ```
@@ -657,11 +754,11 @@ intentionally the smaller, product-level subset: enough to *decide* how to
 use an artifact, not a dump of the archive's internal representation.
 
 ### Compatibility
-Works identically on artifacts saved before Milestones 71/72 existed:
-`info.preprocessing`/`info.classes` are simply `None`, exactly matching
-`load_preprocessing()`/`load_classes()`'s own backward-compatible behavior
-for a missing key. No `FORMAT_VERSION` change, and no new persisted data --
-`inspect_model()` only reads metadata `save_model()` already wrote.
+Works identically on artifacts saved before Milestones 71/72/87 existed:
+`info.preprocessing`/`info.classes`/`info.task` are simply `None`, exactly
+matching `load_preprocessing()`/`load_classes()`'s own backward-compatible
+behavior for a missing key. No `FORMAT_VERSION` change, and no new persisted
+data -- `inspect_model()` only reads metadata `save_model()` already wrote.
 
 ### CLI
 `forge model inspect model.forge` reports a "Preprocessing detail" line
@@ -785,7 +882,14 @@ a non-string or empty-string element, duplicate labels, and a malformed
 `forge.training.interpret_classification()` raises `TrainerError` instead,
 for a non-2-D output or an output whose class-score dimension does not
 match `len(classes)` (a *model/vocabulary* inconsistency discovered at
-interpretation time, not a persistence-format problem). A mixed-device
+interpretation time, not a persistence-format problem). `save_model(...,
+task=...)`/`inspect_model()` (Milestone 87) raise the same `PersistenceError`
+for: a `task` value not in `TASK_TYPES`, `task="regression"`/
+`task="segmentation"` combined with a non-`None` `classes=`, and a malformed
+`"task"` metadata entry on load (see **Task metadata** above); `forge.
+predict_model()` raises `PersistenceError` when neither an explicit `task`
+nor the legacy architecture heuristic can determine a supported workflow (see
+`_legacy_infer_workflow()`'s own error message). A mixed-device
 module tree passed to `save_model()` raises
 `ModuleError` (from `Module.device`), not `PersistenceError` -- the same
 error that operation already raises everywhere else in Forge. Low-level
@@ -839,11 +943,22 @@ never a raw exception surfaced to callers.
   same design choice as the module registry.
 - Class-label metadata (Milestone 72) is a flat list of strings only -- no
   hierarchical/multi-label taxonomy, no per-class extra data (e.g. a
-  description or color), and no task-type field (`"classes"` means the same
-  thing regardless of what kind of model produced the scores). It is also
+  description or color) (a separate, explicit task-type field was added in
+  Milestone 87 -- see **Task metadata** above). It is also
   never validated against `model`'s actual output width at save time (see
   **Class-label metadata**'s own note on why) -- only at first
   `interpret_classification()` call.
+- Task metadata (Milestone 87) is a fixed, closed three-value vocabulary
+  (`TASK_TYPES`) -- no generic/open-ended task registry, and no automatic
+  detection from a model's architecture for newly saved artifacts (see **Task
+  metadata**'s own **Architecture Guardrails**). It is never validated
+  against `model`'s actual architecture at save time, the same "trust the
+  caller, validate only structure" precedent `classes` already set. A
+  genuinely legacy artifact (saved before Milestone 87, or with `task`
+  deliberately omitted) that is a classification model saved with
+  `classes=None` remains indistinguishable from a legacy regression artifact
+  by `forge.predict_model()`'s fallback heuristic -- this cannot be resolved
+  retroactively without re-saving the artifact with an explicit `task=`.
 - Checkpointing (Milestone 18) is itself further scoped down: only `SGD` and
   `Adam` are built-in registered optimizer types (any other type needs
   `register_optimizer()`, as `register_module()` requires for a custom

@@ -171,6 +171,7 @@ def main(argv=None) -> None:
         # train_and_save() instead.
         reloaded = save_and_verify(
             model, str(model_path), query_x, preprocessing=build_transform(), classes=classes,
+            task="classification",
         )
     else:
         # Milestone 81: train_and_save() replaces this branch's own
@@ -196,6 +197,7 @@ def main(argv=None) -> None:
             sample=query_x,
             preprocessing=build_transform(),
             classes=classes,
+            task="classification",
         )
         history = train_result.history
         reloaded = train_result.model

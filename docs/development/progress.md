@@ -5212,3 +5212,65 @@ Full suite: 2,409 collected, 2,408 passed, 1 failed (2,390 + 19 new) -- the
 same pre-existing `test_dataloader_prefetch.py` allocator-measurement flake
 documented since M63, reproduced passing cleanly in isolation, no M86
 regression.
+
+### M87 — Explicit artifact task metadata and reliable `forge.predict_model()` dispatch
+
+Closed M86's own documented ambiguity: `forge.save_model(..., task=...)`
+(`forge/serialization/model.py`) optionally declares which of `"classification"`/
+`"regression"`/`"segmentation"` (`TASK_TYPES`) an artifact represents --
+validated (must be one of the three; `task="regression"`/`"segmentation"`
+rejects a non-`None` `classes=`), JSON-safe, a new optional top-level
+`"task"` metadata key with the exact forward/backward-compatibility story
+`"preprocessing"`/`"classes"` already established (no `FORMAT_VERSION`
+bump). `ModelInfo.task` (`inspect_model()`) exposes it -- `None` for a
+legacy artifact, never guessed from architecture. `predict_model()`'s
+`_determine_workflow()` now checks `info.task` first and returns it
+directly when present, with **no** architecture inspection at all; the old
+M86 heuristic was renamed `_legacy_infer_workflow()` and isolated as a
+fallback used only when `task is None`. This is what finally lets a
+classification artifact saved with `classes=None` (a real, valid state)
+dispatch correctly instead of being misidentified as regression -- the
+specific bug pinned down in M86's own report. The one gap that remains,
+by necessity: a genuinely legacy artifact (no `task` key, and no `classes`)
+is still architecturally indistinguishable from a legacy regression
+artifact, and this cannot be resolved retroactively without re-saving with
+`task=` -- documented, and covered by a test pinning the unchanged legacy
+behavior down explicitly.
+
+`save_and_verify()`/`train_and_save()` (`forge/training/inference.py`,
+`forge/training/api.py`) both gained a pass-through `task=` parameter, so
+`forge.train_and_save(..., task="classification")` alone produces a
+self-describing artifact. `mnist`/`image_folder_classification`/`regression`/
+`segmentation` (the four required producers) plus `waveform_classification`/
+`resnet` (mechanical, already-classification-shaped artifacts) now save an
+explicit `task=` -- verified by retraining all four required examples
+end-to-end (small smoke configurations) and inspecting each artifact's
+recorded task. `forge model inspect` gained a "Task" line/JSON field
+(delegating to `inspect_model()`, matching M85's own "Preprocessing detail"
+precedent); `forge model convert` now preserves `task` across a device
+conversion alongside `preprocessing`/`classes`. `forge model predict`
+remains a thin, unaffected wrapper over `predict_artifact()` -- still not
+retrofitted onto `predict_model()`, for the same reason M86 gave (a real,
+tested `classes=None` CLI artifact has no `task=` either, so it still falls
+into the legacy fallback).
+
+44 new tests: `tests/test_task_metadata.py` (37 CPU -- task validation,
+task/classes interaction, `inspect_model().task` including legacy/tampered
+archives, `predict_model()`'s explicit-task-first dispatch (the specific
+M86 bug, pinned as fixed), the legacy fallback's unchanged behavior (pinned
+as a documented, permanent limitation for artifacts with no `task`), CLI
+Task line/JSON/convert preservation, and a genuine `subprocess`
+fresh-process test), `tests/test_task_metadata_cuda.py` (3 tests,
+hardware-verified on the 940MX: `inspect_model()` reads `task` from a
+CUDA-recorded artifact without requiring CUDA, `predict_model()` restores
+a CUDA-saved classification artifact by default via the explicit-task path,
+CPU/CUDA agreement), plus `task=` round-trip tests added to
+`tests/test_inference.py`/`tests/test_training_api.py` for
+`save_and_verify()`/`train_and_save()`. Every pre-existing M85/M86 test
+(`test_model_inspection.py`, `test_unified_artifact_prediction{,_cuda}.py`,
+`test_classification_metadata.py`) re-ran unchanged and green. Full suite:
+2,453 collected, 2,452 passed, 1 failed -- the same pre-existing
+`test_dataloader_prefetch.py` allocator-measurement flake documented since
+M63, reproduced passing cleanly in isolation, no M87 regression.
+
+Full report: `docs/development/m87-explicit-task-metadata.md`.

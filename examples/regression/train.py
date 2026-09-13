@@ -178,6 +178,7 @@ def main(argv=None) -> None:
         # branch below gets this for free from train_and_save() instead.
         save_and_verify(
             session.trainer.model, str(model_path), query_x_batch, preprocessing=stats["transform"],
+            task="regression",
         )
     else:
         # Milestone 83: the fresh (non-resume) path now trains through
@@ -218,8 +219,11 @@ def main(argv=None) -> None:
             # preprocessing persistence (Milestones 71/81). No classes= --
             # a regression model has no class vocabulary (see
             # forge/training/inference.py's predict_tensor_artifact()
-            # docstring).
+            # docstring). task="regression" (Milestone 87) makes
+            # forge.predict_model()'s dispatch below reliable rather than
+            # architecture-inferred.
             preprocessing=stats["transform"],
+            task="regression",
         )
         history = train_result.history
 

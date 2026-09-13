@@ -45,6 +45,29 @@ from .transforms import deserialize_transform, serialize_transform
 
 FORMAT_VERSION = 2
 
+# Milestone 87: the fixed, small vocabulary of prediction workflows a saved
+# artifact can explicitly declare -- see save_model()'s `task=` parameter and
+# `docs/architecture/persistence.md`'s **Task metadata** section. Each name
+# corresponds directly to one of Forge's three existing artifact inference
+# workflows (`forge.predict_artifact()`/`predict_tensor_artifact()`/
+# `predict_image_artifact()`, Milestones 82-84) -- not a generic/open-ended
+# task registry.
+TASK_TYPES = ("classification", "regression", "segmentation")
+
+
+def _validate_task(task: "str | None", classes: "list[str] | None") -> None:
+    if task is None:
+        return
+    if task not in TASK_TYPES:
+        raise PersistenceError(
+            f"save_model() task= must be one of {TASK_TYPES!r}, got {task!r}."
+        )
+    if task in ("regression", "segmentation") and classes is not None:
+        raise PersistenceError(
+            f"save_model() task={task!r} is incompatible with classes= -- {task} artifacts have "
+            f"no class vocabulary (only task='classification' may be saved with classes=)."
+        )
+
 
 def _validate_classes(classes: "list[str] | None") -> None:
     if classes is None:
@@ -66,7 +89,11 @@ def _validate_classes(classes: "list[str] | None") -> None:
 
 
 def save_model(
-    model: Module, path: str, preprocessing: "Any | None" = None, classes: "list[str] | None" = None
+    model: Module,
+    path: str,
+    preprocessing: "Any | None" = None,
+    classes: "list[str] | None" = None,
+    task: "str | None" = None,
 ) -> None:
     """Save `model`'s architecture, configuration, and parameter state to `path`.
 
@@ -118,10 +145,46 @@ def save_model(
     `preprocessing` (a class vocabulary is not "how to prepare an input",
     it is how to interpret an output). See `load_classes()` and
     `forge.training.interpret_classification()`.
+
+    `task` (Milestone 87) optionally declares which of Forge's three
+    portable-artifact inference workflows this file represents --
+    `"classification"`, `"regression"`, or `"segmentation"`
+    (`forge.serialization.model.TASK_TYPES`) -- so `forge.predict_model()`
+    can dispatch to the right one of `predict_artifact()`/
+    `predict_tensor_artifact()`/`predict_image_artifact()` reliably, from the
+    artifact's own metadata, rather than guessing from its module
+    architecture (see `docs/architecture/persistence.md`'s **Task metadata**
+    section for why the pre-Milestone-87 architecture-based guess was
+    unreliable). Any other string raises `PersistenceError` before anything
+    is written -- this is a small, fixed vocabulary matching Forge's three
+    existing inference workflows exactly, not an open-ended task registry.
+
+    `task="regression"` or `task="segmentation"` combined with a non-`None`
+    `classes=` raises `PersistenceError` immediately: neither workflow has a
+    class-vocabulary concept (see `predict_tensor_artifact()`/
+    `predict_image_artifact()`'s own docstrings), so saving both together
+    would describe an artifact whose two pieces of metadata disagree about
+    what it is. `task="classification"` places no such restriction on
+    `classes` -- `classes=None` remains a real, valid classification-artifact
+    state (see `predict_artifact()`'s own docstring), and `task=` is what now
+    lets `predict_model()` recognize that state correctly instead of
+    misidentifying it as regression (the M86 ambiguity `docs/development/
+    m86-unified-artifact-prediction.md` documented and this milestone
+    closes).
+
+    Omitting `task` (the default) writes no `"task"` key at all -- exactly
+    like `preprocessing=`/`classes=`'s own optional-key convention -- so
+    files saved before Milestone 87 and files saved with no task metadata
+    are byte-for-byte equivalent in this respect and remain fully loadable.
+    `forge.predict_model()` falls back to an isolated, documented legacy
+    heuristic for such files (`forge/training/inference.py::
+    _legacy_infer_workflow()`) rather than treating an absent task as any
+    particular value.
     """
     if not isinstance(model, Module):
         raise PersistenceError(f"save_model() requires a forge.nn.Module, got {type(model).__name__}.")
     _validate_classes(classes)
+    _validate_task(task, classes)
 
     model_device = model.device
     device_str = model_device.type if model_device is not None else "cpu"
@@ -137,6 +200,7 @@ def save_model(
         "root": root_node,
         "preprocessing": preprocessing_node,
         "classes": list(classes) if classes is not None else None,
+        "task": task,
     }
     prefixed_arrays = {f"{PARAMETERS_DIR}/{name}": array for name, array in arrays.items()}
     write_archive(path, metadata, prefixed_arrays)
@@ -574,14 +638,17 @@ class ModelInfo:
     model: ModelSummary
     preprocessing: "PreprocessingInfo | None"
     classes: "list[str] | None"
+    task: "str | None"
     format_version: int
     device: str
 
     def __str__(self) -> str:
         preprocessing_line = self.preprocessing.description if self.preprocessing is not None else "none"
         classes_line = ", ".join(self.classes) if self.classes else "none"
+        task_line = self.task if self.task is not None else "unknown (legacy artifact, saved before Milestone 87)"
         return (
             f"Model: {self.model.type} ({self.model.parameter_count:,} parameters)\n"
+            f"Task: {task_line}\n"
             f"Input preprocessing: {preprocessing_line}\n"
             f"Classes: {classes_line}\n"
             f"Artifact format: version {self.format_version} (device={self.device})"
@@ -633,13 +700,16 @@ def inspect_model(path: str) -> ModelInfo:
     info.model.type              # "Sequential"
     info.preprocessing.description  # "Resize(size=(64, 64)) -> Normalize(mean=0.0, std=255.0)"
     info.classes                 # ["cat", "dog"], or None
+    info.task                    # "classification", "regression", "segmentation", or None
     ```
 
     Answers "what is this artifact?" -- a question a developer holding just a
     `.forge` file needs to answer *before* choosing which of `forge.
     predict_artifact()`/`predict_tensor_artifact()`/`predict_image_artifact()`
     applies, without already knowing Forge's archive format or writing
-    `load_model()`/`load_preprocessing()`/`load_classes()` calls by hand.
+    `load_model()`/`load_preprocessing()`/`load_classes()` calls by hand. As
+    of **Milestone 87**, `info.task` is the authoritative signal for this --
+    see `forge.predict_model()`'s own docstring for how it uses it.
 
     Reads only `metadata.json` via `read_archive()` -- the same primitive
     `load_model()`/`load_preprocessing()`/`load_classes()` themselves use
@@ -655,14 +725,22 @@ def inspect_model(path: str) -> ModelInfo:
     module-type registry.
 
     Works identically on artifacts saved with or without `preprocessing=`/
-    `classes=` (Milestones 71/72), including files saved before either
-    existed: `preprocessing`/`classes` are simply `None` in that case, exactly
-    matching `load_preprocessing()`/`load_classes()`'s own behavior -- an
-    ordinary, expected outcome, never an error.
+    `classes=`/`task=` (Milestones 71/72/87), including files saved before any
+    of them existed: `preprocessing`/`classes`/`task` are simply `None` in
+    that case, exactly matching `load_preprocessing()`/`load_classes()`'s own
+    backward-compatible behavior -- an ordinary, expected outcome, never an
+    error. `info.task is None` means exactly "this artifact never declared an
+    explicit task" -- it is never guessed from `model.module_types` here (that
+    heuristic, when needed at all, lives only in `forge.predict_model()`'s own
+    isolated legacy fallback -- see that function's docstring -- never in this
+    read-only inspection contract).
 
     Raises `PersistenceError` for a missing/corrupt file, an unsupported
     format version, or malformed metadata -- the same conditions `load_model()`
-    itself raises for these cases.
+    itself raises for these cases -- including a `"task"` value that is
+    present but not one of `forge.serialization.model.TASK_TYPES` (a
+    malformed/tampered file, since `save_model()` itself never writes
+    anything else there).
     """
     metadata, _ = read_archive(path, kind="model")
     if not isinstance(metadata, dict):
@@ -706,10 +784,18 @@ def inspect_model(path: str) -> ModelInfo:
             f"strings, got {classes!r})."
         )
 
+    task = metadata.get("task")
+    if task is not None and task not in TASK_TYPES:
+        raise PersistenceError(
+            f"Cannot inspect model '{path}': malformed 'task' metadata (expected one of "
+            f"{TASK_TYPES!r} or null, got {task!r})."
+        )
+
     return ModelInfo(
         model=model_summary,
         preprocessing=preprocessing_info,
         classes=list(classes) if classes is not None else None,
+        task=task,
         format_version=version,
         device=device,
     )
@@ -718,4 +804,5 @@ def inspect_model(path: str) -> ModelInfo:
 __all__ = [
     "save_model", "load_model", "load_preprocessing", "load_classes", "inspect_model",
     "ModelInfo", "ModelSummary", "PreprocessingInfo", "FORMAT_VERSION", "SUPPORTED_DEVICE_TYPES",
+    "TASK_TYPES",
 ]

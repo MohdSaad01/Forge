@@ -17,7 +17,7 @@ from forge import Tensor, no_grad
 from forge.data import Compose, DataLoader, Normalize, TensorDataset
 from forge.exceptions import DataError, PersistenceError, TrainerError
 from forge.nn import Dropout, Linear, Module, ReLU, RNNCell
-from forge.serialization import load_classes, load_preprocessing
+from forge.serialization import inspect_model, load_classes, load_preprocessing
 from forge.training import Trainer, generate_sequence, predict, save_and_verify
 from forge.training import inference as inference_module
 from forge.training.inference import generate_sequence as generate_sequence_direct
@@ -271,6 +271,26 @@ def test_save_and_verify_defaults_to_no_preprocessing_or_classes(tmp_path):
 
     assert load_classes(path) is None
     assert load_preprocessing(path) is None
+
+
+def test_save_and_verify_passes_through_task(tmp_path):
+    model = _model()
+    x = _features(n=1)
+    path = str(tmp_path / "model.forge")
+
+    save_and_verify(model, path, x, classes=["a", "b", "c"], task="classification")
+
+    assert inspect_model(path).task == "classification"
+
+
+def test_save_and_verify_defaults_to_no_task(tmp_path):
+    model = _model()
+    x = _features(n=1)
+    path = str(tmp_path / "model.forge")
+
+    save_and_verify(model, path, x)
+
+    assert inspect_model(path).task is None
 
 
 def test_save_and_verify_rejects_non_module(tmp_path):

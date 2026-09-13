@@ -236,7 +236,7 @@ def main(argv=None) -> None:
         # below gets this for free from train_and_save() instead.
         reloaded = save_and_verify(
             model, str(model_path), query_x_batch,
-            preprocessing=build_transform(), classes=full_dataset.classes,
+            preprocessing=build_transform(), classes=full_dataset.classes, task="classification",
         )
     else:
         # Milestone 81: the fresh (non-resume) path now trains through
@@ -270,6 +270,7 @@ def main(argv=None) -> None:
             sample=query_x_batch,
             preprocessing=build_transform(),
             classes=full_dataset.classes,
+            task="classification",
         )
         history = train_result.history
         reloaded = train_result.model

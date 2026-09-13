@@ -180,6 +180,7 @@ def save_and_verify(
     device: "str | Device | None" = None,
     preprocessing: "Any | None" = None,
     classes: "list[str] | None" = None,
+    task: "str | None" = None,
     atol: float = 1e-5,
 ) -> Module:
     """Save `model` to `path`, then immediately prove it is a genuinely portable
@@ -228,6 +229,12 @@ def save_and_verify(
     demo), so a caller's next step genuinely exercises the file on disk, not
     lingering in-memory state from training.
 
+    `task` (Milestone 87) is passed straight through to `save_model()` --
+    optionally declaring which of `"classification"`/`"regression"`/
+    `"segmentation"` this artifact represents, so `forge.predict_model()` can
+    dispatch to it reliably. See `save_model()`'s own docstring for the exact
+    vocabulary and its interaction with `classes`.
+
     **Scope.** Deliberately narrow: this only composes `save_model()` +
     `load_model()` + `predict()`, so it covers exactly `predict()`'s own
     calling convention (`model(x)` on a single batched `Tensor`) -- it does
@@ -252,7 +259,7 @@ def save_and_verify(
     resolved_device = Device.parse(device) if device is not None else None
     pre_save = predict(model, sample, device=resolved_device).numpy()
 
-    _save_model(model, path, preprocessing=preprocessing, classes=classes)
+    _save_model(model, path, preprocessing=preprocessing, classes=classes, task=task)
     reloaded = _load_model(path, device=resolved_device.type if resolved_device is not None else None)
     post_load = predict(reloaded, sample).numpy()
 
@@ -545,12 +552,14 @@ def predict_image_artifact(
     return Tensor(mask[0], device="cpu")
 
 
-def _determine_workflow(info: "Any") -> str:
-    """Pick one of `"classification"`/`"regression"`/`"segmentation"` for a `ModelInfo`, or fail clearly.
+def _legacy_infer_workflow(info: "Any") -> str:
+    """The pre-Milestone-87 architecture-based guess, kept **only** as an
+    isolated fallback for artifacts with no explicit `"task"` metadata.
 
-    The only signal used is metadata `inspect_model()` (Milestone 85) already
-    exposes -- never model weights, a trial forward pass, or a guess from
-    tensor dimensions:
+    This is the exact heuristic Milestone 86 introduced, before Milestone 87
+    added explicit task metadata (`save_model(..., task=...)`): never model
+    weights, a trial forward pass, or tensor dimensions -- only metadata
+    `inspect_model()` (Milestone 85) already exposes.
 
     - `classes` **present** -> `"classification"`. This is unambiguous:
       `save_model()` (`forge/serialization/model.py`) never populates
@@ -568,15 +577,24 @@ def _determine_workflow(info: "Any") -> str:
     - Neither `"Linear"` nor `"Conv2d"` present (and no `classes`) -> genuinely
       undetermined; raises `forge.PersistenceError` rather than guessing.
 
-    **Known limitation** (see this module's own docstring's Milestone 86
-    paragraph and `docs/development/m86-unified-artifact-prediction.md`): a
-    classification model saved with `classes=None` (a real, valid state --
-    see `predict_artifact()`'s own docstring -- just one no current Forge
-    example actually produces) still contains a `Linear` layer, so it is
-    misidentified as `"regression"` here. Resolving this would need a
-    persisted task flag `save_model()` does not write today; until a real
-    consumer needs that, this stays a documented gap rather than speculative
-    machinery.
+    **Known, permanent limitation of this legacy fallback specifically**
+    (documented since Milestone 86, `docs/development/
+    m86-unified-artifact-prediction.md`): a classification model saved with
+    `classes=None` (a real, valid state -- see `predict_artifact()`'s own
+    docstring) is architecturally indistinguishable from a regression model
+    when neither carries a `"task"` -- both are `Linear`-terminated with no
+    saved `classes`. This function still guesses `"regression"` for that
+    shape, exactly as Milestone 86 did, because a genuinely legacy file (no
+    `task` key at all, pre-Milestone-87) gives `predict_model()` no other
+    signal to work with, and real `examples/regression` artifacts saved
+    before Milestone 87 -- architecturally identical, and needing to keep
+    working -- are indistinguishable from that ambiguous case by
+    architecture alone. **This is why Milestone 87 exists**: any artifact
+    saved with an explicit `task=` (see `_determine_workflow()` below) never
+    reaches this function at all, so a modern classification artifact with no
+    `classes` is identified correctly regardless of this limitation. Only a
+    genuinely legacy file, or one saved with `task=` deliberately omitted,
+    can still hit this documented gap.
     """
     if info.classes is not None:
         return "classification"
@@ -589,15 +607,42 @@ def _determine_workflow(info: "Any") -> str:
 
     raise PersistenceError(
         "predict_model() could not determine a supported prediction workflow for this "
-        f"artifact: no class vocabulary was saved (ruling out classification), and its "
+        f"artifact: it has no explicit task metadata (see forge.save_model(..., task=...)), "
+        f"no class vocabulary was saved (ruling out the legacy classification signal), and its "
         f"architecture ({', '.join(module_types)}) contains neither a Linear layer "
-        "(the regression signal) nor a Conv2d layer (the segmentation signal) -- the only "
-        "signals predict_model() currently uses to tell these workflows apart. Supported "
-        "workflows: classification (forge.predict_artifact(), requires classes= at save "
-        "time), regression (forge.predict_tensor_artifact()), segmentation "
+        "(the legacy regression signal) nor a Conv2d layer (the legacy segmentation signal). "
+        "Supported workflows: classification (forge.predict_artifact(), requires classes= at "
+        "save time), regression (forge.predict_tensor_artifact()), segmentation "
         "(forge.predict_image_artifact()). Call one of these directly if you already know "
         "which applies, or inspect the artifact first with forge.inspect_model()."
     )
+
+
+def _determine_workflow(info: "Any") -> str:
+    """Pick one of `"classification"`/`"regression"`/`"segmentation"` for a `ModelInfo`, or fail clearly (Milestones 86/87).
+
+    As of **Milestone 87**, `info.task` -- the explicit metadata a caller
+    declared via `forge.save_model(..., task=...)` (or `train_and_save()`/
+    `save_and_verify()`'s own `task=`) -- is the primary, authoritative
+    signal: when present, it is already one of `forge.serialization.model.
+    TASK_TYPES` (`inspect_model()` validates this), so it is returned
+    directly, with no architecture inspection at all. This is what finally
+    closes Milestone 86's documented ambiguity: a classification artifact
+    saved with `classes=None` but `task="classification"` is identified
+    correctly, because the explicit declaration is used before `classes`/
+    module-architecture are ever consulted.
+
+    Only when `info.task is None` -- a genuinely legacy artifact, saved
+    before Milestone 87, or one where `task=` was deliberately omitted --
+    does this fall back to `_legacy_infer_workflow()`, the exact Milestone 86
+    heuristic, unchanged and isolated in its own function (see that
+    function's own docstring for what it can and cannot safely tell apart,
+    and why that documented limitation cannot be resolved without an
+    explicit task declaration).
+    """
+    if info.task is not None:
+        return info.task
+    return _legacy_infer_workflow(info)
 
 
 def predict_model(
@@ -606,7 +651,7 @@ def predict_model(
     *,
     device: "str | Device | None" = None,
 ) -> "ClassificationPrediction | int | Tensor":
-    """Predict from any supported portable `.forge` artifact, in one call, with no manual workflow choice (Milestone 86).
+    """Predict from any supported portable `.forge` artifact, in one call, with no manual workflow choice (Milestones 86/87).
 
     ```python
     result = forge.predict_model("model.forge", input_data)

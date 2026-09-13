@@ -199,16 +199,17 @@ saves + verifies the model through `forge.training.save_and_verify()`
 (Milestone 78) -- called directly on `--resume`, or as the second half of
 `forge.train_and_save()` (Milestone 81) on the fresh path -- which saves the
 model with its `preprocessing=Compose([Resize(...), Normalize(...)])`
-pipeline (Milestone 71) and `classes=full_dataset.classes` vocabulary
-(Milestone 72) as two sibling metadata entries in the same `.forge` model
-file (`save_model(model, path, preprocessing=..., classes=...)` -- no
+pipeline (Milestone 71), `classes=full_dataset.classes` vocabulary
+(Milestone 72), and an explicit `task="classification"` (Milestone 87) as
+sibling metadata entries in the same `.forge` model
+file (`save_model(model, path, preprocessing=..., classes=..., task=...)` -- no
 separate sidecar file), then reloads it fresh and confirms the reload's
 prediction matches the pre-save model, raising `forge.PersistenceError`
 instead if the reload ever disagrees -- see `docs/architecture/
-persistence.md`'s **Preprocessing metadata** and **Class-label metadata**
-sections, and `docs/architecture/training-engine.md`'s **Portable-artifact
-save + verify** and **Train, evaluate, persist, verify in one call**
-sections. (Milestone 81: the fresh path trains, saves, and verifies the
+persistence.md`'s **Preprocessing metadata**, **Class-label metadata**, and
+**Task metadata** sections, and `docs/architecture/training-engine.md`'s
+**Portable-artifact save + verify** and **Train, evaluate, persist, verify in
+one call** sections. (Milestone 81: the fresh path trains, saves, and verifies the
 `.forge` model file via one `forge.train_and_save()` call, then writes its
 checkpoint via plain `forge.save_checkpoint()`; `--resume` still goes through
 `start_training_session()` followed by a direct `save_and_verify()` call --

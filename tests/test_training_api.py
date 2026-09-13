@@ -21,7 +21,7 @@ from forge.exceptions import DataError, PersistenceError, TrainerError
 from forge.nn import Linear, Module, ReLU
 from forge.nn.loss import CrossEntropyLoss, MSELoss
 from forge.optim import SGD, Adam
-from forge.serialization import load_classes, load_preprocessing, register_module
+from forge.serialization import inspect_model, load_classes, load_preprocessing, register_module
 from forge.training import Accuracy, TrainAndSaveResult, Trainer, TrainingHistory, train, train_and_save
 
 
@@ -361,6 +361,36 @@ def test_train_and_save_passes_through_preprocessing_and_classes(tmp_path):
     )
 
     assert load_classes(path) == ["a", "b", "c"]
+
+
+def test_train_and_save_passes_through_task(tmp_path):
+    """Milestone 87: `task=` reaches `save_and_verify()`/`save_model()`
+    unchanged, so `train_and_save(..., task=...)` alone is enough to produce
+    a self-describing artifact with no separate `save_model()` call."""
+    model = _MLP(in_features=2, out_features=3)
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+    path = str(tmp_path / "model.forge")
+
+    train_and_save(
+        model, _classification_dataset(), loss=CrossEntropyLoss(),
+        optimizer=Adam(model.parameters(), lr=0.01), epochs=1, path=path, sample=x, verbose=False,
+        classes=["a", "b", "c"], task="classification",
+    )
+
+    assert inspect_model(path).task == "classification"
+
+
+def test_train_and_save_without_task_leaves_it_unset(tmp_path):
+    model = _MLP()
+    x = Tensor(np.zeros((1, 2), dtype=np.float32))
+    path = str(tmp_path / "model.forge")
+
+    train_and_save(
+        model, _regression_dataset(), loss=MSELoss(), optimizer=SGD(model.parameters(), lr=0.05),
+        epochs=1, path=path, sample=x, verbose=False,
+    )
+
+    assert inspect_model(path).task is None
 
 
 def test_train_and_save_exposes_the_final_epochs_validation_result(tmp_path):

@@ -223,7 +223,10 @@ instead if the reload ever disagrees. The rendered `segmentation_predicted_mask.
 is produced from the reloaded model, not the pre-save one. Since Milestone
 84, the saved model also carries a `Normalize(mean=0.0, std=255.0)`
 preprocessing pipeline (`train.py::build_transform()`) -- see **Portable
-artifact inference** below for what that unlocks.
+artifact inference** below for what that unlocks. Since Milestone 87, the
+saved model also declares `task="segmentation"` explicitly, so `infer.py`'s
+`forge.predict_model()` call dispatches to `predict_image_artifact()` from
+that declaration rather than an architecture guess.
 
 ## Viewing a predicted mask
 

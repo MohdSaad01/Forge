@@ -187,7 +187,9 @@ def main(argv=None) -> None:
     # abstraction.
     query_x, query_mask = test_ds[0]
     query_x = query_x.to(args.device).reshape(1, 3, IMAGE_SIZE, IMAGE_SIZE)
-    reloaded = save_and_verify(model, str(model_path), query_x, preprocessing=build_transform())
+    reloaded = save_and_verify(
+        model, str(model_path), query_x, preprocessing=build_transform(), task="segmentation",
+    )
     print(f"Saved + verified model + preprocessing -> {model_path}")
 
     # Milestone 76: a segmentation model's real output is the predicted

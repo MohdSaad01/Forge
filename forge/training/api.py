@@ -240,6 +240,7 @@ def train_and_save(
     verbose: bool = True,
     preprocessing: "Any | None" = None,
     classes: "list[str] | None" = None,
+    task: "str | None" = None,
     atol: float = 1e-5,
 ) -> TrainAndSaveResult:
     """Train `model`, then save + verify it as a portable artifact, in one call (Milestone 81).
@@ -257,6 +258,7 @@ def train_and_save(
         sample=query_x_batch,
         preprocessing=build_transform(),
         classes=full_dataset.classes,
+        task="classification",
     )
     result.history       # the TrainingHistory train() returned
     result.val_metrics    # the last epoch's validation metrics, e.g. {"accuracy": 0.97}
@@ -295,6 +297,14 @@ def train_and_save(
     fully available, unmodified, for a caller needing checkpoint/resume, CUDA
     prefetch, a custom `DataLoader`, or a training/verification boundary this
     function does not expose.
+
+    `task` (Milestone 87) is passed straight through to `save_and_verify()` --
+    the recommended way to produce a correctly self-describing artifact in
+    one call: `forge.train_and_save(..., path="model.forge",
+    task="classification")` needs no separate `save_model()` call solely to
+    attach task metadata. See `save_model()`'s own docstring for the exact
+    vocabulary; omitting it (the default) writes no task metadata, exactly
+    like omitting `classes`/`preprocessing`.
     """
     history = train(
         model, dataset,
@@ -303,7 +313,7 @@ def train_and_save(
         validation_dataset=validation_dataset, device=device, metrics=metrics, verbose=verbose,
     )
     reloaded = save_and_verify(
-        model, path, sample, preprocessing=preprocessing, classes=classes, atol=atol,
+        model, path, sample, preprocessing=preprocessing, classes=classes, task=task, atol=atol,
     )
     last = history[-1]
     return TrainAndSaveResult(

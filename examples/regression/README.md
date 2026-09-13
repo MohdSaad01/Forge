@@ -285,6 +285,10 @@ previously the saved model recorded only the trained weights, so a fresh
 process holding just `regression_model.forge` had no way to standardize a
 brand-new *raw* feature vector the way training data was standardized. A
 regression model has no class vocabulary, so `classes=` is never passed.
+**Milestone 87**: the artifact also declares `task="regression"` explicitly,
+so `forge.predict_model()` (used by this script's own end-of-run demo)
+dispatches to `predict_tensor_artifact()` from that declaration rather than
+an architecture guess.
 
 ## Portable-artifact inference: `forge.predict_tensor_artifact()` (Milestone 83)
 

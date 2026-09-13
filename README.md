@@ -90,7 +90,11 @@ See `docs/architecture/architecture.md` for the full design rules and
   preprocessing=...)`/`load_preprocessing()` optionally save and reconstruct
   a model's required input-preprocessing `Transform` (e.g. `Resize`/
   `Normalize`/`Compose`) alongside it, via the same explicit-registry
-  principle. See `docs/architecture/persistence.md`.
+  principle. `save_model(..., task=...)` optionally declares which of
+  `"classification"`/`"regression"`/`"segmentation"` the artifact represents
+  -- the authoritative signal `forge.predict_model()` uses to dispatch
+  reliably, closing the ambiguity an architecture-based guess could not
+  always resolve. See `docs/architecture/persistence.md`.
 - **CUDA backend** (`forge.backend.cuda`, `forge.cuda`) -- a real,
   hardware-tested backend (not simulated): device tensor storage, a caching
   memory allocator, explicit streams, pinned-memory async transfer, and
@@ -243,24 +247,30 @@ independent of how it was trained -- `forge.save_and_verify(model, path,
 sample, preprocessing=..., classes=...)` does that save and immediately
 proves the file round-trips by reloading it fresh and comparing a
 prediction, and `forge.train_and_save(model, dataset, loss=..., optimizer=
-..., epochs=..., path=..., sample=..., preprocessing=..., classes=...)`
-composes `train()` + `save_and_verify()` into the one call every
-Trainer-based example's `train.py` ends with. On the consuming side,
-`forge.predict_artifact(path, image_path)` turns a saved image-classification
-artifact and one new image file into a prediction in one call, and
-`forge.predict_tensor_artifact(path, input_data)` does the same for a
-non-classification artifact (e.g. `examples/regression/`) whose input is a
-plain numeric array rather than a file, and `forge.predict_image_artifact(path,
-image_path)` does the same for an image-to-image dense-prediction artifact
-(e.g. `examples/segmentation/`), returning another image-shaped `Tensor`
-ready for `forge.data.save_image()`. Every example under `examples/`
-demonstrates the producing side; `mnist`/`image_folder_classification`,
-`regression`, and `segmentation` respectively demonstrate the three
-consuming functions -- see `docs/architecture/persistence.md` for the file
-format and trust model (no arbitrary code execution on load) and
-`docs/architecture/training-engine.md` for
+..., epochs=..., path=..., sample=..., preprocessing=..., classes=...,
+task=...)` composes `train()` + `save_and_verify()` into the one call every
+Trainer-based example's `train.py` ends with. `forge.inspect_model(path)`
+answers "what is this artifact?" -- model architecture summary,
+preprocessing, classes, task, format/device -- without reconstructing a live
+model or requiring CUDA. On the consuming side, `forge.predict_artifact(path,
+image_path)` turns a saved image-classification artifact and one new image
+file into a prediction in one call, `forge.predict_tensor_artifact(path,
+input_data)` does the same for a non-classification artifact (e.g.
+`examples/regression/`) whose input is a plain numeric array rather than a
+file, `forge.predict_image_artifact(path, image_path)` does the same for an
+image-to-image dense-prediction artifact (e.g. `examples/segmentation/`),
+returning another image-shaped `Tensor` ready for `forge.data.save_image()`,
+and `forge.predict_model(path, input_data)` picks the right one of the three
+automatically -- from the artifact's own explicit `task=` metadata when
+present, falling back to an isolated, documented architecture heuristic only
+for artifacts saved without it. Every example under `examples/` demonstrates
+the producing side; `mnist`/`image_folder_classification`, `regression`, and
+`segmentation` respectively demonstrate the three consuming functions -- see
+`docs/architecture/persistence.md` for the file format and trust model (no
+arbitrary code execution on load) and `docs/architecture/training-engine.md`
+for
 `train()`/`train_and_save()`/`predict_artifact()`/`predict_tensor_artifact()`/
-`predict_image_artifact()`'s full contracts and their
+`predict_image_artifact()`/`predict_model()`'s full contracts and their
 `Trainer`/`TrainingSession` boundary.
 
 ## Testing

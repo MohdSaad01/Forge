@@ -2,14 +2,18 @@
 
 `inspect` reads archive metadata only (`forge/cli/_archive_info.py`) -- it
 never reconstructs a live `Module`, never requires CUDA, and never mutates
-anything. Its "Preprocessing detail" line (Milestone 85) delegates to
-`forge.inspect_model()` -- the public, structured inspection API -- rather
-than re-deriving a preprocessing description of its own; the rest of this
-command's per-module/per-parameter dump remains this file's own lower-level
-archive walk (`_archive_info.py`), which stays intentionally more detailed
-than `inspect_model()`'s product-level `ModelInfo` contract. `convert` is a real device conversion and goes straight through
+anything. Its "Preprocessing detail" line (Milestone 85) and "Task" line
+(Milestone 87) both delegate to `forge.inspect_model()` -- the public,
+structured inspection API -- rather than re-deriving that information of its
+own; the rest of this command's per-module/per-parameter dump remains this
+file's own lower-level archive walk (`_archive_info.py`), which stays
+intentionally more detailed than `inspect_model()`'s product-level `ModelInfo`
+contract. `convert` is a real device conversion and goes straight through
 `forge.load_model()` / `forge.save_model()`, exactly as a Python caller
-would -- no separate conversion logic lives here. `predict` (Milestone 72)
+would -- no separate conversion logic lives here; it preserves
+preprocessing/classes/task metadata across the conversion (Milestone 87 added
+`task` to what it carries over) since a converted file is still meant to be a
+complete, self-describing artifact. `predict` (Milestone 72)
 is a thin CLI wrapper over `forge.training.predict_artifact()` (Milestone
 82) -- the same "`load_model()` / `load_preprocessing()` / `load_classes()`
 / decode image / `predict()` / `interpret_classification()`" sequence
@@ -26,14 +30,17 @@ its own `--help` text says so -- and is exercised (`tests/
 test_classification_metadata.py::test_cli_predict_without_classes_prints_index`)
 against a real, valid classification artifact saved with `classes=None`
 (see `predict_artifact()`'s own docstring: a classification model with no
-saved class vocabulary is a legitimate state, not an error). `predict_model()`
-cannot always tell that state apart from a regression artifact -- both may
-have no saved `classes` and a `Linear`-terminated architecture (see
-`forge/training/inference.py::_determine_workflow()`'s own documented
-limitation) -- so routing this command through it would silently break an
-already-correct, already-tested CLI behavior for no real gain: this
-command's `--image`-only contract was never ambiguous about which workflow
-applies in the first place.
+saved class vocabulary is a legitimate state, not an error). That test
+artifact carries no explicit `task=` either, so even with Milestone 87's
+explicit task metadata, `predict_model()` still cannot tell it apart from a
+legacy regression artifact -- both fall back to `forge/training/
+inference.py::_legacy_infer_workflow()`'s architecture-based guess when
+`task` is absent. Routing this command through `predict_model()` would
+therefore still silently break this already-correct, already-tested CLI
+behavior for no real gain: this command's `--image`-only contract was never
+ambiguous about which workflow applies in the first place, and stays a thin
+wrapper over `predict_artifact()` directly, unaffected by the task-dispatch
+question entirely.
 """
 
 from __future__ import annotations
@@ -94,8 +101,10 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     # Milestone 85: the public inspection contract (forge.inspect_model())
     # is reused here for the preprocessing description rather than
     # re-deriving it -- "CLI must delegate to the public inspection API."
+    # Milestone 87: the same call also exposes info.task.
     info = inspect_model(args.path)
     preprocessing_description = info.preprocessing.description if info.preprocessing is not None else None
+    task = info.task
 
     if args.json:
         payload = {
@@ -106,6 +115,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             "has_preprocessing": has_preprocessing,
             "preprocessing_description": preprocessing_description,
             "classes": classes,
+            "task": task,
             "modules": [{"name": name, "type": type_name} for name, type_name in modules],
             "parameters": [
                 {
@@ -124,6 +134,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     print(f"Model: {args.path}")
     print(f"Format version: {metadata['forge_format_version']}")
     print(f"Device: {metadata['device']}")
+    print(f"Task: {task if task is not None else 'unknown (legacy artifact, saved before Milestone 87)'}")
     print(f"Training: {'train' if training else 'eval'}")
     print(f"Preprocessing: {'yes' if has_preprocessing else 'no'}")
     if preprocessing_description is not None:
@@ -157,12 +168,14 @@ def cmd_convert(args: argparse.Namespace) -> int:
         raise CLIError(f"Cannot write to '{args.output}': directory '{output_dir}' does not exist.")
 
     model = load_model(args.model, device=args.device)
-    # Preserve preprocessing (Milestone 71)/classes (Milestone 72) metadata
-    # across a device conversion -- a converted file is still meant to be a
-    # complete, self-describing artifact, not a bare weights-only copy.
+    # Preserve preprocessing (Milestone 71)/classes (Milestone 72)/task
+    # (Milestone 87) metadata across a device conversion -- a converted file
+    # is still meant to be a complete, self-describing artifact, not a bare
+    # weights-only copy.
     preprocessing = load_preprocessing(args.model)
     classes = load_classes(args.model)
-    save_model(model, args.output, preprocessing=preprocessing, classes=classes)
+    task = inspect_model(args.model).task
+    save_model(model, args.output, preprocessing=preprocessing, classes=classes, task=task)
     print(f"Converted '{args.model}' -> '{args.output}' (device={args.device}).")
     return 0
 

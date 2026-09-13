@@ -188,6 +188,7 @@ def main(argv=None) -> None:
     reloaded = save_and_verify(
         model, str(model_path), query_x,
         preprocessing=build_transform(), classes=[str(d) for d in range(_NUM_CLASSES)],
+        task="classification",
     )
     print(f"Saved + verified model + preprocessing + classes -> {model_path}")
 
