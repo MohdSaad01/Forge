@@ -104,8 +104,10 @@ See `docs/architecture/architecture.md` for the full design rules and
   `Trainer(device="cuda")`) is opt-in and raises `forge.CUDAError` cleanly
   when it isn't.
 - **CLI** (`forge ...` / `python -m forge ...`) -- `model inspect`/`convert`
-  and `checkpoint inspect`/`convert` over the persistence format above, plus
-  `forge benchmark`. See `docs/development/cli.md`.
+  and `checkpoint inspect`/`convert` over the persistence format above,
+  `model predict` (task-aware over classification/regression/segmentation
+  artifacts, driven by their own persisted `task` metadata), plus `forge
+  benchmark`. See `docs/development/cli.md`.
 
 Not in Forge (by design, not oversight): attention/Transformer layers,
 convolution beyond 2D, distributed/multi-GPU training, mixed-precision

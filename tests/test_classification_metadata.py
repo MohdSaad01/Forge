@@ -229,47 +229,69 @@ def _make_image(path: Path, size=(8, 8), fill=100):
     Image.fromarray(arr, mode="RGB").save(path)
 
 
-def _saved_tiny_model(tmp_path, *, preprocessing=None, classes=None):
+def _saved_tiny_model(tmp_path, *, preprocessing=None, classes=None, task=None):
     forge.random.seed(0)
     model = _TinyCNN(num_classes=len(classes) if classes else 2)
     path = tmp_path / "model.forge"
-    save_model(model, str(path), preprocessing=preprocessing, classes=classes)
+    save_model(model, str(path), preprocessing=preprocessing, classes=classes, task=task)
     return path
 
 
 def test_cli_predict_prints_label_and_confidence(tmp_path, capsys):
     pre = Compose([Resize((8, 8)), Normalize(mean=0.0, std=255.0)])
-    model_path = _saved_tiny_model(tmp_path, preprocessing=pre, classes=["cat", "dog"])
+    model_path = _saved_tiny_model(tmp_path, preprocessing=pre, classes=["cat", "dog"], task="classification")
     image_path = tmp_path / "query.png"
     _make_image(image_path)
 
-    exit_code = cli_main(["model", "predict", str(model_path), "--image", str(image_path)])
+    exit_code = cli_main(["model", "predict", str(model_path), str(image_path)])
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "Predicted class:" in out
+    assert "Prediction:" in out
     assert ("cat" in out) or ("dog" in out)
     assert "Confidence:" in out
 
 
 def test_cli_predict_without_classes_prints_index(tmp_path, capsys):
+    # Milestone 88: a classification artifact saved with classes=None is a
+    # real, valid state (predict_artifact()'s own docstring) -- pinning this
+    # down requires an explicit task="classification" here (see Milestone
+    # 86/87's own documented classes=None+no-task ambiguity, closed by
+    # Milestone 87's task metadata and consumed by the CLI as of Milestone
+    # 88 -- see forge/cli/model.py's module docstring). The genuinely
+    # ambiguous case (no task at all) is covered separately below.
     pre = Compose([Resize((8, 8)), Normalize(mean=0.0, std=255.0)])
-    model_path = _saved_tiny_model(tmp_path, preprocessing=pre, classes=None)
+    model_path = _saved_tiny_model(tmp_path, preprocessing=pre, classes=None, task="classification")
     image_path = tmp_path / "query.png"
     _make_image(image_path)
 
-    exit_code = cli_main(["model", "predict", str(model_path), "--image", str(image_path)])
+    exit_code = cli_main(["model", "predict", str(model_path), str(image_path)])
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "Predicted class index:" in out
+    assert "Prediction: class index" in out
     assert "Confidence" not in out
 
 
-def test_cli_predict_without_preprocessing_fails_clearly(tmp_path, capsys):
-    model_path = _saved_tiny_model(tmp_path, preprocessing=None, classes=["cat", "dog"])
+def test_cli_predict_legacy_artifact_with_no_task_fails_clearly(tmp_path, capsys):
+    """A genuinely legacy artifact (no task=, no classes) must never be
+    silently guessed via architecture (the M86 problem) -- it must fail
+    clearly and point the caller at the task-specific API or a resave."""
+    pre = Compose([Resize((8, 8)), Normalize(mean=0.0, std=255.0)])
+    model_path = _saved_tiny_model(tmp_path, preprocessing=pre, classes=None, task=None)
     image_path = tmp_path / "query.png"
     _make_image(image_path)
 
-    exit_code = cli_main(["model", "predict", str(model_path), "--image", str(image_path)])
+    exit_code = cli_main(["model", "predict", str(model_path), str(image_path)])
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "does not declare a task" in err
+
+
+def test_cli_predict_without_preprocessing_fails_clearly(tmp_path, capsys):
+    model_path = _saved_tiny_model(tmp_path, preprocessing=None, classes=["cat", "dog"], task="classification")
+    image_path = tmp_path / "query.png"
+    _make_image(image_path)
+
+    exit_code = cli_main(["model", "predict", str(model_path), str(image_path)])
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "preprocessing" in err.lower()
@@ -278,14 +300,14 @@ def test_cli_predict_without_preprocessing_fails_clearly(tmp_path, capsys):
 def test_cli_predict_missing_model_file_fails(tmp_path):
     image_path = tmp_path / "query.png"
     _make_image(image_path)
-    exit_code = cli_main(["model", "predict", str(tmp_path / "nope.forge"), "--image", str(image_path)])
+    exit_code = cli_main(["model", "predict", str(tmp_path / "nope.forge"), str(image_path)])
     assert exit_code == 1
 
 
 def test_cli_predict_missing_image_file_fails(tmp_path):
     pre = Compose([Resize((8, 8)), Normalize(mean=0.0, std=255.0)])
-    model_path = _saved_tiny_model(tmp_path, preprocessing=pre, classes=["cat", "dog"])
-    exit_code = cli_main(["model", "predict", str(model_path), "--image", str(tmp_path / "nope.png")])
+    model_path = _saved_tiny_model(tmp_path, preprocessing=pre, classes=["cat", "dog"], task="classification")
+    exit_code = cli_main(["model", "predict", str(model_path), str(tmp_path / "nope.png")])
     assert exit_code == 1
 
 
@@ -362,7 +384,7 @@ def test_end_to_end_train_save_classes_then_fresh_process_infer(tmp_path):
     trainer.fit(loader, epochs=1)
 
     model_path = tmp_path / "artifact.forge"
-    save_model(model, str(model_path), preprocessing=preprocessing, classes=dataset.classes)
+    save_model(model, str(model_path), preprocessing=preprocessing, classes=dataset.classes, task="classification")
 
     # Simulate a fresh process: forget everything except the file path.
     del preprocessing, model, dataset, loader, trainer
@@ -381,5 +403,5 @@ def test_end_to_end_train_save_classes_then_fresh_process_infer(tmp_path):
     assert 0.0 <= result.confidence <= 1.0
 
     # And the equivalent via the CLI, against the same artifact.
-    exit_code = cli_main(["model", "predict", str(model_path), "--image", str(new_path)])
+    exit_code = cli_main(["model", "predict", str(model_path), str(new_path)])
     assert exit_code == 0

@@ -5274,3 +5274,63 @@ CPU/CUDA agreement), plus `task=` round-trip tests added to
 M63, reproduced passing cleanly in isolation, no M87 regression.
 
 Full report: `docs/development/m87-explicit-task-metadata.md`.
+
+### M88 — Unified artifact prediction CLI
+Brought `forge.predict_model()` (M86) and its authoritative `task=`
+metadata (M87) to the actual end-user boundary: `forge model predict`.
+Before this milestone the CLI's `predict` subcommand was hard-wired to
+"classify one image" (`--image IMAGE`, always via `predict_artifact()`) --
+M86/M87 both evaluated retrofitting it and both declined, since a
+classification artifact saved with `classes=None` and no `task=` is
+architecturally indistinguishable from a legacy regression artifact, and
+`predict_model()`'s legacy fallback would have silently misidentified it.
+`forge model predict MODEL INPUT [--device {cpu,cuda}] [--output PATH]
+[--json]` (`--image` retired in favor of a plain positional `input`, since
+input is no longer always an image) now reads `forge.inspect_model(MODEL)
+.task` -- the same signal `model inspect`'s own "Task" line already uses --
+as the *sole* routing signal: `task` present delegates straight to
+`forge.predict_model()` (no architecture inspection, since an explicit task
+is authoritative); `task` absent (a genuinely legacy artifact) fails clearly
+(`"artifact does not declare a task ... resave the model with task
+metadata"`) rather than falling back to `predict_model()`'s own
+architecture-based legacy heuristic -- this is what finally closes the
+`classes=None`-as-regression risk for the CLI specifically, by simply never
+guessing there at all. Classification/segmentation take an image file path
+(unchanged decode path); regression takes a path to a JSON file of numeric
+data (`forge/cli/model.py::_parse_regression_input()` -- a flat list becomes
+one batched sample, a nested list is already-batched, anything else fails
+with one clear "regression input must contain numeric JSON data" message,
+covering malformed JSON, non-numeric JSON, and a non-JSON file uniformly);
+segmentation requires `--output PATH` and saves the mask via
+`forge.data.save_image()`. Added `--json` machine-readable output for all
+three tasks. No new inference logic: `cmd_predict()` composes
+`inspect_model()` + `predict_model()` + the small JSON parser + `save_image()`
+-- the dispatch logic itself stays in exactly one place
+(`forge/training/inference.py::_determine_workflow()`).
+
+`tests/test_classification_metadata.py`'s pre-existing CLI predict tests
+were updated to the new positional syntax/wording and given explicit
+`task="classification"` fixtures (the `classes=None` test specifically
+needs `task=` now to stay unambiguous), plus one new test pinning the
+genuinely-ambiguous legacy (no `task` at all) case to the new clear-failure
+behavior. New `tests/test_cli_predict.py` (22 tests, 21 CPU + 1
+hardware-verified CUDA): command routing for all three tasks; regression
+input parsing (flat/nested list, malformed/non-numeric JSON, an image given
+where JSON is expected, missing input file); segmentation `--output`
+requirement and invalid output directory; missing artifact; legacy-no-task
+failure; a simulated future/unsupported task (via monkeypatching the CLI's
+own `inspect_model` call, since a real artifact can never carry a task
+outside `TASK_TYPES`); `--json` output for all three tasks; explicit
+`--device cpu`; `--device cuda` with CUDA unavailable; a genuine
+`subprocess`-launched fresh-process run (`python -m forge model predict
+...`) covering all three task shapes in one test; and one CUDA-hardware-
+gated test (`--device cuda` reaches the real CUDA inference path,
+hardware-verified on the 940MX). Real end-to-end validation: retrained
+`examples/regression`, `examples/segmentation`, and
+`examples/image_folder_classification --generate` fresh (smoke
+configurations) and ran the actual installed `forge model predict` CLI
+against each resulting artifact, matching each script's own end-of-run
+prediction. 2,476 collected (23 new tests over M87's 2,453); full suite
+result recorded in `docs/development/m88-unified-artifact-prediction-cli.md`.
+
+Full report: `docs/development/m88-unified-artifact-prediction-cli.md`.

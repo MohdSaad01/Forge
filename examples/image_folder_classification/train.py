@@ -351,7 +351,7 @@ def main(argv=None) -> None:
     print("\nInspect the generated artifacts with the CLI:")
     print(f"  python -m forge model inspect {model_path}")
     print(f"  python -m forge checkpoint inspect {checkpoint_path}")
-    print(f"  python -m forge model predict {model_path} --image {new_image_path}")
+    print(f"  python -m forge model predict {model_path} {new_image_path}")
     print("\nRun standalone inference in a fresh process (Milestone 71/72):")
     print(f"  python -m examples.image_folder_classification.infer --model {model_path} "
           f"--image {new_image_path}")

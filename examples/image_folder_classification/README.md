@@ -263,7 +263,7 @@ held-out in-memory test-split sample rather than a new file on disk, still
 calls `forge.predict()`/`forge.interpret_classification()` directly -- there
 is no file for `predict_artifact()` to point at in that case.)
 
-### Fresh-process inference (`infer.py`, Milestone 71/72; `forge model predict` CLI, Milestone 72; both via `forge.predict_artifact()` since Milestone 82)
+### Fresh-process inference (`infer.py`, Milestone 71/72; `forge model predict` CLI, Milestone 72, made task-aware in Milestone 88; both via `forge.predict_model()`/`forge.predict_artifact()`)
 
 `train.py` prints the exact commands at the end of its run. Both work from
 nothing but the saved model file and a path to any image -- no separate
@@ -281,28 +281,30 @@ Confidence: 88.9%
 ```
 
 Or, equivalently, via Forge's own CLI (`forge/cli/model.py`'s `predict`
-subcommand -- no Python script needed at all):
+subcommand -- no Python script needed at all). As of **Milestone 88** the
+CLI's `predict` command is task-aware: it reads the artifact's own saved
+`task="classification"` metadata and no longer needs a `--image` flag --
+just a plain positional input path:
 
 ```bash
 python -m forge model predict examples/image_folder_classification/artifacts/image_folder_model.forge \
-    --image examples/image_folder_classification/artifacts/new_mixed_resolution_query.png
+    examples/image_folder_classification/artifacts/new_mixed_resolution_query.png
 ```
 
 ```text
-Predicted class: circle
+Prediction: circle
 Confidence: 88.9%
 ```
 
 `infer.py` never imports `train.py`'s `build_transform()` or reuses any
-in-memory object from the training run -- it calls
-`forge.predict_artifact()` against the same file and nothing else (Milestone
-82), demonstrating the workflow across a genuine process boundary. The CLI's
-`predict` subcommand delegates to the identical function, so both entry
-points share one inference path. Passing the path to a model saved *without*
-`preprocessing=` raises a clear `PersistenceError` rather than guessing or
-silently skipping preprocessing; a model saved without `classes=` still
-predicts, falling back to printing the raw class index (see
-`predict_artifact()`'s own docstring).
+in-memory object from the training run -- it calls `forge.predict_model()`
+against the same file and nothing else (Milestone 86), demonstrating the
+workflow across a genuine process boundary. The CLI's `predict` subcommand
+delegates to the same unified dispatcher, so both entry points share one
+inference path. Passing the path to a model saved *without* `preprocessing=`
+raises a clear `PersistenceError` rather than guessing or silently skipping
+preprocessing; a model saved without `classes=` still predicts, falling back
+to printing the raw class index (see `predict_artifact()`'s own docstring).
 
 ## Integration tests (no dataset download required, generated on the fly)
 

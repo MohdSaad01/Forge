@@ -13,34 +13,48 @@ contract. `convert` is a real device conversion and goes straight through
 would -- no separate conversion logic lives here; it preserves
 preprocessing/classes/task metadata across the conversion (Milestone 87 added
 `task` to what it carries over) since a converted file is still meant to be a
-complete, self-describing artifact. `predict` (Milestone 72)
-is a thin CLI wrapper over `forge.training.predict_artifact()` (Milestone
-82) -- the same "`load_model()` / `load_preprocessing()` / `load_classes()`
-/ decode image / `predict()` / `interpret_classification()`" sequence
-`examples/image_folder_classification/infer.py` and this command
-independently hand-wrote until Milestone 82 extracted it into one function
-both now share. Scoped to a single image file: Forge has no generic "input
-format" concept spanning its example workloads (images, tabular rows, raw
-sequences all shape differently), so this command only claims the one
-concrete input shape a saved artifact can already fully describe end-to-end.
+complete, self-describing artifact.
 
-**Milestone 86 evaluated, and deliberately did not retrofit, this command to
-`forge.predict_model()`.** `predict` is explicitly "classify one image" --
-its own `--help` text says so -- and is exercised (`tests/
-test_classification_metadata.py::test_cli_predict_without_classes_prints_index`)
-against a real, valid classification artifact saved with `classes=None`
-(see `predict_artifact()`'s own docstring: a classification model with no
-saved class vocabulary is a legitimate state, not an error). That test
-artifact carries no explicit `task=` either, so even with Milestone 87's
-explicit task metadata, `predict_model()` still cannot tell it apart from a
-legacy regression artifact -- both fall back to `forge/training/
-inference.py::_legacy_infer_workflow()`'s architecture-based guess when
-`task` is absent. Routing this command through `predict_model()` would
-therefore still silently break this already-correct, already-tested CLI
-behavior for no real gain: this command's `--image`-only contract was never
-ambiguous about which workflow applies in the first place, and stays a thin
-wrapper over `predict_artifact()` directly, unaffected by the task-dispatch
-question entirely.
+`predict` (Milestone 72, made task-aware in **Milestone 88**) is a thin CLI
+wrapper over `forge.predict_model()` (Milestone 86) -- the same unified
+dispatcher a Python caller would use. Milestones 86/87 deliberately did
+*not* route this command through `predict_model()` yet: `predict` used to be
+hard-wired to "classify one image" (`predict_artifact()` directly), and a
+classification artifact saved with `classes=None` and no `task=` is
+architecturally indistinguishable from a legacy regression artifact (both
+`Linear`-terminated) -- routing through `predict_model()`'s architecture-based
+legacy fallback would have silently misidentified it as regression. Milestone
+87's explicit `task=` metadata is what finally makes a *safe* generic
+dispatcher possible: this command now reads `forge.inspect_model(model).task`
+itself and uses it as the sole routing signal --
+
+- `task` present -> delegate straight to `forge.predict_model()`, which
+  returns the matching workflow immediately (no architecture inspection at
+  all, since `task` is already authoritative -- see
+  `forge/training/inference.py::_determine_workflow()`).
+- `task` absent (a genuinely legacy artifact, predating Milestone 87) ->
+  fail clearly rather than guess. This command never falls back to
+  `predict_model()`'s own `_legacy_infer_workflow()` architecture heuristic
+  -- doing so would reintroduce exactly the `classes=None` misdispatch
+  Milestones 86/87 documented and refused to ship. A legacy artifact must be
+  resaved with `task=`, or predicted via the task-specific Python API
+  (`predict_artifact()`/`predict_tensor_artifact()`/`predict_image_artifact()`)
+  directly.
+
+This keeps the dispatch logic itself in exactly one place
+(`forge.training.inference._determine_workflow()`) -- this command never
+re-implements or duplicates it, only decides whether it is safe to call at
+all.
+
+Each task's input/output is otherwise unchanged from its established
+single-task shape: classification/segmentation take an image file path
+(decoded via the same `ImageFolder._load_image()` `predict_artifact()`/
+`predict_image_artifact()` already use); regression takes a JSON file of
+numeric data, parsed here and handed to `predict_tensor_artifact()` as a
+`Tensor`-convertible batch; segmentation additionally requires `--output`
+to save the predicted mask via `forge.data.save_image()`. See
+`docs/development/cli.md` and `docs/development/
+m88-unified-artifact-prediction-cli.md` for the full command reference.
 """
 
 from __future__ import annotations
@@ -49,8 +63,11 @@ import argparse
 import json
 import os
 
+import numpy as np
+
+from ..data import save_image
 from ..serialization import inspect_model, load_classes, load_model, load_preprocessing, save_model
-from ..training import ClassificationPrediction, predict_artifact
+from ..training import ClassificationPrediction, predict_model
 from ._archive_info import count_elements, module_training_state, read_model_metadata, walk_modules, walk_parameters
 from .errors import CLIError
 
@@ -74,14 +91,25 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
     convert_parser.set_defaults(func=cmd_convert)
 
     predict_parser = sub.add_parser(
-        "predict", help="Classify one image with a saved model (requires preprocessing=... at save time)"
+        "predict",
+        help="Predict from a saved model artifact, using its own persisted task metadata to choose the workflow",
     )
-    predict_parser.add_argument("model", help="Path to a model file saved with forge.save_model()")
-    predict_parser.add_argument("--image", required=True, help="Path to one image file to classify")
+    predict_parser.add_argument(
+        "model", help="Path to a .forge model file (must declare task metadata -- see forge.save_model(..., task=...))"
+    )
+    predict_parser.add_argument(
+        "input",
+        help="Input for the prediction: an image file for classification/segmentation, "
+        "or a JSON file of numeric data for regression",
+    )
     predict_parser.add_argument(
         "--device", default=None, choices=["cpu", "cuda"],
         help="Device to load the model onto (default: whatever device it was saved from)",
     )
+    predict_parser.add_argument(
+        "--output", default=None, help="Where to save the predicted mask (required for segmentation artifacts)"
+    )
+    predict_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of text")
     predict_parser.set_defaults(func=cmd_predict)
 
 
@@ -180,24 +208,111 @@ def cmd_convert(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_regression_input(path: str) -> np.ndarray:
+    """Parse a JSON file of numeric data into a batched NumPy array (Milestone 88).
+
+    A flat list (`[1.2, 3.4, 5.6, 7.8]`) is treated as one unbatched sample
+    and given a leading batch dimension; a nested list (`[[1.2, 3.4], [5.6,
+    7.8]]`) is treated as already batched and passed through as-is -- the
+    same convention documented in `predict_tensor_artifact()`'s docstring for
+    a raw NumPy array. Anything that is not valid JSON, or whose values are
+    not all numeric, raises `CLIError` with one clear message -- covering
+    malformed JSON, non-numeric JSON, and a non-JSON file (e.g. an image)
+    given where a regression artifact expects numeric input, all identically.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError, UnicodeDecodeError):
+        # ValueError covers json.JSONDecodeError; UnicodeDecodeError covers a
+        # binary file (e.g. an image) given where JSON text is expected.
+        raise CLIError("regression input must contain numeric JSON data.")
+
+    try:
+        array = np.array(raw, dtype=np.float32)
+    except (TypeError, ValueError):
+        raise CLIError("regression input must contain numeric JSON data.")
+
+    if array.dtype == object or array.size == 0:
+        raise CLIError("regression input must contain numeric JSON data.")
+
+    if array.ndim == 0:
+        array = array.reshape(1, 1)
+    elif array.ndim == 1:
+        array = array.reshape(1, -1)
+    elif array.ndim != 2:
+        raise CLIError("regression input must be a flat list or a 2-D list of numbers.")
+
+    return array
+
+
+def _print_classification_result(result: "ClassificationPrediction | int", as_json: bool) -> None:
+    if isinstance(result, ClassificationPrediction):
+        if as_json:
+            print(json.dumps(
+                {"task": "classification", "class": result.label, "confidence": result.confidence}, indent=2
+            ))
+        else:
+            print(f"Prediction: {result.label}")
+            print(f"Confidence: {result.confidence:.1%}")
+    else:
+        if as_json:
+            print(json.dumps({"task": "classification", "class": None, "index": result, "confidence": None}, indent=2))
+        else:
+            print(f"Prediction: class index {result} "
+                  "(no class-name vocabulary was saved with this model)")
+
+
 def cmd_predict(args: argparse.Namespace) -> int:
     if not os.path.isfile(args.model):
-        raise CLIError(f"Cannot predict with model '{args.model}': file not found.")
-    if not os.path.isfile(args.image):
-        raise CLIError(f"Cannot predict: image '{args.image}' not found.")
+        raise CLIError(f"artifact not found: {args.model}")
+    if not os.path.isfile(args.input):
+        raise CLIError(f"input file not found: {args.input}")
 
-    # Milestone 82: forge.training.predict_artifact() is the same
-    # "load_preprocessing() -> load_model() -> decode image -> preprocess ->
-    # predict() -> load_classes() -> interpret_classification()" sequence
-    # this command used to hand-roll -- see this module's own docstring
-    # (Milestone 86 evaluated routing this through forge.predict_model()
-    # instead and deliberately kept this call unchanged).
-    result = predict_artifact(args.model, args.image, device=args.device)
-    if isinstance(result, ClassificationPrediction):
-        print(f"Predicted class: {result.label}")
-        print(f"Confidence: {result.confidence:.1%}")
-    else:
-        print(f"Predicted class index: {result}")
-        print("(No class-name vocabulary was saved with this model -- see "
-              "forge.save_model(..., classes=...) -- so only the raw index is available.)")
-    return 0
+    # Milestone 88: the artifact's own persisted task metadata is the sole
+    # routing signal -- see this module's own docstring for why a missing
+    # task fails clearly here rather than falling back to
+    # predict_model()'s architecture-based legacy guess.
+    task = inspect_model(args.model).task
+    if task is None:
+        raise CLIError(
+            "artifact does not declare a task.\n"
+            "Use the task-specific prediction API or resave the model with task metadata."
+        )
+
+    if task == "classification":
+        result = predict_model(args.model, args.input, device=args.device)
+        _print_classification_result(result, args.json)
+        return 0
+
+    if task == "regression":
+        input_data = _parse_regression_input(args.input)
+        result = predict_model(args.model, input_data, device=args.device)
+        values = result.numpy().tolist()
+        if args.json:
+            print(json.dumps({"task": "regression", "prediction": values}, indent=2))
+        else:
+            print(f"Prediction: {values}")
+        return 0
+
+    if task == "segmentation":
+        if not args.output:
+            raise CLIError("segmentation prediction requires --output <path> to save the predicted mask.")
+        output_dir = os.path.dirname(os.path.abspath(args.output)) or "."
+        if not os.path.isdir(output_dir):
+            raise CLIError(f"cannot write to '{args.output}': directory '{output_dir}' does not exist.")
+
+        result = predict_model(args.model, args.input, device=args.device)
+        save_image(result, args.output)
+        if args.json:
+            print(json.dumps({"task": "segmentation", "output_path": args.output}, indent=2))
+        else:
+            print(f"Predicted mask saved to: {args.output}")
+        return 0
+
+    # Defensive only: inspect_model() already rejects any "task" value
+    # outside forge.serialization.model.TASK_TYPES, so a real artifact can
+    # never reach this branch today. Kept so a future TASK_TYPES addition
+    # this command has not yet been taught to handle fails clearly here
+    # rather than falling through silently.
+    raise CLIError(f"unsupported artifact task: {task}")

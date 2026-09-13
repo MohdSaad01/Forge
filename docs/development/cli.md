@@ -86,35 +86,76 @@ if convenient" behavior; requesting `--device cuda` with no CUDA backend
 available fails with a clear error and a non-zero exit status rather than
 silently falling back to CPU.
 
-## Model prediction (Milestone 72)
+## Model prediction (Milestone 72, made task-aware in Milestone 88)
 ```bash
-forge model predict MODEL --image IMAGE [--device {cpu,cuda}]
+forge model predict MODEL INPUT [--device {cpu,cuda}] [--output PATH] [--json]
 ```
-Classifies one image file against a saved model, using only what the `.forge`
-file itself already carries: `forge.load_preprocessing(MODEL)` (Milestone 71)
-to prepare `IMAGE` the same way training did, then `forge.load_model()` +
-`forge.predict()` + `forge.load_classes(MODEL)` (Milestone 72) +
-`forge.interpret_classification()` to turn the raw output into a label +
-confidence:
+Predicts from a saved `.forge` artifact using only what the file itself
+already carries -- the developer never has to know or pass which of
+classification/regression/segmentation `MODEL` is. This command reads the
+artifact's own persisted `task` metadata (`forge.save_model(..., task=...)`,
+Milestone 87, via `forge.inspect_model()`) and delegates straight to
+`forge.predict_model()` (Milestone 86), which dispatches to the matching
+task-specific function unchanged. No new inference logic lives here.
+
+**`INPUT`'s shape depends on the artifact's task:**
+
+- **classification** -- `INPUT` is an image file path, decoded the same way
+  `ImageFolder` does. With a saved class vocabulary (`classes=...`):
+  ```text
+  Prediction: dog
+  Confidence: 94.2%
+  ```
+  Without one, falls back to the raw index (no confidence is claimed, since
+  there is no label to attach it to):
+  ```text
+  Prediction: class index 3 (no class-name vocabulary was saved with this model)
+  ```
+- **regression** -- `INPUT` is a path to a JSON file of numeric data: a flat
+  list (`[1.2, 3.4, 5.6, 7.8]`) is treated as one unbatched sample and given
+  a leading batch dimension; a nested list (`[[1.2, 3.4], [5.6, 7.8]]`) is
+  treated as already batched. Prints the raw numeric prediction:
+  ```text
+  Prediction: [[0.8134]]
+  ```
+- **segmentation** -- `INPUT` is an image file path; `--output PATH` is
+  **required** and receives the predicted mask, written via
+  `forge.data.save_image()`:
+  ```text
+  Predicted mask saved to: mask.png
+  ```
+
+`--json` prints a stable, machine-readable result instead of the text above,
+e.g. `{"task": "classification", "class": "dog", "confidence": 0.942}` (or
+`{"task": "regression", "prediction": [[0.8134]]}` /
+`{"task": "segmentation", "output_path": "mask.png"}`).
+
+Requires `MODEL` to have been saved with `preprocessing=...` for
+classification/segmentation -- there is nothing to reproduce automatically
+otherwise, and this command never guesses or silently skips preprocessing;
+it fails with a clear error instead.
+
+**Legacy artifacts (no `task=`, saved before Milestone 87).** This command
+never falls back to an architecture-based guess to pick a task: doing so
+could silently misidentify a classification artifact saved with
+`classes=None` as a regression artifact (both are `Linear`-terminated with
+no saved `classes` -- the exact ambiguity Milestones 86/87 documented and
+refused to ship a CLI dispatcher around). A legacy artifact with no `task=`
+fails clearly instead:
 ```text
-Predicted class: dog
-Confidence: 94.2%
+Error: artifact does not declare a task.
+Use the task-specific prediction API or resave the model with task metadata.
 ```
-Requires `MODEL` to have been saved with `preprocessing=...` -- there is
-nothing to reproduce automatically otherwise, and this command never
-guesses or silently skips preprocessing; it fails with a clear error
-instead. A model saved without `classes=...` still predicts, falling back to
-`Predicted class index: N` (no confidence is claimed either, since there is
-no label to attach it to). This is a thin adapter over exactly the same
-Python sequence `examples/image_folder_classification/infer.py` demonstrates
-as a standalone script -- no new inference logic lives here. Scoped to a
-single image file: unlike `model inspect`/`convert`, this is the CLI's first
-command that actually runs model computation, and image classification is
-currently the only Forge workflow where a saved artifact fully describes how
-to turn one input *file* into a prediction end to end (tabular/sequence
-workloads have no equivalent single-file input convention yet -- see
-`docs/development/m72-classification-metadata.md`'s **Rejected
-alternatives**).
+Resave the model with `forge.save_model(..., task=...)` (or
+`train_and_save()`/`save_and_verify()`'s own `task=`), or call the
+task-specific Python API directly (`forge.predict_artifact()`/
+`forge.predict_tensor_artifact()`/`forge.predict_image_artifact()`), which
+are unaffected by this limitation.
+
+This is a thin adapter over exactly the same Python sequence
+`examples/image_folder_classification/infer.py`, `examples/segmentation/
+infer.py`, and `examples/regression/train.py`'s own demo each already
+demonstrate as standalone scripts.
 
 ## Checkpoint conversion
 ```bash
@@ -199,10 +240,14 @@ never silently swallowed.
   distributed-training commands, cloud storage, dataset downloading, job
   scheduling, daemon/server mode, model serving, or REST API -- all
   explicitly out of scope for this milestone.
-- **`model predict` is image-classification-only** (Milestone 72): it always
-  decodes `--image` via `ImageFolder._load_image` and always interprets the
-  model's output as per-class classification scores. There is no generic
-  `forge predict` command spanning every Forge workload (tabular regression,
-  autoencoders, sequence models, ...) -- each has a different natural input
-  shape with no single saved-artifact-describable file convention yet; see
-  `docs/development/m72-classification-metadata.md`.
+- **`model predict` supports exactly the three tasks `forge.predict_model()`
+  does** (Milestone 88): classification, regression, segmentation. There is
+  no generic `forge predict` command spanning every Forge workload
+  (autoencoders, sequence models, ...) -- each of those has a different
+  natural input shape with no single saved-artifact-describable file
+  convention yet.
+- **`model predict` requires explicit `task=` metadata** (Milestone 88): a
+  legacy artifact saved before Milestone 87 (no `task=`) is not predictable
+  through this command -- see **Model prediction** above for why, and
+  `docs/development/m88-unified-artifact-prediction-cli.md` for the full
+  reasoning.
