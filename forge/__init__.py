@@ -51,7 +51,12 @@ Public subpackages:
   dense-prediction artifact (e.g. `examples/segmentation`) -- composing
   `load_model()`/`load_preprocessing()`/`ImageFolder._load_image()`/
   `predict()`, then thresholding the model's raw per-pixel output into a
-  `{0, 1}`-valued mask `Tensor` ready for `forge.data.save_image()`.
+  `{0, 1}`-valued mask `Tensor` ready for `forge.data.save_image()`; and
+  `predict_model()` (Milestone 86), the single unified entry point over all
+  three -- it calls `inspect_model()` to determine which of the above
+  workflows a `.forge` file's own persisted metadata supports, then
+  delegates to that function unchanged, so a caller no longer has to already
+  know which one applies.
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a
@@ -119,6 +124,7 @@ from .training import (
     predict,
     predict_artifact,
     predict_image_artifact,
+    predict_model,
     predict_tensor_artifact,
     save_and_verify,
     train,
@@ -167,6 +173,7 @@ __all__ = [
     "predict_artifact",
     "predict_tensor_artifact",
     "predict_image_artifact",
+    "predict_model",
     "generate_sequence",
     "interpret_classification",
     "ClassificationPrediction",

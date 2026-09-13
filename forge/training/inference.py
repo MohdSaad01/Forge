@@ -72,6 +72,14 @@ itself another image-shaped Tensor (a per-pixel mask), not a class label or
 a scalar. See that function's own docstring for the one small, already-
 established output conversion it applies and why it is not a generalized
 "any image-to-image model" function.
+
+`predict_model()` (Milestone 86) is the single entry point over all three:
+a developer holding a `.forge` file no longer has to already know which of
+the three functions above applies -- `predict_model(path, input_data)`
+reads the artifact's own persisted metadata (via `forge.inspect_model()`,
+Milestone 85) to pick the one supported workflow it describes, then
+delegates unchanged to the matching function above. See its own docstring
+for exactly which persisted signal decides this, and why.
 """
 
 from __future__ import annotations
@@ -537,6 +545,131 @@ def predict_image_artifact(
     return Tensor(mask[0], device="cpu")
 
 
+def _determine_workflow(info: "Any") -> str:
+    """Pick one of `"classification"`/`"regression"`/`"segmentation"` for a `ModelInfo`, or fail clearly.
+
+    The only signal used is metadata `inspect_model()` (Milestone 85) already
+    exposes -- never model weights, a trial forward pass, or a guess from
+    tensor dimensions:
+
+    - `classes` **present** -> `"classification"`. This is unambiguous:
+      `save_model()` (`forge/serialization/model.py`) never populates
+      `classes` for anything but a classification model, and every
+      classification example in this repo (`mnist`, `image_folder_
+      classification`) always saves one.
+    - `classes` **absent** -> distinguished by whether the saved architecture
+      contains a `"Linear"` layer (`ModelSummary.module_types`, also
+      Milestone 85): `examples/regression`'s model is `Linear`-only (no
+      `Conv2d`); `examples/segmentation`'s is `Conv2d`-only, fully
+      convolutional, with no `Linear` layer at all (a dense per-pixel head
+      needs no fixed-size fully-connected reduction) -- see each example's
+      own `model.py`. `"Linear"` present -> `"regression"`; `"Linear"` absent
+      but `"Conv2d"` present -> `"segmentation"`.
+    - Neither `"Linear"` nor `"Conv2d"` present (and no `classes`) -> genuinely
+      undetermined; raises `forge.PersistenceError` rather than guessing.
+
+    **Known limitation** (see this module's own docstring's Milestone 86
+    paragraph and `docs/development/m86-unified-artifact-prediction.md`): a
+    classification model saved with `classes=None` (a real, valid state --
+    see `predict_artifact()`'s own docstring -- just one no current Forge
+    example actually produces) still contains a `Linear` layer, so it is
+    misidentified as `"regression"` here. Resolving this would need a
+    persisted task flag `save_model()` does not write today; until a real
+    consumer needs that, this stays a documented gap rather than speculative
+    machinery.
+    """
+    if info.classes is not None:
+        return "classification"
+
+    module_types = info.model.module_types
+    if "Linear" in module_types:
+        return "regression"
+    if "Conv2d" in module_types:
+        return "segmentation"
+
+    raise PersistenceError(
+        "predict_model() could not determine a supported prediction workflow for this "
+        f"artifact: no class vocabulary was saved (ruling out classification), and its "
+        f"architecture ({', '.join(module_types)}) contains neither a Linear layer "
+        "(the regression signal) nor a Conv2d layer (the segmentation signal) -- the only "
+        "signals predict_model() currently uses to tell these workflows apart. Supported "
+        "workflows: classification (forge.predict_artifact(), requires classes= at save "
+        "time), regression (forge.predict_tensor_artifact()), segmentation "
+        "(forge.predict_image_artifact()). Call one of these directly if you already know "
+        "which applies, or inspect the artifact first with forge.inspect_model()."
+    )
+
+
+def predict_model(
+    path: str,
+    input_data: Any,
+    *,
+    device: "str | Device | None" = None,
+) -> "ClassificationPrediction | int | Tensor":
+    """Predict from any supported portable `.forge` artifact, in one call, with no manual workflow choice (Milestone 86).
+
+    ```python
+    result = forge.predict_model("model.forge", input_data)
+    ```
+
+    Before this function, a developer holding a `.forge` file first had to
+    call `forge.inspect_model()` (Milestone 85) -- or already know, out of
+    band -- whether it was a classification, regression, or segmentation
+    artifact, in order to pick the right one of `predict_artifact()`/
+    `predict_tensor_artifact()`/`predict_image_artifact()` (Milestones
+    82-84). `predict_model()` closes that gap: it inspects `path` itself via
+    `inspect_model()`, determines which of the three workflows the artifact's
+    own persisted metadata supports (see `_determine_workflow()` above for
+    the exact signal and why it is reliable), and delegates to that function
+    unchanged -- returning exactly what it would have returned. This function
+    adds no new inference logic, artifact format, or input-conversion
+    machinery of its own.
+
+    `input_data` is whatever the *selected* workflow's own function expects
+    -- a `str`/`os.PathLike` image path for classification or segmentation,
+    or a `Tensor`/NumPy array/nested list for regression -- and is validated
+    exactly as strictly as calling that function directly would be: an
+    incompatible input still raises `forge.DataError` with that function's
+    own message (e.g. a `Tensor` given to a classification artifact raises
+    the same error `predict_artifact()` itself raises for a non-path
+    `image`). `predict_model()` deliberately does not re-validate `input_data`
+    itself -- the artifact's workflow, not the input's type, decides
+    dispatch (see the module's own Milestone 86 paragraph): input type is
+    only ever used, by the delegated function, to check compatibility with
+    the workflow the artifact's metadata already selected.
+
+    `device` is passed through unchanged to the selected function --
+    defaults to the device recorded in the archive, exactly like
+    `predict_artifact()`/`predict_tensor_artifact()`/`predict_image_artifact()`
+    themselves.
+
+    Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
+    artifact (the same conditions `inspect_model()` itself raises), and also
+    `forge.PersistenceError` when the artifact's metadata does not reliably
+    identify one of the three supported workflows (see
+    `_determine_workflow()`) -- this is a deliberate refusal to guess, not a
+    bug: an unsupported artifact should fail clearly rather than silently
+    produce a result under the wrong interpretation.
+
+    **Scope.** Supports exactly the three workflows `predict_artifact()`/
+    `predict_tensor_artifact()`/`predict_image_artifact()` already implement
+    -- no generic task registry, no model-architecture discovery beyond
+    `inspect_model()`'s existing `ModelSummary.module_types`, no automatic
+    input conversion between shapes. A future artifact shape none of the
+    three functions covers stays unsupported here too, until Forge has one.
+    """
+    from ..serialization.model import inspect_model as _inspect_model
+
+    info = _inspect_model(path)
+    workflow = _determine_workflow(info)
+
+    if workflow == "classification":
+        return predict_artifact(path, input_data, device=device)
+    if workflow == "regression":
+        return predict_tensor_artifact(path, input_data, device=device)
+    return predict_image_artifact(path, input_data, device=device)
+
+
 def generate_sequence(
     model: Module,
     seed: "Sequence[Any]",
@@ -731,5 +864,5 @@ def interpret_classification(output: Tensor, classes: "Sequence[str]") -> "list[
 
 __all__ = [
     "predict", "save_and_verify", "predict_artifact", "predict_tensor_artifact", "predict_image_artifact",
-    "generate_sequence", "interpret_classification", "ClassificationPrediction",
+    "predict_model", "generate_sequence", "interpret_classification", "ClassificationPrediction",
 ]

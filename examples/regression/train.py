@@ -268,13 +268,16 @@ def main(argv=None) -> None:
     print("\nCompare this run against another with the Milestone 65 tool:")
     print(f"  python -m examples.regression.compare {history_path} <other_run>/regression_history.json")
 
-    # Milestone 83: fresh-process-style, high-level artifact inference on a
-    # brand-new *raw* feature vector -- the model file alone (not this
+    # Milestone 83/86: fresh-process-style, high-level artifact inference on
+    # a brand-new *raw* feature vector -- the model file alone (not this
     # process's in-memory stats["transform"]) standardizes and predicts,
-    # mirroring image_folder_classification's forge.predict_artifact() demo
-    # (Milestone 82) for this example's own artifact shape.
+    # mirroring image_folder_classification's forge.predict_model() demo for
+    # this example's own artifact shape. forge.predict_model() (Milestone
+    # 86) determines this is a regression artifact from its own persisted
+    # metadata and delegates to predict_tensor_artifact() (Milestone 83)
+    # unchanged -- this script no longer has to call that function by name.
     new_raw_x, _ = generate_raw(1, seed=args.seed + 1000)
-    prediction = forge.predict_tensor_artifact(str(model_path), new_raw_x, device=args.device)
+    prediction = forge.predict_model(str(model_path), new_raw_x, device=args.device)
     print(f"\nNew raw feature vector {new_raw_x[0].tolist()}, "
           f"preprocessing reconstructed from '{model_path}':")
     print(f"Prediction: {float(prediction.numpy()[0, 0]):.4f}")

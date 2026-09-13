@@ -19,6 +19,21 @@ both now share. Scoped to a single image file: Forge has no generic "input
 format" concept spanning its example workloads (images, tabular rows, raw
 sequences all shape differently), so this command only claims the one
 concrete input shape a saved artifact can already fully describe end-to-end.
+
+**Milestone 86 evaluated, and deliberately did not retrofit, this command to
+`forge.predict_model()`.** `predict` is explicitly "classify one image" --
+its own `--help` text says so -- and is exercised (`tests/
+test_classification_metadata.py::test_cli_predict_without_classes_prints_index`)
+against a real, valid classification artifact saved with `classes=None`
+(see `predict_artifact()`'s own docstring: a classification model with no
+saved class vocabulary is a legitimate state, not an error). `predict_model()`
+cannot always tell that state apart from a regression artifact -- both may
+have no saved `classes` and a `Linear`-terminated architecture (see
+`forge/training/inference.py::_determine_workflow()`'s own documented
+limitation) -- so routing this command through it would silently break an
+already-correct, already-tested CLI behavior for no real gain: this
+command's `--image`-only contract was never ambiguous about which workflow
+applies in the first place.
 """
 
 from __future__ import annotations
@@ -161,7 +176,9 @@ def cmd_predict(args: argparse.Namespace) -> int:
     # Milestone 82: forge.training.predict_artifact() is the same
     # "load_preprocessing() -> load_model() -> decode image -> preprocess ->
     # predict() -> load_classes() -> interpret_classification()" sequence
-    # this command used to hand-roll -- see this module's own docstring.
+    # this command used to hand-roll -- see this module's own docstring
+    # (Milestone 86 evaluated routing this through forge.predict_model()
+    # instead and deliberately kept this call unchanged).
     result = predict_artifact(args.model, args.image, device=args.device)
     if isinstance(result, ClassificationPrediction):
         print(f"Predicted class: {result.label}")

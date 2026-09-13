@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82; single-call numeric-artifact inference via `predict_tensor_artifact()` as of Milestone 83; single-call image-to-image artifact inference via `predict_image_artifact()` as of Milestone 84)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82; single-call numeric-artifact inference via `predict_tensor_artifact()` as of Milestone 83; single-call image-to-image artifact inference via `predict_image_artifact()` as of Milestone 84; unified portable-artifact prediction via `predict_model()` as of Milestone 86)
 
 ## Package layout
 ```
@@ -6,7 +6,7 @@ forge/
     training/
         trainer.py     Trainer, EpochResult, EvaluationResult, TrainingHistory
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
-        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78), predict_artifact() (Milestone 82), predict_tensor_artifact() (Milestone 83), predict_image_artifact() (Milestone 84)
+        inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78), predict_artifact() (Milestone 82), predict_tensor_artifact() (Milestone 83), predict_image_artifact() (Milestone 84), predict_model() (Milestone 86)
         session.py     TrainingSession, start_training_session() (Milestone 73)
         api.py         train() (Milestone 79), train_and_save(), TrainAndSaveResult (Milestone 81)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
@@ -1137,6 +1137,108 @@ writes against this process's own `predict_image_artifact()` call on the
 identical image file, bit-for-bit.
 
 See `docs/development/m84-segmentation-artifact-workflow.md`.
+
+## Unified portable-artifact prediction: `predict_model()` (Milestone 86)
+
+`predict_artifact()`/`predict_tensor_artifact()`/`predict_image_artifact()`
+(above) each fully describe one artifact shape, but a developer holding a
+`.forge` file still had to already know which of the three applies before
+calling the right one -- or call `forge.inspect_model()` (Milestone 85) and
+reason about its result themselves. `forge.training.predict_model()`
+(`forge/training/inference.py`) closes that gap:
+
+```python
+result = forge.predict_model("model.forge", input_data)
+```
+
+1. `inspect_model(path)` (Milestone 85) -- reads the artifact's metadata
+   only, no live `Module`, no CUDA requirement.
+2. `_determine_workflow(info)` picks one of `"classification"`/
+   `"regression"`/`"segmentation"`, or raises `forge.PersistenceError`.
+3. Delegates to the matching function -- `predict_artifact()`/
+   `predict_tensor_artifact()`/`predict_image_artifact()` -- **unchanged**,
+   returning its result unchanged.
+
+**The dispatch signal, and why it is reliable.** Two fields `ModelInfo`
+already exposes, never model weights, a trial forward pass, or a guess from
+tensor dimensions:
+
+- `info.classes is not None` -> `"classification"`. Unambiguous: `save_model()`
+  never populates `classes` for anything but a classification model, and
+  every classification example in this repo saves one.
+- `info.classes is None` -> distinguished by `info.model.module_types`
+  (also Milestone 85): `"Linear"` present -> `"regression"` (`examples/
+  regression`'s model is `Linear`-only, no `Conv2d`); `"Linear"` absent but
+  `"Conv2d"` present -> `"segmentation"` (`examples/segmentation`'s model is
+  fully convolutional -- a dense per-pixel head needs no fixed-size
+  fully-connected reduction, so it has no `Linear` layer at all). Verified
+  directly against both examples' real `model.py`, not assumed from
+  the milestone's own root `type` field (which is `"Sequential"` for every
+  example in this repo, and therefore useless alone -- exactly why
+  `ModelSummary.type` is not the signal used here).
+- Neither `"Linear"` nor `"Conv2d"` present, and no `classes` -> genuinely
+  undetermined; raises `forge.PersistenceError` naming what was available
+  and which three workflows are supported, rather than guessing.
+
+**Documented limitation.** A classification model saved with `classes=None`
+(a real, valid state -- see `predict_artifact()`'s own docstring) is still
+`Linear`-terminated, exactly like a regression model, and has no `classes`
+left to disambiguate it -- `predict_model()` misidentifies it as
+`"regression"`. No current Forge example's own `train.py` produces this
+state (every classification example always saves `classes=`), but it is a
+real, synthetically-tested state (`tests/test_classification_metadata.py`),
+which is exactly why `forge model predict` (below) was not retrofitted onto
+`predict_model()`. Resolving this would need a persisted task flag
+`save_model()` does not write today -- deliberately not added speculatively
+(see **Rejected alternatives** below); `predict_artifact()` itself remains
+fully correct for this case, called directly.
+
+**Input validation is not duplicated.** `predict_model()` does not
+re-validate `input_data`'s type itself -- the artifact's own metadata
+selects the workflow first, and the delegated function's own existing
+type check (already raising `forge.DataError` with a clear message, e.g.
+"predict_artifact() requires image to be a file path... got Tensor")
+validates compatibility. This keeps the input's type from ever being the
+*primary* dispatch signal (an artifact's workflow does not change based on
+what a caller happens to pass it), while still failing exactly as clearly
+as the three underlying functions already do.
+
+**Real consumers, three different artifact shapes.**
+`examples/image_folder_classification/infer.py` and `examples/segmentation/
+infer.py` call `forge.predict_model()` instead of naming the task-specific
+function directly; `examples/regression/train.py`'s own end-of-run demo
+does too -- proving dispatch is driven by each artifact's real, saved
+metadata (classification-with-classes, `Linear`-only regression, `Conv2d`
+-only segmentation), not by which example happens to call it.
+
+**`forge model predict` (Milestone 72's CLI) was evaluated and deliberately
+not retrofitted** onto `predict_model()` -- see the documented limitation
+above; the CLI's existing `predict_artifact()` call is untouched.
+
+**Fresh-process verification.** `tests/test_unified_artifact_prediction.py::
+test_predict_model_works_from_a_genuinely_separate_process_for_all_three_artifact_shapes`
+saves one artifact of each shape, launches a real `subprocess.run([sys.
+executable, "-c", ...])` that calls `forge.predict_model()` on all three
+with no other imports, and compares each result against this process's own
+call, bit-for-bit / index-for-index.
+
+**Rejected alternatives.**
+- *A generic task-registry/plugin system for dispatch* -- rejected: three
+  known, already-implemented workflows need no registry; a fourth would
+  need its own persisted signal design, not a plugin slot.
+- *Dispatching primarily on `input_data`'s type* (`str` -> classification,
+  `Tensor` -> regression) -- rejected for the same reason M83 rejected it
+  inside `predict_artifact()`: the artifact, not the caller's input, is
+  what determines a workflow; input type is validated, not consulted for
+  dispatch.
+- *Introspecting parameter values or running a trial forward pass* to
+  detect task type from output shape -- rejected: `inspect_model()`
+  deliberately never reconstructs a live `Module` or touches weights, and
+  doing so here would reintroduce exactly the CUDA/registry requirements
+  it was built to avoid (Milestone 85).
+- *Retrofitting `forge model predict`* -- rejected; see above.
+
+See `docs/development/m86-unified-artifact-prediction.md`.
 
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and

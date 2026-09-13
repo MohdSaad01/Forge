@@ -5146,3 +5146,69 @@ consumers and a genuine `subprocess` fresh-process test. Full suite: 2,390
 collected, 2,389 passed, 1 failed (2,358 + 32 new) -- the same pre-existing
 `test_dataloader_prefetch.py` allocator-measurement flake documented since
 M63, reproduced passing cleanly in isolation, no M85 regression.
+
+### M86 — `forge.predict_model()`: unified portable-artifact prediction
+
+Brief asked for the next real gap after M82-85: a developer holding a
+`.forge` file still had to already know (or call `inspect_model()` and
+reason about it themselves) whether it was a classification, regression, or
+segmentation artifact before picking the right one of `predict_artifact()`/
+`predict_tensor_artifact()`/`predict_image_artifact()`. Built
+`forge.predict_model(path, input_data, *, device=None)`
+(`forge/training/inference.py`) -- calls `inspect_model()` (M85), determines
+which of the three workflows the artifact's own persisted metadata
+describes via a new `_determine_workflow()` helper, and delegates to the
+matching function unchanged, returning its result unchanged. No new
+artifact format, task registry, or input-conversion machinery.
+
+**Dispatch signal** (`_determine_workflow()`): `classes` present ->
+classification (unambiguous -- only a classification model ever gets
+`classes=` saved). `classes` absent -> disambiguated by
+`ModelSummary.module_types` (M85, already public, no new introspection):
+`"Linear"` present -> regression (`examples/regression`'s model is
+`Linear`-only); `"Linear"` absent but `"Conv2d"` present -> segmentation
+(`examples/segmentation`'s model is fully convolutional, no dense head at
+all -- verified against both examples' real `model.py`, not assumed).
+Neither present (and no `classes`) -> raises `forge.PersistenceError`
+naming what was available and what workflows are supported, rather than
+guessing. **Documented limitation**: a classification artifact saved with
+`classes=None` (a real, valid state -- see `predict_artifact()`'s own
+docstring) is `Linear`-terminated exactly like a regression model, so it is
+misidentified as regression here; no current Forge example produces that
+state via its own `train.py`, but the CLI's own test suite does exercise it
+synthetically -- see below.
+
+**Real consumers, three different artifact shapes**:
+`examples/image_folder_classification/infer.py` and
+`examples/segmentation/infer.py` now call `forge.predict_model()` instead of
+`predict_artifact()`/`predict_image_artifact()` directly; `examples/
+regression/train.py`'s own end-of-run demo does too. All three retrained
+and re-verified end-to-end (small smoke runs) after the retrofit.
+
+**CLI evaluated, not retrofitted**: `forge model predict` (`forge/cli/
+model.py`) was evaluated against `forge.predict_model()` and deliberately
+left calling `predict_artifact()` directly -- `tests/
+test_classification_metadata.py::test_cli_predict_without_classes_prints_index`
+exercises exactly the `classes=None` classification state the dispatch
+signal above cannot always tell apart from regression, and this command's
+`--image`-only contract was never ambiguous about which workflow applies in
+the first place, so routing it through `predict_model()` would have
+weakened working, tested behavior for no real gain.
+
+15 new CPU tests (`tests/test_unified_artifact_prediction.py`: dispatch for
+all three shapes, delegation-correctness bit-for-bit against each
+task-specific function, input-type validation per workflow, the
+undeterminable-artifact refusal, the documented classes=None limitation,
+backward-compatibility calls to all three existing functions, and a genuine
+`subprocess` fresh-process test exercising all three artifact shapes through
+one process) + 4 new CUDA tests (`tests/
+test_unified_artifact_prediction_cuda.py`, hardware-verified on the 940MX:
+CUDA-saved-artifact restore-by-default for all three shapes, plus a
+CPU/CUDA agreement check). Existing `test_artifact_inference.py`/
+`test_tensor_artifact_inference.py`/`test_segmentation_artifact_workflow.py`/
+`test_classification_metadata.py`/`test_model_inspection.py` suites re-run
+unchanged and green, confirming Milestones 82-85 behavior is untouched.
+Full suite: 2,409 collected, 2,408 passed, 1 failed (2,390 + 19 new) -- the
+same pre-existing `test_dataloader_prefetch.py` allocator-measurement flake
+documented since M63, reproduced passing cleanly in isolation, no M86
+regression.

@@ -606,7 +606,12 @@ without already knowing which of `forge.predict_artifact()`/
 `predict_tensor_artifact()`/`predict_image_artifact()` applies, or opening
 the archive by hand. `inspect_model()` closes that gap: a single read-only
 call that turns the metadata `save_model()` already wrote into a structured,
-programmatically usable summary.
+programmatically usable summary. As of **Milestone 86**, a caller no longer
+even has to read `ModelInfo` themselves to pick the right function --
+`forge.predict_model()` (`docs/architecture/training-engine.md`'s own
+**Unified portable-artifact prediction** section) calls `inspect_model()`
+internally and dispatches on `ModelInfo.classes`/`ModelInfo.model.
+module_types` for them.
 
 ### Public API
 ```python
