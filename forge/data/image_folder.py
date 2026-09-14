@@ -62,6 +62,16 @@ Every image is decoded (via Pillow) and converted to `Tensor` as:
   shape regardless of the source files' original modes, which `DataLoader`
   batching requires.
 
+`_load_image()` (Milestone 94) additionally accepts an explicit `channels=`
+argument (`1` or `3`, default `3` -- `ImageFolder.__getitem__` itself always
+passes the default, preserving this dataset's own always-3-channel contract
+unchanged) so a caller decoding a single image file for a *specific* model's
+declared input contract (`forge.predict_artifact()`/`predict_image_artifact()`,
+Milestone 94) can request grayscale (`Image.convert("L")`) directly, rather
+than always decoding to RGB and hitting a channel mismatch deep inside the
+model's first `Conv2d`. See `forge.training.inference._expected_image_channels()`
+for how those callers determine which value to pass.
+
 `ImageFolder` does not resize images -- every file under `root` must already
 share the same `(H, W)`, or `transform=` must normalize that (Forge has no
 `Resize` transform yet; see the module's own limitations note in
@@ -161,22 +171,45 @@ class ImageFolder(Dataset):
         return len(self.samples)
 
     @staticmethod
-    def _load_image(path: Path) -> Tensor:
-        """Decode `path` into a `(3, H, W)` float32 `Tensor`, raw `[0, 255]` range.
+    def _load_image(path: Path, channels: int = 3) -> Tensor:
+        """Decode `path` into a `(channels, H, W)` float32 `Tensor`, raw `[0, 255]` range.
 
         The single, shared image-decode step -- `__getitem__` calls this
-        directly, and it is the right place to reuse (not duplicate) if a
-        caller ever needs to preprocess one arbitrary image file the exact
-        same way `ImageFolder` does (e.g. single-image inference on a file
-        that isn't part of the dataset).
+        directly (always with the default `channels=3`, preserving
+        `ImageFolder`'s own documented always-RGB contract), and it is the
+        right place to reuse (not duplicate) if a caller ever needs to
+        preprocess one arbitrary image file the exact same way `ImageFolder`
+        does (e.g. single-image inference on a file that isn't part of the
+        dataset).
+
+        `channels` (Milestone 94) selects the Pillow conversion mode applied
+        before the pixel array is read: `3` -> `img.convert("RGB")` (the
+        original, unconditional behavior -- grayscale/palette/CMYK images
+        replicated across channels, RGBA's alpha channel discarded), `1` ->
+        `img.convert("L")` (Pillow's standard luminance-weighted grayscale
+        conversion -- an identity conversion for an already-grayscale image,
+        and a well-defined, conventional conversion for RGB/RGBA input, the
+        same one `examples/mnist/infer.py::_load_digit_image()` already used
+        before this method supported it directly). No other channel count is
+        supported -- raises `DataError` naming the requested value rather
+        than guessing a conversion for it.
         """
+        if channels not in (1, 3):
+            raise DataError(
+                f"ImageFolder._load_image() only supports channels=1 (grayscale) or channels=3 "
+                f"(RGB), got {channels!r}."
+            )
+        mode = "L" if channels == 1 else "RGB"
         try:
             with Image.open(path) as img:
-                array = np.array(img.convert("RGB"), dtype=np.uint8)
+                array = np.array(img.convert(mode), dtype=np.uint8)
         except (OSError, UnidentifiedImageError) as exc:
             raise DataError(f"ImageFolder could not read image '{path}': {exc}") from exc
 
-        chw = np.ascontiguousarray(array.transpose(2, 0, 1).astype(np.float32))
+        if channels == 1:
+            chw = np.ascontiguousarray(array[np.newaxis, :, :].astype(np.float32))
+        else:
+            chw = np.ascontiguousarray(array.transpose(2, 0, 1).astype(np.float32))
         return Tensor(chw)
 
     def __getitem__(self, index: int) -> "tuple[Tensor, Tensor]":

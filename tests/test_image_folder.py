@@ -219,6 +219,64 @@ def test_corrupt_image_file_raises_data_error(tmp_path):
         ds[0]
 
 
+# -- _load_image(channels=) (Milestone 94) ---------------------------------
+
+
+def test_load_image_default_channels_still_three_and_rgb(tmp_path):
+    """`ImageFolder.__getitem__` never passes `channels=` explicitly -- the
+    default must remain `3`/RGB, exactly the pre-Milestone-94 behavior."""
+    path = tmp_path / "img.png"
+    _make_image(path, size=(4, 4), color=(10, 20, 30), mode="RGB")
+    image = ImageFolder._load_image(path)
+    assert image.shape == (3, 4, 4)
+
+
+def test_load_image_channels_one_decodes_grayscale_source_as_single_channel(tmp_path):
+    path = tmp_path / "gray.png"
+    _make_image(path, size=(4, 4), color=128, mode="L")
+    image = ImageFolder._load_image(path, channels=1)
+    assert image.shape == (1, 4, 4)
+    np.testing.assert_allclose(image.numpy()[0, 0, 0], 128.0)
+
+
+def test_load_image_channels_one_converts_rgb_source_to_grayscale(tmp_path):
+    """`channels=1` against an RGB source applies Pillow's standard
+    luminance conversion, not a crash or a silently-wrong channel drop."""
+    path = tmp_path / "rgb.png"
+    _make_image(path, size=(4, 4), color=(10, 20, 30), mode="RGB")
+    image = ImageFolder._load_image(path, channels=1)
+    assert image.shape == (1, 4, 4)
+    expected = np.array(Image.new("RGB", (4, 4), (10, 20, 30)).convert("L"), dtype=np.float32)
+    np.testing.assert_allclose(image.numpy()[0], expected)
+
+
+def test_load_image_channels_one_on_an_already_grayscale_source_is_identity(tmp_path):
+    """A grayscale source decoded with `channels=1` must equal the same
+    source decoded via `channels=3` and collapsed manually -- i.e. no
+    lossy round trip through an unnecessary RGB conversion first."""
+    path = tmp_path / "gray.png"
+    _make_image(path, size=(4, 4), color=77, mode="L")
+    via_channels_1 = ImageFolder._load_image(path, channels=1).numpy()
+    via_channels_3 = ImageFolder._load_image(path, channels=3).numpy()
+    np.testing.assert_allclose(via_channels_1[0], via_channels_3[0])
+
+
+def test_load_image_rejects_unsupported_channel_count(tmp_path):
+    path = tmp_path / "img.png"
+    _make_image(path, size=(4, 4), color=(1, 2, 3), mode="RGB")
+    with pytest.raises(DataError, match="channels"):
+        ImageFolder._load_image(path, channels=2)
+    with pytest.raises(DataError, match="channels"):
+        ImageFolder._load_image(path, channels=4)
+
+
+def test_load_image_channels_one_corrupt_file_raises_data_error(tmp_path):
+    bad = tmp_path / "corrupt.png"
+    bad.write_bytes(b"not actually a png")
+    with pytest.raises(DataError):
+        ImageFolder._load_image(bad, channels=1)
+
+
 # -- dataset behavior -------------------------------------------------------
 
 

@@ -24,8 +24,11 @@ from pathlib import Path
 
 import pytest
 
+import numpy as np
+from PIL import Image
+
 import forge
-from forge.nn import Linear, ReLU, Sequential
+from forge.nn import Conv2d, Flatten, Linear, MaxPool2d, ReLU, Sequential
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -129,6 +132,42 @@ def test_installed_forge_inspects_and_predicts_real_artifact(clean_install, outs
     result = _run(clean_install, ["-m", "forge", "model", "predict", "model.forge", "input.json"], outside_repo_dir)
     assert result.returncode == 0, result.stderr
     assert "Prediction" in result.stdout
+
+
+# -- grayscale image classification (Milestone 94) --------------------------
+
+
+def test_installed_forge_predicts_grayscale_image_classification_artifact(clean_install, outside_repo_dir):
+    """Milestone 94's own installed-package acceptance criterion: a real
+    grayscale-model artifact + a genuinely grayscale PNG must predict
+    correctly through the installed distribution, from a fresh process,
+    outside the repository -- the same real production boundary M93
+    established, now exercised for the grayscale channel-matching fix
+    specifically (the exact shape of the M93-discovered MNIST failure)."""
+    from forge.data.transforms import Compose, Normalize, Resize
+
+    forge.random.seed(0)
+    model = Sequential(
+        Conv2d(1, 4, kernel_size=3, padding=1), ReLU(), MaxPool2d(kernel_size=2),
+        Flatten(), Linear(4 * 4 * 4, 2),
+    )
+    preprocessing = Compose([Resize((8, 8)), Normalize(mean=0.0, std=255.0)])
+    model_path = outside_repo_dir / "grayscale_model.forge"
+    forge.save_model(
+        model, str(model_path), preprocessing=preprocessing,
+        classes=["zero", "one"], task="classification",
+    )
+
+    image_path = outside_repo_dir / "query.png"
+    arr = np.full((8, 8), 100, dtype=np.uint8)
+    Image.fromarray(arr, mode="L").save(image_path)  # genuinely grayscale
+
+    result = _run(
+        clean_install, ["-m", "forge", "model", "predict", "grayscale_model.forge", "query.png"], outside_repo_dir,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Prediction:" in result.stdout
+    assert "Confidence:" in result.stdout
 
 
 # -- error behavior -----------------------------------------------------

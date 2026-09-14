@@ -5604,3 +5604,55 @@ re-running clean and unchanged). Real dataset result: 72.1% test accuracy
 on CPU (72.7% on CUDA) against the real 65.1% majority-class baseline.
 
 Full report: `docs/development/m92-real-dataset-ingestion.md`.
+
+### M94 — Robust image-classification input handling: grayscale/RGB channel matching
+Turned a real M93-discovered production defect ("`forge model predict` on a
+grayscale MNIST PNG raises a channel-mismatch error") into a general,
+tested image-input contract. Reproduced exactly against a real asset --
+`examples/mnist/artifacts/new_digit_query.png`, a genuine mode-`"L"` PNG
+`examples/mnist/train.py` itself writes from a real MNIST test image --
+via both `forge model predict` and `forge.predict_artifact()` directly:
+`Conv2d(in_channels=1) cannot accept input with 3 channels (input shape
+(1, 3, 28, 28))`. Root cause: `predict_artifact()`/`predict_image_artifact()`
+(`forge/training/inference.py`) both decoded the input image via `Image
+Folder._load_image()`, which unconditionally converted every image to RGB
+regardless of what the saved model's own architecture expected -- correct
+for `ImageFolder`'s own always-3-channel dataset contract, but wrong when
+reused as the shared artifact-inference decode step for a `Conv2d(1, ...)`
+model like `examples/mnist` (which never trains via `ImageFolder` at all).
+Fixed with `forge.training.inference._expected_image_channels(model)` --
+reads the `in_channels` of the first `Conv2d` found via `model.modules()`,
+an already-existing, already-persisted signal, no new artifact metadata or
+`FORMAT_VERSION` bump -- plus `ImageFolder._load_image(path, channels=)`
+(new optional parameter, default `3`, `ImageFolder.__getitem__` itself
+unchanged): `channels=1` decodes via `Image.convert("L")` (identity for a
+grayscale source, standard luminance conversion for RGB/RGBA), `channels=3`
+is the original unconditional RGB behavior. Conversion happens before the
+artifact's own persisted `preprocessing` runs. A model whose first `Conv2d`
+expects a channel count outside `{1, 3}` gets a clear `DataError` naming
+it; a model with no `Conv2d` falls back to the original `channels=3`
+default. Pure input adaptation -- no architecture, task-type, or artifact
+-format change. Both `predict_artifact()` (classification) and
+`predict_image_artifact()` (segmentation) share the one fix
+(`_decode_image_for_model()`), so `forge.predict_model()` and `forge model
+predict` inherit it automatically; RGB workflows verified bit-for-bit
+identical before/after (`examples/image_folder_classification`,
+`examples/segmentation`, via `git stash` A/B comparison). Real MNIST
+validation: the fixed CLI now predicts the genuinely correct digit (`"2"`,
+99.6% confidence, matching the true label) from the real artifact, and
+identically from a freshly retrained one; verified on CPU, real CUDA
+hardware (940MX), and genuine `subprocess` fresh-process invocations of
+both the Python API and the CLI. 41 new tests across `tests/
+test_image_folder.py` (6), `tests/test_artifact_inference.py` (9),
+`tests/test_artifact_inference_cuda.py` (2, hardware-verified), and `tests/
+test_cli_predict.py` (6 new + CUDA), plus 1 new `tests/
+test_packaging_smoke.py` test (real wheel build + clean-venv install +
+grayscale-artifact prediction, outside the repository, reusing M93's
+fixtures). No `FORMAT_VERSION` bump; full backward compatibility. 2,586
+collected (30 net new over M92's 2,556 -- M93's untracked packaging
+milestone added some in between); full suite: 2,585 passed, 1 failed --
+the same pre-existing `test_dataloader_prefetch.py` allocator-measurement
+flake documented since ~M63 (reproduced passing in isolation), no M94
+regression.
+
+Full report: `docs/development/m94-image-channel-handling.md`.

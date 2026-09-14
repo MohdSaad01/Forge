@@ -90,6 +90,28 @@ def _make_image(path: Path, size=(8, 8), fill=100) -> None:
     Image.fromarray(arr, mode="RGB").save(path)
 
 
+def _make_grayscale_image(path: Path, size=(8, 8), fill=100) -> None:
+    arr = np.full((size[1], size[0]), fill, dtype=np.uint8)
+    Image.fromarray(arr, mode="L").save(path)
+
+
+def _grayscale_classification_model(num_classes=2):
+    """Milestone 94: a Conv2d(1, ...)-first model, matching the real
+    `examples/mnist` architecture's channel contract exactly."""
+    return Sequential(
+        Conv2d(1, 4, kernel_size=3, padding=1), ReLU(), MaxPool2d(kernel_size=2),
+        Flatten(), Linear(4 * 4 * 4, num_classes),
+    )
+
+
+def _saved_grayscale_classification_model(tmp_path, *, classes=("zero", "one"), task="classification", seed=0) -> Path:
+    forge.random.seed(seed)
+    model = _grayscale_classification_model(num_classes=len(classes) if classes else 2)
+    path = tmp_path / "grayscale_classification.forge"
+    save_model(model, str(path), preprocessing=_classification_transform(), classes=list(classes) if classes else None, task=task)
+    return path
+
+
 def _saved_classification_model(tmp_path, *, classes=("cat", "dog"), task="classification", seed=0) -> Path:
     forge.random.seed(seed)
     model = _classification_model(num_classes=len(classes) if classes else 2)
@@ -142,6 +164,52 @@ def test_cli_predict_routes_classification_artifact(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Prediction:" in out
     assert "Confidence:" in out
+
+
+# -- grayscale image input (Milestone 94) --------------------------------------
+
+
+def test_cli_predict_grayscale_model_with_grayscale_image(tmp_path, capsys):
+    """Case A: a Conv2d(1, ...) model fed a genuinely grayscale PNG -- the
+    exact shape of the real M93-discovered MNIST failure (a channel-mismatch
+    error deep inside Conv2d, since the CLI used to always decode as RGB)."""
+    model_path = _saved_grayscale_classification_model(tmp_path)
+    image_path = tmp_path / "query.png"
+    _make_grayscale_image(image_path)
+
+    exit_code = cli_main(["model", "predict", str(model_path), str(image_path)])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Prediction:" in out
+    assert "Confidence:" in out
+
+
+def test_cli_predict_grayscale_model_with_rgb_image_converts_to_grayscale(tmp_path, capsys):
+    """Case D: an RGB image fed to a Conv2d(1, ...) model -- must be
+    converted (Pillow's standard luminance transform), not rejected, and
+    must not crash inside Conv2d."""
+    model_path = _saved_grayscale_classification_model(tmp_path)
+    image_path = tmp_path / "query.png"
+    _make_image(image_path)  # RGB
+
+    exit_code = cli_main(["model", "predict", str(model_path), str(image_path)])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Prediction:" in out
+
+
+def test_cli_predict_rgb_model_with_grayscale_image_converts_to_rgb(tmp_path, capsys):
+    """Case C: a grayscale image fed to the ordinary Conv2d(3, ...) model --
+    must be converted to RGB (replicated across channels), matching
+    `ImageFolder`'s own long-established grayscale-source behavior."""
+    model_path = _saved_classification_model(tmp_path)
+    image_path = tmp_path / "query.png"
+    _make_grayscale_image(image_path)
+
+    exit_code = cli_main(["model", "predict", str(model_path), str(image_path)])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Prediction:" in out
 
 
 def test_cli_predict_routes_regression_artifact(tmp_path, capsys):
@@ -506,6 +574,22 @@ def test_cli_predict_fresh_process_all_four_task_shapes(tmp_path):
     assert mask_path.is_file()
 
 
+def test_cli_predict_grayscale_model_fresh_process(tmp_path):
+    """Milestone 94: the real MNIST failure was reproduced through `forge
+    model predict` specifically -- prove the fix holds in a genuinely
+    separate OS process, not just this test's own import state."""
+    model_path = _saved_grayscale_classification_model(tmp_path, seed=20)
+    image_path = tmp_path / "query.png"
+    _make_grayscale_image(image_path, size=(30, 20))
+
+    result = subprocess.run(
+        [sys.executable, "-m", "forge", "model", "predict", str(model_path), str(image_path)],
+        cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, f"subprocess failed:\n{result.stderr}"
+    assert "Prediction:" in result.stdout
+
+
 # -- CUDA-hardware-verified (skips cleanly without CUDA) -----------------------
 
 
@@ -531,6 +615,21 @@ def test_cli_predict_tabular_classification_reaches_cuda_inference_path(tmp_path
     _write_json(input_path, [1.0, 2.0, 3.0, 4.0])
 
     exit_code = cli_main(["model", "predict", str(model_path), str(input_path), "--device", "cuda"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Prediction:" in out
+    assert "Confidence:" in out
+
+
+@pytestmark_cuda
+def test_cli_predict_grayscale_classification_reaches_cuda_inference_path(tmp_path, capsys):
+    """Milestone 94: grayscale channel handling must work identically on the
+    real CUDA path, not just CPU -- hardware-verified on the 940MX."""
+    model_path = _saved_grayscale_classification_model(tmp_path)
+    image_path = tmp_path / "query.png"
+    _make_grayscale_image(image_path)
+
+    exit_code = cli_main(["model", "predict", str(model_path), str(image_path), "--device", "cuda"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "Prediction:" in out

@@ -65,10 +65,48 @@ def _make_image(path: Path, size=(8, 8), fill=100) -> None:
     Image.fromarray(arr, mode="RGB").save(path)
 
 
+def _make_grayscale_image(path: Path, size=(8, 8), fill=100) -> None:
+    arr = np.full((size[1], size[0]), fill, dtype=np.uint8)
+    Image.fromarray(arr, mode="L").save(path)
+
+
 def _saved_tiny_model(tmp_path, *, preprocessing=None, classes=None, seed=0):
     forge.random.seed(seed)
     model = _TinyCNN(num_classes=len(classes) if classes else 2)
     path = tmp_path / "model.forge"
+    save_model(model, str(path), preprocessing=preprocessing, classes=classes)
+    return path
+
+
+class _TinyGrayscaleCNN(Module):
+    """Milestone 94: a Conv2d(1, ...)-first model, matching `examples/mnist`'s
+    real channel contract exactly, for exercising the grayscale-model
+    decode path independently of `_TinyCNN`'s RGB one."""
+
+    def __init__(self, num_classes=2):
+        super().__init__()
+        self.conv = Conv2d(1, 4, kernel_size=3, padding=1)
+        self.relu = ReLU()
+        self.pool = MaxPool2d(kernel_size=2)
+        self.flatten = Flatten()
+        self.fc = Linear(4 * 4 * 4, num_classes)
+
+    def forward(self, x):
+        x = self.pool(self.relu(self.conv(x)))
+        return self.fc(self.flatten(x))
+
+
+register_module(
+    "_TinyGrayscaleCNN_M94Test",
+    _TinyGrayscaleCNN,
+    get_config=lambda m: {"num_classes": m.fc.out_features},
+)
+
+
+def _saved_tiny_grayscale_model(tmp_path, *, preprocessing=None, classes=None, seed=0):
+    forge.random.seed(seed)
+    model = _TinyGrayscaleCNN(num_classes=len(classes) if classes else 2)
+    path = tmp_path / "grayscale_model.forge"
     save_model(model, str(path), preprocessing=preprocessing, classes=classes)
     return path
 
@@ -153,6 +191,150 @@ def test_predict_artifact_device_override_accepted_on_cpu_only_machine(tmp_path)
 
     result = predict_artifact(str(model_path), str(image_path), device="cpu")
     assert isinstance(result, ClassificationPrediction)
+
+
+# -- grayscale image input (Milestone 94) ----------------------------------
+#
+# The real M93-discovered failure: `predict_artifact()` always decoded via
+# `ImageFolder._load_image()`'s original unconditional `Image.convert("RGB")`,
+# so a Conv2d(1, ...) model (e.g. `examples/mnist`) raised a `ShapeMismatchError`
+# deep inside `Conv2d.forward()` for *any* image input, including a
+# genuinely grayscale one. See `forge/training/inference.py::
+# _expected_image_channels()`/`_decode_image_for_model()`.
+
+
+def test_predict_artifact_grayscale_model_with_grayscale_image(tmp_path):
+    """Case A: a Conv2d(1, ...) model + a genuinely grayscale image -- must work."""
+    model_path = _saved_tiny_grayscale_model(tmp_path, preprocessing=_build_transform(), classes=["zero", "one"])
+    image_path = tmp_path / "query.png"
+    _make_grayscale_image(image_path)
+
+    result = predict_artifact(str(model_path), str(image_path))
+    assert isinstance(result, ClassificationPrediction)
+
+
+def test_predict_artifact_rgb_model_with_rgb_image_unaffected(tmp_path):
+    """Case B: the original RGB-model + RGB-image shape must remain exactly
+    as before -- no regression from the new channel-matching logic."""
+    model_path = _saved_tiny_model(tmp_path, preprocessing=_build_transform(), classes=["cat", "dog"])
+    image_path = tmp_path / "query.png"
+    _make_image(image_path)
+
+    result = predict_artifact(str(model_path), str(image_path))
+    assert isinstance(result, ClassificationPrediction)
+
+
+def test_predict_artifact_grayscale_image_to_rgb_model_converts_to_rgb(tmp_path):
+    """Case C: a grayscale image fed to a Conv2d(3, ...) model -- converted to
+    RGB (replicated across channels), matching `ImageFolder`'s own
+    long-established grayscale-source behavior; not rejected."""
+    model_path = _saved_tiny_model(tmp_path, preprocessing=_build_transform(), classes=["cat", "dog"])
+    image_path = tmp_path / "query.png"
+    _make_grayscale_image(image_path)
+
+    result = predict_artifact(str(model_path), str(image_path))
+    assert isinstance(result, ClassificationPrediction)
+
+
+def test_predict_artifact_rgb_image_to_grayscale_model_converts_to_grayscale(tmp_path):
+    """Case D: an RGB image fed to a Conv2d(1, ...) model -- converted via
+    Pillow's standard luminance transform, not rejected."""
+    model_path = _saved_tiny_grayscale_model(tmp_path, preprocessing=_build_transform(), classes=["zero", "one"])
+    image_path = tmp_path / "query.png"
+    _make_image(image_path)
+
+    result = predict_artifact(str(model_path), str(image_path))
+    assert isinstance(result, ClassificationPrediction)
+
+
+def test_predict_artifact_grayscale_decode_happens_before_preprocessing(tmp_path):
+    """The channel conversion must run *before* the persisted `Resize`/
+    `Normalize` pipeline, not be patched on afterward -- verified by
+    comparing against a hand-assembled pipeline using the same channels=1
+    decode, exactly like `test_predict_artifact_matches_the_manual_load_
+    predict_interpret_pipeline` does for the RGB case."""
+    model_path = _saved_tiny_grayscale_model(tmp_path, preprocessing=_build_transform(), classes=["zero", "one"])
+    image_path = tmp_path / "query.png"
+    _make_grayscale_image(image_path, fill=200)
+
+    result = predict_artifact(str(model_path), str(image_path))
+
+    preprocessing = load_preprocessing(str(model_path))
+    model = load_model(str(model_path))
+    raw = ImageFolder._load_image(image_path, channels=1)
+    batch = preprocessing(raw).reshape(1, 1, *_RESIZE_SIZE)
+    expected = interpret_classification(predict(model, batch), load_classes(str(model_path)))[0]
+
+    assert result.label == expected.label
+    assert result.index == expected.index
+    assert result.confidence == pytest.approx(expected.confidence, abs=1e-6)
+
+
+def test_predict_artifact_real_mnist_grayscale_artifact_predicts_correct_digit():
+    """Milestone 94's own production-acceptance case: a real, previously
+    trained MNIST `.forge` artifact + the real grayscale PNG `train.py`
+    itself wrote (`examples/mnist/artifacts/new_digit_query.png`, test
+    sample index 1, true digit 2). Not a synthetic tensor -- the exact
+    workflow M93 discovered broken."""
+    model_path = _REPO_ROOT / "examples" / "mnist" / "artifacts" / "mnist_model.forge"
+    image_path = _REPO_ROOT / "examples" / "mnist" / "artifacts" / "new_digit_query.png"
+    if not model_path.is_file() or not image_path.is_file():
+        pytest.skip("examples/mnist has not been trained in this checkout (run examples/mnist/train.py first)")
+
+    with Image.open(image_path) as img:
+        assert img.mode == "L"  # a genuinely grayscale source file, not a synthetic fixture
+
+    result = predict_artifact(str(model_path), str(image_path))
+    assert isinstance(result, ClassificationPrediction)
+    assert result.label == "2"
+    assert result.confidence > 0.5
+
+
+def test_predict_artifact_grayscale_model_unsupported_channel_count_raises_data_error(tmp_path):
+    """A model whose first Conv2d expects a channel count `_load_image()`
+    cannot decode for (only 1/3 are supported) must fail with a clear
+    `DataError` naming the mismatch, not an opaque downstream tensor error."""
+    forge.random.seed(0)
+    model = Sequential(
+        Conv2d(2, 4, kernel_size=3, padding=1), ReLU(), MaxPool2d(kernel_size=2),
+        Flatten(), Linear(4 * 4 * 4, 2),
+    )
+    model_path = tmp_path / "two_channel_model.forge"
+    save_model(model, str(model_path), preprocessing=_build_transform(), classes=["a", "b"])
+    image_path = tmp_path / "query.png"
+    _make_image(image_path)
+
+    with pytest.raises(DataError, match="channels"):
+        predict_artifact(str(model_path), str(image_path))
+
+
+def test_predict_artifact_grayscale_works_from_a_genuinely_separate_process(tmp_path):
+    """Fresh-process counterpart to `test_predict_artifact_works_from_a_
+    genuinely_separate_process`, for the grayscale (Conv2d(1, ...)) shape."""
+    forge.random.seed(0)
+    model = Sequential(
+        Conv2d(1, 4, kernel_size=3, padding=1), ReLU(), MaxPool2d(kernel_size=2),
+        Flatten(), Linear(4 * 4 * 4, 2),
+    )
+    model_path = tmp_path / "grayscale_model.forge"
+    save_model(model, str(model_path), preprocessing=_build_transform(), classes=["zero", "one"])
+    image_path = tmp_path / "query.png"
+    _make_grayscale_image(image_path, size=(30, 20))
+
+    script = (
+        "import sys\n"
+        "import forge\n"
+        f"result = forge.predict_artifact({str(model_path)!r}, {str(image_path)!r})\n"
+        "print(f'label={result.label} index={result.index} confidence={result.confidence:.6f}')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, f"subprocess failed:\n{result.stderr}"
+
+    expected = predict_artifact(str(model_path), str(image_path))
+    assert f"label={expected.label} index={expected.index}" in result.stdout
 
 
 # -- error handling -------------------------------------------------------

@@ -963,11 +963,13 @@ print(f"Confidence: {result.confidence:.1%}")
    failure mode Milestone 71 closed).
 2. `load_model(path, device=device)` -- a fresh reconstruction, honoring
    `load_model()`'s own default-to-saved-device / explicit-override policy.
-3. `ImageFolder._load_image(Path(image))` -- the same single-image decode
-   step `ImageFolder.__getitem__` itself uses (see that method's own
-   docstring: "the right place to reuse... if a caller ever needs to
-   preprocess one arbitrary image file the exact same way `ImageFolder`
-   does").
+3. `ImageFolder._load_image(Path(image), channels=...)` -- the same
+   single-image decode step `ImageFolder.__getitem__` itself uses (see that
+   method's own docstring: "the right place to reuse... if a caller ever
+   needs to preprocess one arbitrary image file the exact same way
+   `ImageFolder` does"), decoded in whichever channel representation `model`
+   itself expects rather than always RGB -- see **Image channel handling**
+   below (Milestone 94).
 4. The reconstructed `preprocessing(raw)`, then a leading batch dimension.
 5. `predict(model, batch)`.
 6. `load_classes(path)` -- when present, `interpret_classification(output,
@@ -1015,6 +1017,40 @@ integration.py::test_infer_cli_runs_in_a_genuinely_separate_process`
 own subprocess.
 
 See `docs/development/m82-artifact-inference.md`.
+
+**Image channel handling (Milestone 94).** A real production failure found
+during Milestone 93 validation: `predict_artifact()`/`predict_image_artifact()`
+always decoded the input image to RGB (`ImageFolder._load_image()`'s original
+unconditional `Image.convert("RGB")`), so a grayscale model
+(`examples/mnist`, `Conv2d(1, ...)`) raised a `ShapeMismatchError` deep
+inside `Conv2d.forward()` for *any* image -- including a genuinely grayscale
+PNG (`examples/mnist/artifacts/new_digit_query.png`), the exact real asset
+`examples/mnist/train.py` itself writes. Fixed by having both functions
+determine `model`'s declared channel contract before decoding, via
+`forge.training.inference._expected_image_channels()`: the `in_channels` of
+the first `Conv2d` found in `model.modules()` (self-first depth-first, the
+same order `save_model()` walks the tree) -- `1` or `3`, matching every real
+Forge image-classification/segmentation architecture today. `ImageFolder.
+_load_image(path, channels=)` (still `channels=3` by default for
+`ImageFolder.__getitem__` itself, unchanged) then decodes directly into that
+representation: `channels=1` -> `Image.convert("L")` (identity for an
+already-grayscale source; Pillow's standard luminance conversion for an
+RGB/RGBA source -- the same conversion `examples/mnist/infer.py::
+_load_digit_image()` already used independently before this method supported
+it directly), `channels=3` -> `Image.convert("RGB")` (the original,
+unconditional behavior -- grayscale replicated across channels, RGBA alpha
+discarded, unchanged for every existing RGB artifact). This conversion runs
+*before* the artifact's own persisted `preprocessing` (`Resize`/`Normalize`/
+...), so a channel conversion never happens after a transform that already
+assumes a particular channel count. A model whose first `Conv2d` expects a
+channel count outside `{1, 3}` raises `forge.DataError` naming the
+unsupported count, rather than guessing a conversion for it; a model with no
+`Conv2d` at all (`_expected_image_channels()` returns `None`) falls back to
+the original `channels=3` default, preserving behavior for any shape this
+milestone did not change. Pure input adaptation, not an architecture change
+-- no `Conv2d`/`Sequential`/model code is touched, only its existing public
+`in_channels` attribute is read. See
+`docs/development/m94-image-channel-handling.md`.
 
 ## Portable-artifact inference for numeric input: `predict_tensor_artifact()` (Milestone 83)
 

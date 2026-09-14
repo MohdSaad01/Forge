@@ -139,6 +139,58 @@ def _resolve_device(model: Module, device: "str | Device | None") -> Device:
     return Device.parse("cpu")
 
 
+def _expected_image_channels(model: Module) -> "int | None":
+    """The number of input channels an image-consuming `model` expects, or `None` (Milestone 94).
+
+    Walks `model.modules()` (self-first depth-first, the same order
+    `save_model()`/`inspect_model()` already walk the tree in) for the first
+    `Conv2d` and returns its `in_channels` -- the real, already-fixed
+    contract every image-classification/segmentation model in Forge
+    declares today (`examples/mnist`: `Conv2d(1, ...)`; `examples/
+    image_folder_classification`/`examples/segmentation`: `Conv2d(3, ...)`).
+    This is input *adaptation*, not an architecture change: no `Conv2d`
+    behavior is touched, only its existing public `in_channels` attribute is
+    read, exactly the way `_legacy_infer_workflow()` already reads
+    `ModelSummary.module_types` without altering the modules it inspects.
+
+    Returns `None` if `model` contains no `Conv2d` at all -- there is no
+    image-channel contract to discover, so callers fall back to the
+    pre-Milestone-94 default (`channels=3`, i.e. always decode as RGB)
+    rather than guessing.
+    """
+    from ..nn.conv import Conv2d
+
+    for module in model.modules():
+        if isinstance(module, Conv2d):
+            return module.in_channels
+    return None
+
+
+def _decode_image_for_model(model: Module, image: "str | os.PathLike") -> Tensor:
+    """Decode `image` via `ImageFolder._load_image()`, in the channel representation `model` expects (Milestone 94).
+
+    The shared image/model-boundary adaptation both `predict_artifact()` and
+    `predict_image_artifact()` need: `_expected_image_channels()` reads the
+    model's own declared contract (its first `Conv2d`'s `in_channels`), and
+    the image is decoded directly into that representation -- `1` channel
+    (`Image.convert("L")`) or `3` channels (`Image.convert("RGB")`, the
+    original, unconditional pre-Milestone-94 behavior) -- *before* the
+    artifact's own persisted `preprocessing` pipeline (`Resize`/`Normalize`/
+    ...) ever runs, so a channel conversion never happens after a transform
+    that already assumes a particular channel count. A model whose first
+    `Conv2d` expects a channel count other than `1`/`3` (or a model with no
+    `Conv2d` at all -- `_expected_image_channels()` returns `None`) is not a
+    contract this function can safely convert for: the former raises
+    `DataError` (`ImageFolder._load_image()`'s own message); the latter
+    defaults to `channels=3`, preserving the original behavior for any
+    image-consuming model shape Milestone 94 did not change.
+    """
+    from ..data.image_folder import ImageFolder
+
+    channels = _expected_image_channels(model)
+    return ImageFolder._load_image(Path(image), channels=channels if channels is not None else 3)
+
+
 def _extract_input(batch: Any) -> Tensor:
     x = batch[0] if isinstance(batch, tuple) else batch
     if not isinstance(x, Tensor):
@@ -354,6 +406,23 @@ def predict_artifact(
     own default) -- pass `device="cpu"`/`device="cuda"` to override, exactly
     as `load_model()` itself accepts.
 
+    **Image channel handling (Milestone 94).** `image` is decoded to match
+    `model`'s own declared input contract -- its first `Conv2d`'s
+    `in_channels` (`1` or `3`; see `_expected_image_channels()`) -- rather
+    than always decoding to RGB. A grayscale (`examples/mnist`, `Conv2d(1,
+    ...)`) model converts the input to grayscale (`Image.convert("L")`,
+    identity for an already-grayscale source, a standard luminance
+    conversion for an RGB/RGBA source); an RGB (`examples/
+    image_folder_classification`, `Conv2d(3, ...)`) model converts to RGB
+    exactly as every prior milestone's artifacts already did (grayscale
+    replicated across channels, RGBA's alpha channel discarded). This
+    conversion happens *before* `preprocessing` runs, so a `Resize`/
+    `Normalize` step never sees the wrong channel count. A model whose first
+    `Conv2d` expects a channel count other than `1`/`3` is not a contract
+    this function can convert for and raises `forge.DataError` naming it
+    (`ImageFolder._load_image()`'s own validation); a model with no `Conv2d`
+    at all falls back to the original, unconditional RGB decode.
+
     Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
     artifact (the same conditions `load_model()`/`load_preprocessing()`/
     `load_classes()` already raise), and `forge.DataError` if `image` does
@@ -361,11 +430,12 @@ def predict_artifact(
     lower-level functions' own error handling, not by re-implementing it.
 
     **Scope.** Composes exactly `load_model()` + `load_preprocessing()` +
-    `load_classes()` + `ImageFolder._load_image()` + `predict()` +
-    `interpret_classification()`, each called unchanged. No new artifact
-    format, input abstraction, or model-serving machinery is introduced --
-    see this module's own docstring for what Milestone 82 deliberately does
-    not build.
+    `load_classes()` + `ImageFolder._load_image()` (via
+    `_decode_image_for_model()`, Milestone 94's channel-matching wrapper) +
+    `predict()` + `interpret_classification()`, each called unchanged. No new
+    artifact format, input abstraction, or model-serving machinery is
+    introduced -- see this module's own docstring for what Milestone 82
+    deliberately does not build.
     """
     if not isinstance(image, (str, os.PathLike)):
         raise DataError(
@@ -373,7 +443,6 @@ def predict_artifact(
             f"got {type(image).__name__}."
         )
 
-    from ..data.image_folder import ImageFolder
     from ..serialization.model import load_classes as _load_classes
     from ..serialization.model import load_model as _load_model
     from ..serialization.model import load_preprocessing as _load_preprocessing
@@ -388,7 +457,7 @@ def predict_artifact(
 
     model = _load_model(path, device=device.type if isinstance(device, Device) else device)
 
-    raw = ImageFolder._load_image(Path(image))
+    raw = _decode_image_for_model(model, image)
     prepared = preprocessing(raw)
     batch = prepared.reshape(1, *prepared.shape)
     output = predict(model, batch)
@@ -521,9 +590,12 @@ def predict_image_artifact(
     already established, not a generalization of this one.
 
     `image` must be a path (`str` or `os.PathLike`) to one image file on disk,
-    decoded via `ImageFolder._load_image()` -- the same `(3, H, W)`, raw
-    `[0, 255]`-range decode `predict_artifact()` uses. Anything else raises
-    `forge.DataError`.
+    decoded via `ImageFolder._load_image()` in whichever channel
+    representation `model`'s own first `Conv2d` expects (Milestone 94 -- see
+    `predict_artifact()`'s own docstring for the exact policy; every real
+    segmentation example today expects `3` channels, so this is unchanged
+    RGB decoding in practice, but the same channel-matching applies here as
+    for classification). Anything else raises `forge.DataError`.
 
     **Preprocessing is mandatory**, exactly like `predict_artifact()`: `path`
     must have been saved with `forge.save_model(..., preprocessing=...)` --
@@ -556,7 +628,6 @@ def predict_image_artifact(
             f"got {type(image).__name__}."
         )
 
-    from ..data.image_folder import ImageFolder
     from ..serialization.model import load_model as _load_model
     from ..serialization.model import load_preprocessing as _load_preprocessing
 
@@ -570,7 +641,7 @@ def predict_image_artifact(
 
     model = _load_model(path, device=device.type if isinstance(device, Device) else device)
 
-    raw = ImageFolder._load_image(Path(image))
+    raw = _decode_image_for_model(model, image)
     prepared = preprocessing(raw)
     batch = prepared.reshape(1, *prepared.shape)
     output = predict(model, batch)
