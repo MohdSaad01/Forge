@@ -117,7 +117,45 @@ philosophy** section below.
 
 ## Installation
 
-Requires Python >= 3.11 and NumPy (installed automatically).
+Requires Python >= 3.11 (NumPy and Pillow are installed automatically as
+declared runtime dependencies). Forge is not yet published to PyPI, so
+install directly from the source repository -- either as a real,
+non-editable package (normal consumption) or as an editable checkout
+(developing Forge itself).
+
+### Normal installation (consuming Forge)
+
+Install directly from the repository:
+
+```bash
+pip install "git+https://github.com/MohdSaad01/Forge.git"
+```
+
+or build and install the actual distribution from a local clone, rather
+than pointing `pip` at the source tree:
+
+```bash
+git clone https://github.com/MohdSaad01/Forge.git
+cd Forge
+pip install build
+python -m build              # -> dist/forge-*.whl, dist/forge-*.tar.gz
+pip install dist/forge-*.whl
+```
+
+Verify the install from a directory *outside* the cloned repository (so
+`import forge` can only resolve to the installed package, not a same-named
+local `forge/` directory -- see [Examples](#examples) below for why this
+distinction matters when running example scripts):
+
+```bash
+python -c "import forge; print(forge.__version__)"
+forge --version
+```
+
+### Development from source
+
+Working on Forge itself needs an editable install, so local edits take
+effect without reinstalling:
 
 ```bash
 git clone https://github.com/MohdSaad01/Forge.git
@@ -129,12 +167,6 @@ Optional (running the test suite / example demos that use matplotlib):
 
 ```bash
 pip install -e ".[dev]"
-```
-
-Verify the install:
-
-```bash
-python -c "import forge; print(forge.__version__)"
 ```
 
 ### CPU vs. CUDA

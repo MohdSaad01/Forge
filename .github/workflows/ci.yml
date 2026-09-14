@@ -30,3 +30,21 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
       - run: python -m pytest tests/ -q
+
+  # Milestone 93: `test` above only ever exercises `pip install -e .` against
+  # the source tree, which would never have caught the CUDA kernel source
+  # (kernels.cu) being silently missing from the built wheel -- a real
+  # packaging regression found and fixed in Milestone 93. This job instead
+  # builds Forge's actual wheel and installs it into a fresh venv, so package
+  # discovery/data/dependency/entry-point regressions are caught here even
+  # though this runner has no GPU (CUDA correctness itself stays hardware-
+  # verified manually per docs/development/development-environment.md).
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install build pytest
+      - run: python -m pytest tests/test_packaging_smoke.py -q

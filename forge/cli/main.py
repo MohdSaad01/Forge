@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .. import __version__
 from ..exceptions import ForgeError
 from . import benchmark, checkpoint, model
 from .errors import CLIError
@@ -30,6 +31,7 @@ from .errors import CLIError
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="forge", description="Forge command-line interface.")
+    parser.add_argument("--version", action="version", version=f"forge {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
     model.add_parser(subparsers)
     checkpoint.add_parser(subparsers)

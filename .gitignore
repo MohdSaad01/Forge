@@ -11,6 +11,11 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
+# Milestone 93: built distribution artifacts (`python -m build`) -- never
+# committed, rebuilt on demand from pyproject.toml.
+dist/
+build/
+
 # Per-machine, per-developer IDE metadata (JetBrains project settings) --
 # never portable across machines/editors, never committed (Milestone 62
 # hygiene: removed from tracking, see docs/development/m61-framework-readiness.md).

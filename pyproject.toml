@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "forge"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A neural-network framework for building and training models."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -23,6 +23,12 @@ forge = "forge.cli.main:main"
 
 [tool.setuptools.packages.find]
 include = ["forge*"]
+
+[tool.setuptools.package-data]
+"forge.backend.cuda" = ["kernels.cu"]
+
+[tool.setuptools.dynamic]
+version = { attr = "forge.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

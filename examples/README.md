@@ -7,6 +7,19 @@ framework logic of their own. Each one has its own README with full detail
 (expected numbers, CUDA verification, determinism policy, checkpoint/resume);
 this page is only an index so you can find the right one quickly.
 
+Examples are repository assets, run from within the repository (`python -m
+examples.<name>.train`) -- they are not part of the installed `forge`
+package and are not included in the built wheel/sdist. When run this way,
+`import forge` resolves to the repository's own `forge/` source tree
+(ordinary Python `sys.path` behavior: the current directory is searched
+before installed packages), not a `pip`-installed copy, even if one is
+installed in the same environment. This is a property of how Python
+resolves same-named local directories, not a Forge-specific limitation.
+Production consumption of Forge -- `pip install`, then `import forge`/the
+`forge` CLI against a portable `.forge` artifact -- is independent of
+`examples/` entirely and does not exhibit this; see the README's
+[Installation](../README.md#installation) section.
+
 | Example | Demonstrates | Model family | Forge APIs exercised | CPU/CUDA |
 |---|---|---|---|---|
 | [`trainer_demo.py`](trainer_demo.py) | The minimal end-to-end path: dataset → loader → model → loss → optimizer → `Trainer.fit()` → evaluation. Start here. | `Linear` regression, `Linear`→`ReLU`→`Linear` classification | `data.TensorDataset`/`DataLoader`/`random_split`, `nn.Linear`/`ReLU`, `nn.MSELoss`/`CrossEntropyLoss`, `optim.SGD`, `training.Trainer` | CPU only (demo script) |

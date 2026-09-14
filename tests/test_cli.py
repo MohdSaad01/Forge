@@ -79,6 +79,14 @@ def test_top_level_help_exits_zero(capsys):
     assert "model" in out and "checkpoint" in out and "benchmark" in out
 
 
+def test_version_flag_reports_forge_version_and_exits_zero(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--version"])
+    assert exc_info.value.code == 0
+    out = capsys.readouterr().out
+    assert out.strip() == f"forge {forge.__version__}"
+
+
 def test_unknown_command_exits_nonzero():
     with pytest.raises(SystemExit) as exc_info:
         main(["nosuchcommand"])
