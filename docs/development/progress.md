@@ -5453,3 +5453,80 @@ measurement flake documented since ~M63, no M90 regression (classification/
 regression/segmentation's own test files re-run clean and unchanged).
 
 Full report: `docs/development/m90-sequence-artifact-inference.md`.
+
+### M91 — Tabular-classification-artifact inference: `forge.predict_tabular_classification_artifact()`
+Second workload-driven milestone: selected tabular (non-image)
+classification -- a synthetic device-telemetry health classifier (10
+sensor-style features, 4 health states) -- as a genuinely new stress on the
+data/training pipeline, materially different from every prior example
+(`regression` is tabular but not classification; `mnist`/
+`image_folder_classification` are classification but always over image
+input). Attempted the full workload with existing public APIs before
+writing any framework code: `TensorDataset`/`random_split`/`Normalize`/
+`DataLoader`/`Sequential`/`CrossEntropyLoss`/`Adam`/`forge.train_and_save()`
+all worked unmodified, reaching 82.1% test accuracy against a 25.0% trivial
+baseline (genuine learning). One real data-pipeline finding along the way,
+confirmed rather than fixed: this dataset's raw rows are generated in
+class-block order (mirroring a CSV sorted by label), so `examples/
+regression`'s `sequential_split` would put entire classes only in the
+training split -- `forge.data.random_split` (already existing, already
+sufficient) is the correct tool, no new splitting capability needed.
+**Blocker found and reproduced against a real retrained artifact**: saving
+the model with `task="classification"` (the only classification task that
+existed) and then calling `forge.predict_model()`/`forge.predict_artifact()`
+on a brand-new raw feature vector failed immediately with `DataError:
+predict_artifact() requires image to be a file path (str or os.PathLike),
+got ndarray` -- every classification artifact, regardless of whether its
+input was an image file or a numeric feature vector, was routed to the same
+image-only `predict_artifact()`. Root cause: no artifact-level classification
+inference path had ever been built for non-image input -- `predict_artifact()`
+(M82) was deliberately scoped to image classification only, and no sibling
+function existed for the tabular case, unlike regression's `predict_tensor_
+artifact()` (M83). Fixed by adding `"tabular_classification"` as a fifth
+`TASK_TYPES` value (`forge/serialization/model.py`) -- architecturally
+identical to `"classification"` (both may be `Linear`-terminated with a
+`classes=` vocabulary), so, like `"sequence"` (M90), it has no legacy-
+architecture fallback and requires an explicit declaration -- plus `forge.
+predict_tabular_classification_artifact(path, input_data, *, device=None)`
+(`forge/training/inference.py`), the fifth artifact-shape function:
+composes `load_model()` + `load_preprocessing()` (optional, like `predict_
+tensor_artifact()`) + `predict()` + `load_classes()` (optional, like
+`predict_artifact()`) + `interpret_classification()`. **One deliberate
+design difference from `predict_artifact()`**: `input_data` here follows
+`predict_tensor_artifact()`'s "already batched, any batch size" convention
+(not `predict_artifact()`'s "always exactly one file" convention), so the
+function returns one result *per input row* (a list), not one result
+overall -- silently keeping only the first row's prediction, the way
+`predict_artifact()` does for its inherently-one-image input, would
+silently discard real caller data for any batch size greater than one.
+`forge.predict_model()` dispatches to it on `task="tabular_classification"`
+via a new `elif` branch, unchanged from its existing dispatch shape. `forge
+model predict` (CLI) gained a `tabular_classification` branch sharing
+`regression`'s numeric-JSON-file input parsing (the shared helper was
+renamed `_parse_regression_input` -> `_parse_numeric_input` for this reason)
+but printing classification-shaped, per-row results (`_print_classification_
+results()`, new -- one numbered `Sample N:` block per row for a multi-row
+JSON input, `--json` payload `{"task": ..., "predictions": [...]}`).
+Retrofitted `examples/tabular_classification/` (new: `dataset.py`,
+`model.py`, `train.py`, `infer.py`, `README.md`) -- the first example
+combining tabular input with classification output; its fresh-training path
+uses `forge.train_and_save(..., classes=CLASS_NAMES, task=
+"tabular_classification")` directly (no `--resume`/checkpoint path -- this
+workload's fast synthetic generation/training makes interrupted-training
+resume an unrealistic concern, so it was deliberately not built). No
+`FORMAT_VERSION` bump; fully backward/forward-compatible. 18 new CPU tests
+(`tests/test_tabular_classification_artifact_prediction.py` (10), `tests/
+test_unified_artifact_prediction.py` (3), `tests/test_cli_predict.py` (4),
+plus one new case collected automatically from `tests/test_task_metadata.py`
+'s existing `TASK_TYPES`-parametrized test) + 4 new CUDA tests (`tests/
+test_tabular_classification_artifact_prediction_cuda.py` (3) + `tests/
+test_cli_predict.py` (1), hardware-verified on the reference GeForce 940MX).
+2,526 collected (22 new over M90's 2,504); full suite: 2,525 passed, 1
+failed -- the same
+pre-existing `test_dataloader_prefetch.py` allocator-measurement flake
+documented since ~M63, no M91 regression (classification/regression/
+segmentation/sequence workflows all retrained fresh and re-verified via CLI
+`inspect`/`predict` end-to-end, in addition to their own test suites
+re-running clean and unchanged).
+
+Full report: `docs/development/m91-tabular-classification-artifact-inference.md`.

@@ -46,19 +46,31 @@ from .transforms import deserialize_transform, serialize_transform
 FORMAT_VERSION = 2
 
 # Milestone 87 (classification/regression/segmentation) + Milestone 90
-# (sequence): the fixed, small vocabulary of prediction workflows a saved
-# artifact can explicitly declare -- see save_model()'s `task=` parameter and
-# `docs/architecture/persistence.md`'s **Task metadata** section. Each name
-# corresponds directly to one of Forge's four existing artifact inference
-# workflows (`forge.predict_artifact()`/`predict_tensor_artifact()`/
-# `predict_image_artifact()`/`predict_sequence_artifact()`, Milestones
-# 82-84/90) -- not a generic/open-ended task registry. `"sequence"` is a
-# genuinely distinct *prediction problem* from the other three (autoregressive
+# (sequence) + Milestone 91 (tabular_classification): the fixed, small
+# vocabulary of prediction workflows a saved artifact can explicitly declare
+# -- see save_model()'s `task=` parameter and `docs/architecture/
+# persistence.md`'s **Task metadata** section. Each name corresponds
+# directly to one of Forge's five existing artifact inference workflows
+# (`forge.predict_artifact()`/`predict_tensor_artifact()`/
+# `predict_image_artifact()`/`predict_sequence_artifact()`/
+# `predict_tabular_classification_artifact()`, Milestones 82-84/90/91) -- not
+# a generic/open-ended task registry. `"sequence"` is a genuinely distinct
+# *prediction problem* from the other three original tasks (autoregressive
 # next-token generation from a seed, over a stepwise `model.step()`/
 # `model.init_hidden()` recurrence -- see `predict_sequence_artifact()`), not
 # merely "uses an RNN/LSTM layer" -- an RNN-based classifier would still be
-# saved with `task="classification"`.
-TASK_TYPES = ("classification", "regression", "segmentation", "sequence")
+# saved with `task="classification"`. `"tabular_classification"` is likewise
+# a genuinely distinct *input modality* from `"classification"`, not a
+# variant of it: `task="classification"` always means "input is an image
+# file path, decoded via `ImageFolder._load_image()`" (`predict_artifact()`);
+# `task="tabular_classification"` means "input is an already-batched numeric
+# feature vector" (`predict_tabular_classification_artifact()`), exactly the
+# same input shape `task="regression"` already uses. A tabular classifier
+# (numeric features in, a class label out) genuinely needs the second shape,
+# not the first -- see `predict_tabular_classification_artifact()`'s own
+# docstring and `docs/development/m91-tabular-classification-artifact-inference.md`
+# for the real, demonstrated gap this closes.
+TASK_TYPES = ("classification", "regression", "segmentation", "sequence", "tabular_classification")
 
 
 def _validate_task(task: "str | None", classes: "list[str] | None") -> None:
@@ -179,21 +191,28 @@ def save_model(
     `forge.training.interpret_classification()`, and
     `forge.training.predict_sequence_artifact()`.
 
-    `task` (Milestone 87; extended in Milestone 90) optionally declares which
-    of Forge's four portable-artifact inference workflows this file
-    represents -- `"classification"`, `"regression"`, `"segmentation"`, or
-    `"sequence"` (`forge.serialization.model.TASK_TYPES`) -- so `forge.
-    predict_model()` can dispatch to the right one of `predict_artifact()`/
-    `predict_tensor_artifact()`/`predict_image_artifact()`/
-    `predict_sequence_artifact()` reliably, from the artifact's own metadata,
-    rather than guessing from its module architecture (see
+    `task` (Milestone 87; extended in Milestones 90/91) optionally declares
+    which of Forge's five portable-artifact inference workflows this file
+    represents -- `"classification"`, `"regression"`, `"segmentation"`,
+    `"sequence"`, or `"tabular_classification"` (`forge.serialization.model.
+    TASK_TYPES`) -- so `forge.predict_model()` can dispatch to the right one
+    of `predict_artifact()`/`predict_tensor_artifact()`/
+    `predict_image_artifact()`/`predict_sequence_artifact()`/
+    `predict_tabular_classification_artifact()` reliably, from the artifact's
+    own metadata, rather than guessing from its module architecture (see
     `docs/architecture/persistence.md`'s **Task metadata** section for why
     the pre-Milestone-87 architecture-based guess was unreliable, and why
     Milestone 90's stepwise-recurrence models cannot use that guess at all --
-    they have no `forward()`). Any other string raises `PersistenceError`
-    before anything is written -- this is a small, fixed vocabulary matching
-    Forge's four existing inference workflows exactly, not an open-ended task
-    registry.
+    they have no `forward()`). `"tabular_classification"` (Milestone 91) is
+    the same distinction for a different reason: it is architecturally
+    identical to `"classification"` (both may be `Linear`-terminated with a
+    `classes=` vocabulary) but expects an already-batched numeric feature
+    vector, not an image file path -- no architecture-based guess could ever
+    tell the two apart, so an explicit declaration is the only reliable
+    signal, exactly like `"sequence"`'s own reasoning. Any other string
+    raises `PersistenceError` before anything is written -- this is a small,
+    fixed vocabulary matching Forge's five existing inference workflows
+    exactly, not an open-ended task registry.
 
     `task="regression"` or `task="segmentation"` combined with a non-`None`
     `classes=` raises `PersistenceError` immediately: neither workflow has a
@@ -202,13 +221,14 @@ def save_model(
     would describe an artifact whose two pieces of metadata disagree about
     what it is. `task="sequence"` is the opposite: it *requires* `classes=`
     (the token vocabulary `predict_sequence_artifact()` needs) and raises
-    `PersistenceError` if omitted. `task="classification"` places no such
-    restriction on `classes` -- `classes=None` remains a real, valid
-    classification-artifact state (see `predict_artifact()`'s own docstring),
-    and `task=` is what now lets `predict_model()` recognize that state
-    correctly instead of misidentifying it as regression (the M86 ambiguity
-    `docs/development/m86-unified-artifact-prediction.md` documented and
-    Milestone 87 closes).
+    `PersistenceError` if omitted. `task="classification"`/
+    `task="tabular_classification"` place no such restriction on `classes` --
+    `classes=None` remains a real, valid state for either (see
+    `predict_artifact()`'s/`predict_tabular_classification_artifact()`'s own
+    docstrings), and `task=` is what now lets `predict_model()` recognize
+    that state correctly instead of misidentifying it as regression (the M86
+    ambiguity `docs/development/m86-unified-artifact-prediction.md`
+    documented and Milestone 87 closes).
 
     Omitting `task` (the default) writes no `"task"` key at all -- exactly
     like `preprocessing=`/`classes=`'s own optional-key convention -- so
@@ -738,7 +758,7 @@ def inspect_model(path: str) -> ModelInfo:
     info.model.type              # "Sequential"
     info.preprocessing.description  # "Resize(size=(64, 64)) -> Normalize(mean=0.0, std=255.0)"
     info.classes                 # ["cat", "dog"], or None
-    info.task                    # "classification", "regression", "segmentation", or None
+    info.task                    # one of forge.serialization.model.TASK_TYPES, or None
     ```
 
     Answers "what is this artifact?" -- a question a developer holding just a

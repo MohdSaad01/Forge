@@ -87,9 +87,10 @@ def _make_image(path: Path, size=(8, 8), fill=100) -> None:
 
 
 def test_task_types_is_the_documented_vocabulary():
-    # Milestone 90 added "sequence" as a fourth documented task -- see
+    # Milestone 90 added "sequence" as a fourth documented task; Milestone 91
+    # added "tabular_classification" as a fifth -- see
     # docs/architecture/persistence.md's Task metadata section.
-    assert TASK_TYPES == ("classification", "regression", "segmentation", "sequence")
+    assert TASK_TYPES == ("classification", "regression", "segmentation", "sequence", "tabular_classification")
 
 
 @pytest.mark.parametrize("task", list(TASK_TYPES))

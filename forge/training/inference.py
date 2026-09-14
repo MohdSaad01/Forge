@@ -84,9 +84,24 @@ calls `model(x)` directly, which raises for a model with no `forward()`; see
 that function's own docstring for why this needed a dedicated artifact-level
 function rather than reusing `predict_tensor_artifact()`.
 
-`predict_model()` (Milestone 86, extended in Milestone 90) is the single
-entry point over all four: a developer holding a `.forge` file no longer has
-to already know which of the four functions above applies --
+`predict_tabular_classification_artifact()` (Milestone 91) is the fifth
+artifact shape: a classification model whose input is an already-batched
+numeric feature vector, not an image file (`examples/tabular_classification`)
+-- discovered as a genuine, reproduced blocker: before this function existed,
+`predict_model()` routed every `task="classification"` artifact to
+`predict_artifact()` unconditionally, which raises `forge.DataError`
+immediately for anything that is not an image file path. A tabular
+classification model (numeric features in, a class label out) could already
+be fully *trained* with `Trainer`/`DataLoader`/`CrossEntropyLoss`/`classes=`,
+but had no supported *inference* path at all. `task="tabular_classification"`
+(`forge.serialization.model.TASK_TYPES`) is the new, explicit signal that
+routes here instead -- see that function's own docstring, and
+`docs/development/m91-tabular-classification-artifact-inference.md`, for the
+full investigation.
+
+`predict_model()` (Milestone 86, extended in Milestones 90/91) is the single
+entry point over all five: a developer holding a `.forge` file no longer has
+to already know which of the five functions above applies --
 `predict_model(path, input_data)` reads the artifact's own persisted metadata
 (via `forge.inspect_model()`, Milestone 85) to pick the one supported
 workflow it describes, then delegates unchanged to the matching function
@@ -681,6 +696,117 @@ def predict_sequence_artifact(
     return generate_sequence(model, seed=list(seed), encode=_encode, decode=_decode, length=length, rng=rng)
 
 
+def predict_tabular_classification_artifact(
+    path: str,
+    input_data: "Tensor | np.ndarray | Sequence[Any]",
+    *,
+    device: "str | Device | None" = None,
+) -> "list[ClassificationPrediction] | list[int]":
+    """Classify an already-batched numeric input with a portable `.forge` artifact, in one call (Milestone 91).
+
+    ```python
+    results = forge.predict_tabular_classification_artifact("health_model.forge", raw_features)
+    print(f"Prediction: {results[0].label}")
+    print(f"Confidence: {results[0].confidence:.1%}")
+    ```
+
+    The tabular counterpart to `predict_artifact()` (Milestone 82, image
+    classification): `examples/tabular_classification/train.py` needs the
+    same "a developer holding just the `.forge` file shouldn't have to know
+    `load_model()`/`load_preprocessing()`/`predict()`/`interpret_classification()`
+    exist" guarantee, but its input is a plain numeric feature vector, not an
+    image file -- there is no file to decode. Discovered as a genuine,
+    demonstrated Milestone 91 blocker: before this function existed, a
+    tabular classification model saved with `task="classification"` (the
+    only classification task that existed) was routed by `predict_model()`
+    straight to `predict_artifact()`, which raises `forge.DataError`
+    immediately because its `image` argument requires a file path -- there
+    was no supported way to predict on a tabular classification artifact at
+    all, despite `Trainer`/`DataLoader`/`CrossEntropyLoss`/`classes=`
+    already fully supporting *training* one. See
+    `docs/development/m91-tabular-classification-artifact-inference.md` for
+    the full investigation. This function, plus the new
+    `task="tabular_classification"` (`forge.serialization.model.TASK_TYPES`),
+    closes that gap the same way `predict_tensor_artifact()`/`task="regression"`
+    already cover the equivalent numeric-in/numeric-out shape.
+
+    `input_data` must already be batched exactly like `predict_tensor_
+    artifact()`'s own `input_data` -- a `Tensor`, or a NumPy array / nested
+    list or tuple of numbers convertible to one via `Tensor(input_data)`,
+    with a leading batch dimension matching what the saved model's
+    `forward()` expects. Anything else raises `forge.DataError` before any
+    file I/O.
+
+    **Returns one result per row, not one result overall** -- unlike
+    `predict_artifact()` (always exactly one image in, one prediction out),
+    `input_data` here follows `predict_tensor_artifact()`'s "already batched,
+    any batch size" convention, so silently keeping only the first row's
+    result (as `predict_artifact()` does for its inherently-one-image input)
+    would silently discard real caller data for any batch size > 1. A
+    single-sample call (the common case, e.g. `input_data` shaped `(1,
+    n_features)`) still returns a length-1 list -- index `[0]` for that
+    result, exactly as this docstring's own example does.
+
+    **Preprocessing is optional here**, exactly like `predict_tensor_
+    artifact()` (and unlike `predict_artifact()`, whose image input always
+    needs at least a decode step): when the artifact was saved with
+    `preprocessing=` (e.g. a fitted `Normalize` feature-standardization
+    transform, so a brand-new *raw* feature vector is standardized
+    identically to training data), it is applied to `input_data` before the
+    forward pass; when absent, `input_data` is passed to the model exactly
+    as given.
+
+    **Classes are optional, exactly like `predict_artifact()`.** When `path`
+    was saved with `forge.save_model(..., classes=...)`, each row's raw
+    prediction is turned into a `ClassificationPrediction` via
+    `interpret_classification()` -- `.label`/`.index`/`.confidence` --
+    returning `list[ClassificationPrediction]`. When no class vocabulary was
+    saved, this returns `list[int]` (one raw predicted class index per row)
+    instead -- the same honest "less structured information rather than a
+    fabricated label" policy `predict_artifact()` already documents.
+
+    `device` defaults to the device recorded in the archive (`load_model()`'s
+    own default) -- pass `device="cpu"`/`device="cuda"` to override, exactly
+    as `load_model()`/`predict_tensor_artifact()` themselves accept.
+
+    Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
+    artifact or an unreconstructable `"preprocessing"` entry (the same
+    conditions `load_model()`/`load_preprocessing()` already raise), and
+    `forge.DataError` if `input_data` is not a `Tensor`/NumPy array/list/tuple.
+
+    **Scope.** Composes exactly `load_model()` + `load_preprocessing()` +
+    `predict()` + `load_classes()` + `interpret_classification()`, each
+    called unchanged -- no new artifact format, generic input abstraction, or
+    task-detection machinery, mirroring `predict_tensor_artifact()`'s own
+    Scope paragraph.
+    """
+    from ..serialization.model import load_classes as _load_classes
+    from ..serialization.model import load_model as _load_model
+    from ..serialization.model import load_preprocessing as _load_preprocessing
+
+    if isinstance(input_data, Tensor):
+        prepared = input_data
+    elif isinstance(input_data, (np.ndarray, list, tuple)):
+        prepared = Tensor(input_data)
+    else:
+        raise DataError(
+            f"predict_tabular_classification_artifact() requires input_data to be a Tensor, "
+            f"NumPy array, or list/tuple of numbers, got {type(input_data).__name__}."
+        )
+
+    preprocessing = _load_preprocessing(path)
+    if preprocessing is not None:
+        prepared = preprocessing(prepared)
+
+    model = _load_model(path, device=device.type if isinstance(device, Device) else device)
+    output = predict(model, prepared)
+
+    classes = _load_classes(path)
+    if classes is not None:
+        return interpret_classification(output, classes)
+    return [int(i) for i in np.argmax(output.numpy(), axis=1)]
+
+
 def _legacy_infer_workflow(info: "Any") -> str:
     """The pre-Milestone-87 architecture-based guess, kept **only** as an
     isolated fallback for artifacts with no explicit `"task"` metadata.
@@ -780,7 +906,7 @@ def predict_model(
     *,
     device: "str | Device | None" = None,
     length: "int | None" = None,
-) -> "ClassificationPrediction | int | Tensor | list":
+) -> "ClassificationPrediction | int | Tensor | list[ClassificationPrediction] | list[int] | list[str]":
     """Predict from any supported portable `.forge` artifact, in one call, with no manual workflow choice (Milestones 86/87/90).
 
     ```python
@@ -789,38 +915,42 @@ def predict_model(
 
     Before this function, a developer holding a `.forge` file first had to
     call `forge.inspect_model()` (Milestone 85) -- or already know, out of
-    band -- whether it was a classification, regression, segmentation, or
-    sequence artifact, in order to pick the right one of `predict_artifact()`/
-    `predict_tensor_artifact()`/`predict_image_artifact()`/
-    `predict_sequence_artifact()` (Milestones 82-84/90). `predict_model()`
-    closes that gap: it inspects `path` itself via `inspect_model()`,
-    determines which of the four workflows the artifact's own persisted
-    metadata supports (see `_determine_workflow()` above for the exact signal
-    and why it is reliable), and delegates to that function unchanged --
-    returning exactly what it would have returned. This function adds no new
-    inference logic, artifact format, or input-conversion machinery of its
-    own.
+    band -- whether it was a classification, regression, segmentation,
+    sequence, or tabular-classification artifact, in order to pick the right
+    one of `predict_artifact()`/`predict_tensor_artifact()`/
+    `predict_image_artifact()`/`predict_sequence_artifact()`/
+    `predict_tabular_classification_artifact()` (Milestones 82-84/90/91).
+    `predict_model()` closes that gap: it inspects `path` itself via
+    `inspect_model()`, determines which of the five workflows the artifact's
+    own persisted metadata supports (see `_determine_workflow()` above for
+    the exact signal and why it is reliable), and delegates to that function
+    unchanged -- returning exactly what it would have returned. This
+    function adds no new inference logic, artifact format, or
+    input-conversion machinery of its own.
 
     `input_data` is whatever the *selected* workflow's own function expects
     -- a `str`/`os.PathLike` image path for classification or segmentation, a
-    `Tensor`/NumPy array/nested list for regression, or a non-empty sequence
-    of vocabulary tokens for sequence generation (`predict_sequence_
-    artifact()`'s own `seed`) -- and is validated exactly as strictly as
-    calling that function directly would be: an incompatible input still
-    raises `forge.DataError` with that function's own message (e.g. a
-    `Tensor` given to a classification artifact raises the same error
-    `predict_artifact()` itself raises for a non-path `image`).
-    `predict_model()` deliberately does not re-validate `input_data` itself
-    -- the artifact's workflow, not the input's type, decides dispatch (see
-    the module's own Milestone 86 paragraph): input type is only ever used,
-    by the delegated function, to check compatibility with the workflow the
-    artifact's metadata already selected.
+    `Tensor`/NumPy array/nested list for regression or tabular classification,
+    or a non-empty sequence of vocabulary tokens for sequence generation
+    (`predict_sequence_artifact()`'s own `seed`) -- and is validated exactly
+    as strictly as calling that function directly would be: an incompatible
+    input still raises `forge.DataError` with that function's own message
+    (e.g. a `Tensor` given to a `task="classification"` artifact raises the
+    same error `predict_artifact()` itself raises for a non-path `image` --
+    this is exactly the error a tabular classification artifact raised
+    before Milestone 91 added `task="tabular_classification"`, since every
+    classification artifact used to be routed to `predict_artifact()`
+    unconditionally). `predict_model()` deliberately does not re-validate
+    `input_data` itself -- the artifact's workflow, not the input's type,
+    decides dispatch (see the module's own Milestone 86 paragraph): input
+    type is only ever used, by the delegated function, to check compatibility
+    with the workflow the artifact's metadata already selected.
 
     `length` (Milestone 90) is required, and used, only for a `task="sequence"`
     artifact -- the number of new tokens to generate, passed straight through
     to `predict_sequence_artifact()`. Omitting it for a sequence artifact
     raises `forge.DataError` immediately (there is no sensible default number
-    of tokens to generate); it is silently ignored for the other three
+    of tokens to generate); it is silently ignored for the other four
     workflows, exactly as `device` already is when a workflow doesn't need it.
 
     `device` is passed through unchanged to the selected function --
@@ -836,13 +966,14 @@ def predict_model(
     bug: an unsupported artifact should fail clearly rather than silently
     produce a result under the wrong interpretation.
 
-    **Scope.** Supports exactly the four workflows `predict_artifact()`/
+    **Scope.** Supports exactly the five workflows `predict_artifact()`/
     `predict_tensor_artifact()`/`predict_image_artifact()`/
-    `predict_sequence_artifact()` already implement -- no generic task
-    registry, no model-architecture discovery beyond `inspect_model()`'s
-    existing `ModelSummary.module_types`, no automatic input conversion
-    between shapes. A future artifact shape none of the four functions covers
-    stays unsupported here too, until Forge has one.
+    `predict_sequence_artifact()`/`predict_tabular_classification_artifact()`
+    already implement -- no generic task registry, no model-architecture
+    discovery beyond `inspect_model()`'s existing `ModelSummary.module_types`,
+    no automatic input conversion between shapes. A future artifact shape
+    none of these functions covers stays unsupported here too, until Forge
+    has one.
     """
     from ..serialization.model import inspect_model as _inspect_model
 
@@ -855,6 +986,8 @@ def predict_model(
         return predict_tensor_artifact(path, input_data, device=device)
     if workflow == "segmentation":
         return predict_image_artifact(path, input_data, device=device)
+    if workflow == "tabular_classification":
+        return predict_tabular_classification_artifact(path, input_data, device=device)
 
     if length is None:
         raise DataError(
@@ -1058,6 +1191,6 @@ def interpret_classification(output: Tensor, classes: "Sequence[str]") -> "list[
 
 __all__ = [
     "predict", "save_and_verify", "predict_artifact", "predict_tensor_artifact", "predict_image_artifact",
-    "predict_sequence_artifact", "predict_model", "generate_sequence", "interpret_classification",
-    "ClassificationPrediction",
+    "predict_sequence_artifact", "predict_tabular_classification_artifact", "predict_model", "generate_sequence",
+    "interpret_classification", "ClassificationPrediction",
 ]

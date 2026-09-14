@@ -75,3 +75,9 @@ examples/long_range_recall/artifacts*/
 # --generate`; never committed.
 examples/image_folder_classification/data/
 examples/image_folder_classification/artifacts*/
+
+# Milestone 91 tabular classification example: generated run artifacts
+# (models) -- machine-local and reproducible via
+# `python -m examples.tabular_classification.train`; never committed. No
+# downloaded data (the dataset is generated in-process).
+examples/tabular_classification/artifacts*/

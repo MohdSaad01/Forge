@@ -19,6 +19,7 @@ this page is only an index so you can find the right one quickly.
 | [`segmentation/`](segmentation/README.md) | Dense, per-pixel prediction -- a same-resolution binary mask, not one prediction per image -- on a synthetic shape-on-background dataset -- (Milestone 84) its saved model now also carries `Normalize` preprocessing, with a portable artifact consumed via `forge.predict_image_artifact()`, the image-to-image counterpart to `mnist`'s `forge.predict_artifact()`. | Encoder/decoder CNN (`Conv2d`/`MaxPool2d` encoder, `UpsampleNearest2d`/`Conv2d` decoder) | + example-local `PixelAccuracy`/`IoU` `training.Metric`s, `training.predict_image_artifact()` (Milestone 84) | CPU and CUDA (hardware-verified) |
 | [`long_range_recall/`](long_range_recall/README.md) | `RNNCell` vs. `LSTMCell` on a synthetic long-range-dependency task -- measures and demonstrates the vanishing-gradient gap `LSTMCell` closes. | Vanilla RNN (`RNNCell`) or LSTM (`LSTMCell`) | + `nn.LSTMCell`, `Tensor.sigmoid()` (Milestone 67), model persistence | CPU and CUDA (hardware-verified) |
 | [`image_folder_classification/`](image_folder_classification/README.md) | Classifying ordinary image *files on disk* (a generated, **mixed-resolution** circle/square/triangle shape dataset) via a directory-per-class layout -- the first example whose data source isn't a bundled format or in-memory array, (Milestone 71) the first whose saved model file carries its own required input preprocessing, reconstructed automatically by a separate `infer.py` process, and (Milestone 81) its fresh-training path now trains and saves through one `forge.train_and_save()` call. | CNN (`Conv2d`/`BatchNorm2d`/`MaxPool2d`/`Dropout`) | + `data.ImageFolder`/`IMAGE_EXTENSIONS` (Milestone 69), `data.transforms.Resize` (Milestone 70), `serialization.save_model(..., preprocessing=...)`/`load_preprocessing()` (Milestone 71), `data.random_split`, `training.train_and_save()` (Milestone 81), `training.predict()` | CPU and CUDA (hardware-verified) |
+| [`tabular_classification/`](tabular_classification/README.md) | Multi-class tabular classification (a synthetic device-telemetry health classifier: numeric sensor readings → one of four health states) with class-blocked raw data requiring `random_split` (not `sequential_split`) for a representative train/val/test mix -- (Milestone 91) the first example combining tabular (non-image) input with classification output, whose portable artifact is consumed via `forge.predict_tabular_classification_artifact()`, the classification counterpart to `regression`'s `forge.predict_tensor_artifact()`. | MLP (`Linear`/`ReLU` stack) | Same as `regression/` (`Trainer`, `Adam`, persistence) applied to `CrossEntropyLoss`/`Accuracy`, plus `data.random_split`, `training.train_and_save(..., task="tabular_classification")`/`predict_tabular_classification_artifact()` (Milestone 91) | CPU and CUDA (hardware-verified) |
 | [`data_pipeline_demo.py`](data_pipeline_demo.py) | `Dataset` → `Transform` → `DataLoader` → batches feeding a model, with no training loop at all. | N/A (pipeline only) | `data.TensorDataset`, `data.transforms.Normalize`, `data.DataLoader` | CPU only (demo script) |
 | [`persistence_demo.py`](persistence_demo.py) | Proof that a saved model survives a process boundary: train in one process, load and predict in a fresh subprocess. | `Linear` regression | `forge.save_model`/`load_model` | CPU only (demo script) |
 
@@ -84,15 +85,20 @@ subprocess-based test that calls `forge.predict_tensor_artifact()` directly
 (Milestone 83, no separate `infer.py`; see `tests/
 test_regression_artifact_workflow.py`); `segmentation` has its own
 standalone `infer.py` (Milestone 84) with an equivalent subprocess-based
-test (see `tests/test_segmentation_artifact_workflow.py`). Three
-portable-artifact inference functions now exist for the three materially
+test (see `tests/test_segmentation_artifact_workflow.py`). Five
+portable-artifact inference functions now exist for the five materially
 different artifact shapes Forge's examples produce: `forge.predict_artifact()`
 (Milestone 82, image files, mandatory preprocessing, class interpretation --
 `mnist`/`image_folder_classification`), `forge.predict_tensor_artifact()`
 (Milestone 83, plain numeric input, optional preprocessing, no class
-concept -- `regression`), and `forge.predict_image_artifact()` (Milestone
-84, image files in, another image-shaped mask `Tensor` out -- `segmentation`).
-See `docs/architecture/training-engine.md`'s **Reusable training sessions**,
+concept -- `regression`), `forge.predict_image_artifact()` (Milestone
+84, image files in, another image-shaped mask `Tensor` out -- `segmentation`),
+`forge.predict_sequence_artifact()` (Milestone 90, a seed of vocabulary
+tokens in, an autoregressively generated continuation out, for
+stepwise-recurrence models -- `char_rnn`/`word_rnn`), and `forge.
+predict_tabular_classification_artifact()` (Milestone 91, plain numeric
+input in like regression, but classification-shaped output --
+`tabular_classification`). See `docs/architecture/training-engine.md`'s **Reusable training sessions**,
 **Single-call high-level training**, **Portable-artifact save + verify**,
 **Train, evaluate, persist, verify in one call**, **Portable-artifact
 inference in one call**, **Portable-artifact inference for numeric input**,

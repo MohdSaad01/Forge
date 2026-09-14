@@ -91,13 +91,14 @@ if convenient" behavior; requesting `--device cuda` with no CUDA backend
 available fails with a clear error and a non-zero exit status rather than
 silently falling back to CPU.
 
-## Model prediction (Milestone 72, made task-aware in Milestone 88, extended to sequence generation in Milestone 90)
+## Model prediction (Milestone 72, made task-aware in Milestone 88, extended to sequence generation in Milestone 90 and tabular classification in Milestone 91)
 ```bash
 forge model predict MODEL INPUT [--device {cpu,cuda}] [--output PATH] [--length N] [--json]
 ```
 Predicts from a saved `.forge` artifact using only what the file itself
 already carries -- the developer never has to know or pass which of
-classification/regression/segmentation/sequence `MODEL` is. This command
+classification/regression/segmentation/sequence/tabular_classification
+`MODEL` is. This command
 reads the artifact's own persisted `task` metadata (`forge.save_model(...,
 task=...)`, Milestone 87, via `forge.inspect_model()`) and delegates
 straight to `forge.predict_model()` (Milestone 86), which dispatches to the
@@ -145,19 +146,47 @@ here.
   representable through this command's char-level convention -- call
   `forge.predict_sequence_artifact()` directly with a pre-tokenized seed
   list instead.
+- **tabular_classification** (Milestone 91) -- `INPUT` is a path to a JSON
+  file of numeric data, parsed exactly like **regression**'s (a flat list is
+  one sample; a nested list is already batched), but the output is
+  classification-shaped -- one prediction per input row, since the input may
+  legitimately be more than one sample:
+  ```text
+  Prediction: warning
+  Confidence: 87.1%
+  ```
+  A multi-row input prints one numbered block per row instead:
+  ```text
+  Sample 0: Prediction: normal
+  Sample 0: Confidence: 91.0%
+  Sample 1: Prediction: fault
+  Sample 1: Confidence: 76.4%
+  ```
+  Without a saved class vocabulary, falls back to raw indices per row, the
+  same as **classification**. See `docs/development/
+  m91-tabular-classification-artifact-inference.md` for why this needed its
+  own task value: `task="classification"`'s `INPUT` has always meant "an
+  image file path" (`predict_artifact()`), and a tabular classification
+  artifact's input is an already-batched numeric feature vector instead --
+  before this task existed, this exact artifact shape (numeric input,
+  `task="classification"`) failed with `predict_artifact() requires image to
+  be a file path (str or os.PathLike), got ndarray`.
 
 `--json` prints a stable, machine-readable result instead of the text above,
 e.g. `{"task": "classification", "class": "dog", "confidence": 0.942}` (or
 `{"task": "regression", "prediction": [[0.8134]]}` /
 `{"task": "segmentation", "output_path": "mask.png"}` /
-`{"task": "sequence", "seed": "a tensor", "generated": "a tensor produces..."}`).
+`{"task": "sequence", "seed": "a tensor", "generated": "a tensor produces..."}` /
+`{"task": "tabular_classification", "predictions": [{"class": "warning", "confidence": 0.871}]}`).
 
 Requires `MODEL` to have been saved with `preprocessing=...` for
 classification/segmentation -- there is nothing to reproduce automatically
 otherwise, and this command never guesses or silently skips preprocessing;
 it fails with a clear error instead. A sequence artifact has no
 preprocessing concept; it requires `classes=...` instead (the saved token
-vocabulary -- see **Model prediction** limitations below).
+vocabulary -- see **Model prediction** limitations below). A
+tabular_classification artifact's `preprocessing=`/`classes=` are both
+optional, exactly like regression's/classification's own.
 
 **Custom model classes.** `MODEL` must be built entirely from module types
 already registered in the running `forge` CLI process (Forge's built-ins --
@@ -187,8 +216,9 @@ Use the task-specific prediction API or resave the model with task metadata.
 Resave the model with `forge.save_model(..., task=...)` (or
 `train_and_save()`/`save_and_verify()`'s own `task=`), or call the
 task-specific Python API directly (`forge.predict_artifact()`/
-`forge.predict_tensor_artifact()`/`forge.predict_image_artifact()`), which
-are unaffected by this limitation.
+`forge.predict_tensor_artifact()`/`forge.predict_image_artifact()`/
+`forge.predict_tabular_classification_artifact()`), which are unaffected by
+this limitation.
 
 This is a thin adapter over exactly the same Python sequence
 `examples/image_folder_classification/infer.py`, `examples/segmentation/

@@ -1,13 +1,15 @@
 """Milestone 88 tests: `forge model predict`, made task-aware.
+Extended in Milestone 91 for `task="tabular_classification"`.
 
-Covers task-based command routing (classification/regression/segmentation),
-each task's input parsing (image files; JSON numeric data, including
-malformed/non-numeric/missing input), `--output` for segmentation,
-`--json` machine-readable output, `--device`, missing/unsupported/absent
-task metadata, ordinary file-not-found errors, a genuine fresh-process
-(subprocess) invocation, and CUDA device handling. See
+Covers task-based command routing (classification/regression/segmentation/
+tabular_classification), each task's input parsing (image files; JSON
+numeric data, including malformed/non-numeric/missing input), `--output`
+for segmentation, `--json` machine-readable output, `--device`,
+missing/unsupported/absent task metadata, ordinary file-not-found errors, a
+genuine fresh-process (subprocess) invocation, and CUDA device handling. See
 `forge/cli/model.py::cmd_predict` and
-`docs/development/m88-unified-artifact-prediction-cli.md`.
+`docs/development/m88-unified-artifact-prediction-cli.md`/
+`docs/development/m91-tabular-classification-artifact-inference.md`.
 
 `tests/test_classification_metadata.py` keeps the CLI's original
 classification-specific tests (label/confidence text, classes=None, missing
@@ -64,6 +66,17 @@ def _regression_model():
     return Sequential(Linear(_N_FEATURES, 8), ReLU(), Linear(8, 1))
 
 
+def _tabular_classification_transform():
+    return Normalize(
+        mean=np.array([1.0, -1.0, 0.5, 0.0], dtype=np.float32),
+        std=np.array([2.0, 3.0, 1.0, 4.0], dtype=np.float32),
+    )
+
+
+def _tabular_classification_model(num_classes=3):
+    return Sequential(Linear(_N_FEATURES, 8), ReLU(), Linear(8, num_classes))
+
+
 def _segmentation_transform():
     return Compose([Normalize(mean=0.0, std=255.0)])
 
@@ -90,6 +103,17 @@ def _saved_regression_model(tmp_path, *, task="regression", seed=0) -> Path:
     model = _regression_model()
     path = tmp_path / "regression.forge"
     save_model(model, str(path), preprocessing=_regression_transform(), task=task)
+    return path
+
+
+def _saved_tabular_classification_model(tmp_path, *, classes=("normal", "warning", "critical"), task="tabular_classification", seed=0) -> Path:
+    forge.random.seed(seed)
+    model = _tabular_classification_model(num_classes=len(classes) if classes else 3)
+    path = tmp_path / "tabular_classification.forge"
+    save_model(
+        model, str(path), preprocessing=_tabular_classification_transform(),
+        classes=list(classes) if classes else None, task=task,
+    )
     return path
 
 
@@ -131,6 +155,22 @@ def test_cli_predict_routes_regression_artifact(tmp_path, capsys):
     assert out.startswith("Prediction:")
 
 
+def test_cli_predict_routes_tabular_classification_artifact(tmp_path, capsys):
+    """Milestone 91: before `task="tabular_classification"` existed, this exact
+    artifact shape (task="classification" + numeric input) failed with
+    `predict_artifact() requires image to be a file path ..., got ndarray`
+    -- see `docs/development/m91-tabular-classification-artifact-inference.md`."""
+    model_path = _saved_tabular_classification_model(tmp_path)
+    input_path = tmp_path / "input.json"
+    _write_json(input_path, [1.2, 3.4, 5.6, 7.8])
+
+    exit_code = cli_main(["model", "predict", str(model_path), str(input_path)])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Prediction:" in out
+    assert "Confidence:" in out
+
+
 def test_cli_predict_routes_segmentation_artifact(tmp_path, capsys):
     model_path = _saved_segmentation_model(tmp_path)
     image_path = tmp_path / "query.png"
@@ -152,17 +192,17 @@ def test_cli_predict_regression_accepts_flat_list_as_one_sample(tmp_path):
     input_path = tmp_path / "input.json"
     _write_json(input_path, [1.2, 3.4, 5.6, 7.8])
 
-    from forge.cli.model import _parse_regression_input
-    array = _parse_regression_input(str(input_path))
+    from forge.cli.model import _parse_numeric_input
+    array = _parse_numeric_input(str(input_path))
     assert array.shape == (1, 4)
 
 
 def test_cli_predict_regression_accepts_nested_list_as_already_batched(tmp_path):
-    from forge.cli.model import _parse_regression_input
+    from forge.cli.model import _parse_numeric_input
 
     input_path = tmp_path / "input.json"
     _write_json(input_path, [[1.2, 3.4, 0.1, 0.2], [5.6, 7.8, 0.3, 0.4]])
-    array = _parse_regression_input(str(input_path))
+    array = _parse_numeric_input(str(input_path))
     assert array.shape == (2, 4)
 
 
@@ -174,8 +214,8 @@ def test_cli_predict_regression_accepts_utf8_bom(tmp_path):
     input_path = tmp_path / "input.json"
     input_path.write_bytes(b"\xef\xbb\xbf" + json.dumps([1.2, 3.4, 5.6, 7.8]).encode("utf-8"))
 
-    from forge.cli.model import _parse_regression_input
-    array = _parse_regression_input(str(input_path))
+    from forge.cli.model import _parse_numeric_input
+    array = _parse_numeric_input(str(input_path))
     assert array.shape == (1, 4)
     np.testing.assert_allclose(array, [[1.2, 3.4, 5.6, 7.8]], rtol=1e-6)
 
@@ -335,6 +375,62 @@ def test_cli_predict_regression_json_output(tmp_path, capsys):
     assert isinstance(payload["prediction"], list)
 
 
+def test_cli_predict_tabular_classification_json_output(tmp_path, capsys):
+    """`tabular_classification`'s JSON output is `{"task": ..., "predictions":
+    [...]}` (a list, one entry per input row -- Milestone 91's `predict_
+    tabular_classification_artifact()` "one result per row" contract), unlike
+    `classification`'s flat single-result payload -- the input file may
+    legitimately batch more than one sample."""
+    model_path = _saved_tabular_classification_model(tmp_path)
+    input_path = tmp_path / "input.json"
+    _write_json(input_path, [1.2, 3.4, 5.6, 7.8])
+
+    exit_code = cli_main(["model", "predict", str(model_path), str(input_path), "--json"])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["task"] == "tabular_classification"
+    assert len(payload["predictions"]) == 1
+    prediction = payload["predictions"][0]
+    assert prediction["class"] in ("normal", "warning", "critical")
+    assert 0.0 <= prediction["confidence"] <= 1.0
+
+
+def test_cli_predict_tabular_classification_without_classes_json_output(tmp_path, capsys):
+    model_path = _saved_tabular_classification_model(tmp_path, classes=None)
+    input_path = tmp_path / "input.json"
+    _write_json(input_path, [1.2, 3.4, 5.6, 7.8])
+
+    exit_code = cli_main(["model", "predict", str(model_path), str(input_path), "--json"])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["task"] == "tabular_classification"
+    prediction = payload["predictions"][0]
+    assert prediction["class"] is None
+    assert isinstance(prediction["index"], int)
+    assert prediction["confidence"] is None
+
+
+def test_cli_predict_tabular_classification_multi_row_input_reports_each_row(tmp_path, capsys):
+    """A nested-list JSON input (already batched, `regression`'s own
+    established convention) must report every row's prediction, not just the
+    first -- both in `--json` (a `predictions` entry per row) and in text
+    output (a numbered `Sample N:` block per row)."""
+    model_path = _saved_tabular_classification_model(tmp_path)
+    input_path = tmp_path / "input.json"
+    _write_json(input_path, [[1.2, 3.4, 5.6, 7.8], [-1.0, 0.5, 2.0, -3.0]])
+
+    exit_code = cli_main(["model", "predict", str(model_path), str(input_path), "--json"])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["predictions"]) == 2
+
+    exit_code = cli_main(["model", "predict", str(model_path), str(input_path)])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Sample 0:" in out
+    assert "Sample 1:" in out
+
+
 def test_cli_predict_segmentation_json_output(tmp_path, capsys):
     model_path = _saved_segmentation_model(tmp_path)
     image_path = tmp_path / "query.png"
@@ -377,7 +473,7 @@ def test_cli_predict_cuda_unavailable_returns_clear_error(tmp_path, capsys, monk
 # -- fresh process ------------------------------------------------------------
 
 
-def test_cli_predict_fresh_process_all_three_task_shapes(tmp_path):
+def test_cli_predict_fresh_process_all_four_task_shapes(tmp_path):
     classification_path = _saved_classification_model(tmp_path, seed=10)
     image_path = tmp_path / "query.png"
     _make_image(image_path, size=(30, 20))
@@ -391,10 +487,15 @@ def test_cli_predict_fresh_process_all_three_task_shapes(tmp_path):
     _make_image(seg_image_path, size=(8, 8), fill=210)
     mask_path = tmp_path / "mask.png"
 
+    tabular_classification_path = _saved_tabular_classification_model(tmp_path, seed=14)
+    tabular_input_path = tmp_path / "tabular_input.json"
+    _write_json(tabular_input_path, [0.5, -0.5, 0.25, 0.1])
+
     for args in (
         [str(classification_path), str(image_path)],
         [str(regression_path), str(input_path)],
         [str(segmentation_path), str(seg_image_path), "--output", str(mask_path)],
+        [str(tabular_classification_path), str(tabular_input_path)],
     ):
         result = subprocess.run(
             [sys.executable, "-m", "forge", "model", "predict", *args],
@@ -421,3 +522,16 @@ def test_cli_predict_reaches_cuda_inference_path(tmp_path, capsys):
     assert exit_code == 0
     out = capsys.readouterr().out
     assert out.startswith("Prediction:")
+
+
+@pytestmark_cuda
+def test_cli_predict_tabular_classification_reaches_cuda_inference_path(tmp_path, capsys):
+    model_path = _saved_tabular_classification_model(tmp_path)
+    input_path = tmp_path / "input.json"
+    _write_json(input_path, [1.0, 2.0, 3.0, 4.0])
+
+    exit_code = cli_main(["model", "predict", str(model_path), str(input_path), "--device", "cuda"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Prediction:" in out
+    assert "Confidence:" in out

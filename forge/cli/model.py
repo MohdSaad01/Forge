@@ -57,15 +57,33 @@ to save the predicted mask via `forge.data.save_image()`. See
 m88-unified-artifact-prediction-cli.md` for the full command reference.
 
 `sequence` (Milestone 90) takes the seed as literal text on the command
-line, not a file -- unlike the other three tasks, there is no file to
-decode; `--length` (default 200) controls how many new tokens to generate.
-This command tokenizes the seed as individual characters (`list(seed)`),
-matching the char-level vocabulary convention `examples/char_rnn` uses --
-the one real sequence workload this milestone built end-to-end. A
-different tokenization convention (e.g. `examples/word_rnn`'s whole-word
-vocabulary) is not something this command can infer from the artifact
-alone; call `forge.predict_sequence_artifact()` directly with a
-pre-tokenized seed list for that case.
+line, not a file -- unlike classification/regression/segmentation, there is
+no file to decode; `--length` (default 200) controls how many new tokens to
+generate. This command tokenizes the seed as individual characters
+(`list(seed)`), matching the char-level vocabulary convention
+`examples/char_rnn` uses -- the one real sequence workload this milestone
+built end-to-end. A different tokenization convention (e.g.
+`examples/word_rnn`'s whole-word vocabulary) is not something this command
+can infer from the artifact alone; call `forge.predict_sequence_artifact()`
+directly with a pre-tokenized seed list for that case.
+
+`tabular_classification` (Milestone 91) shares `regression`'s "JSON file of
+numeric data" input parsing (`_parse_numeric_input()`, generalized from what
+used to be `_parse_regression_input()` for this exact reason) but produces
+classification-shaped results -- one per input row (`_print_classification_
+results()`), since a JSON input file may legitimately batch more than one
+sample (a flat list is one sample; a nested list is already batched, exactly
+like `regression`'s own input convention). A single-row input (the common
+case) prints identically to `task == "classification"`'s own single-image
+text output; a genuinely multi-row input prints one numbered "Sample N:"
+block per row rather than silently reporting only the first. See
+`forge.predict_tabular_classification_artifact()`'s own docstring and
+`docs/development/m91-tabular-classification-artifact-inference.md` for why
+this needed its own task value rather than reusing `"classification"`: that
+task's input has always meant "an image file path," and a tabular
+classification artifact's input is an already-batched numeric feature
+vector instead -- the exact same distinction `"regression"` already makes
+from `"classification"`.
 """
 
 from __future__ import annotations
@@ -111,7 +129,8 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
     predict_parser.add_argument(
         "input",
         help="Input for the prediction: an image file for classification/segmentation, "
-        "a JSON file of numeric data for regression, or literal seed text for sequence generation",
+        "a JSON file of numeric data for regression/tabular_classification, "
+        "or literal seed text for sequence generation",
     )
     predict_parser.add_argument(
         "--device", default=None, choices=["cpu", "cuda"],
@@ -223,17 +242,22 @@ def cmd_convert(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_regression_input(path: str) -> np.ndarray:
-    """Parse a JSON file of numeric data into a batched NumPy array (Milestone 88).
+def _parse_numeric_input(path: str) -> np.ndarray:
+    """Parse a JSON file of numeric data into a batched NumPy array (Milestone 88;
+    generalized to `task="tabular_classification"` in Milestone 91).
 
     A flat list (`[1.2, 3.4, 5.6, 7.8]`) is treated as one unbatched sample
     and given a leading batch dimension; a nested list (`[[1.2, 3.4], [5.6,
     7.8]]`) is treated as already batched and passed through as-is -- the
-    same convention documented in `predict_tensor_artifact()`'s docstring for
-    a raw NumPy array. Anything that is not valid JSON, or whose values are
-    not all numeric, raises `CLIError` with one clear message -- covering
-    malformed JSON, non-numeric JSON, and a non-JSON file (e.g. an image)
-    given where a regression artifact expects numeric input, all identically.
+    same convention documented in `predict_tensor_artifact()`'s/
+    `predict_tabular_classification_artifact()`'s docstrings for a raw NumPy
+    array. Anything that is not valid JSON, or whose values are not all
+    numeric, raises `CLIError` with one clear message -- covering malformed
+    JSON, non-numeric JSON, and a non-JSON file (e.g. an image) given where
+    numeric input is expected, all identically. Used for both `task=
+    "regression"` and `task="tabular_classification"` (Milestone 91) -- the
+    two tasks share the exact same "already-batched numeric array" input
+    shape; only what `predict_model()` does with the parsed array differs.
     """
     try:
         # "utf-8-sig" transparently strips a leading UTF-8 BOM if present and
@@ -247,22 +271,22 @@ def _parse_regression_input(path: str) -> np.ndarray:
     except (OSError, ValueError, UnicodeDecodeError):
         # ValueError covers json.JSONDecodeError; UnicodeDecodeError covers a
         # binary file (e.g. an image) given where JSON text is expected.
-        raise CLIError("regression input must contain numeric JSON data.")
+        raise CLIError("input must contain numeric JSON data.")
 
     try:
         array = np.array(raw, dtype=np.float32)
     except (TypeError, ValueError):
-        raise CLIError("regression input must contain numeric JSON data.")
+        raise CLIError("input must contain numeric JSON data.")
 
     if array.dtype == object or array.size == 0:
-        raise CLIError("regression input must contain numeric JSON data.")
+        raise CLIError("input must contain numeric JSON data.")
 
     if array.ndim == 0:
         array = array.reshape(1, 1)
     elif array.ndim == 1:
         array = array.reshape(1, -1)
     elif array.ndim != 2:
-        raise CLIError("regression input must be a flat list or a 2-D list of numbers.")
+        raise CLIError("input must be a flat list or a 2-D list of numbers.")
 
     return array
 
@@ -281,6 +305,39 @@ def _print_classification_result(result: "ClassificationPrediction | int", as_js
             print(json.dumps({"task": "classification", "class": None, "index": result, "confidence": None}, indent=2))
         else:
             print(f"Prediction: class index {result} "
+                  "(no class-name vocabulary was saved with this model)")
+
+
+def _print_classification_results(results: "list", as_json: bool, task: str) -> None:
+    """Print a *list* of classification-shaped results (Milestone 91).
+
+    `task="tabular_classification"`'s input is already-batched numeric data
+    (`predict_tabular_classification_artifact()`'s own "one result per row,
+    not one result overall" contract -- see that function's docstring), so
+    `predict_model()` always returns a list here, unlike `task=
+    "classification"`'s single-image `_print_classification_result()` above.
+    The common case (one input row) prints identically to that function; a
+    genuinely multi-row JSON input prints one numbered block per row instead
+    of silently reporting only the first.
+    """
+    if as_json:
+        predictions = []
+        for result in results:
+            if isinstance(result, ClassificationPrediction):
+                predictions.append({"class": result.label, "confidence": result.confidence})
+            else:
+                predictions.append({"class": None, "index": result, "confidence": None})
+        print(json.dumps({"task": task, "predictions": predictions}, indent=2))
+        return
+
+    multi = len(results) > 1
+    for i, result in enumerate(results):
+        prefix = f"Sample {i}: " if multi else ""
+        if isinstance(result, ClassificationPrediction):
+            print(f"{prefix}Prediction: {result.label}")
+            print(f"{prefix}Confidence: {result.confidence:.1%}")
+        else:
+            print(f"{prefix}Prediction: class index {result} "
                   "(no class-name vocabulary was saved with this model)")
 
 
@@ -323,13 +380,24 @@ def cmd_predict(args: argparse.Namespace) -> int:
         return 0
 
     if task == "regression":
-        input_data = _parse_regression_input(args.input)
+        input_data = _parse_numeric_input(args.input)
         result = predict_model(args.model, input_data, device=args.device)
         values = result.numpy().tolist()
         if args.json:
             print(json.dumps({"task": "regression", "prediction": values}, indent=2))
         else:
             print(f"Prediction: {values}")
+        return 0
+
+    if task == "tabular_classification":
+        # Milestone 91: shares regression's "already-batched numeric JSON"
+        # input parsing, but the result is a classification prediction
+        # (label/confidence, or a raw index with no saved classes=) -- the
+        # exact same output shape/printing `task == "classification"` above
+        # already uses, since both delegate to _print_classification_result().
+        input_data = _parse_numeric_input(args.input)
+        results = predict_model(args.model, input_data, device=args.device)
+        _print_classification_results(results, args.json, task="tabular_classification")
         return 0
 
     if task == "segmentation":

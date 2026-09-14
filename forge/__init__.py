@@ -64,7 +64,8 @@ Public subpackages:
   class-name vocabulary, Milestone 72), `save_model(..., task=...)`
   (Milestone 87), which declares the artifact's intended prediction
   workflow -- one of `TASK_TYPES` (`"classification"`, `"regression"`,
-  `"segmentation"`) -- `inspect_model` (Milestone 85), which returns a
+  `"segmentation"`, `"sequence"`, `"tabular_classification"`) --
+  `inspect_model` (Milestone 85), which returns a
   structured, read-only `ModelInfo` -- model identification, preprocessing,
   classes, task, format/device -- from a saved artifact without
   reconstructing a live model or requiring CUDA, so a developer holding a
@@ -129,6 +130,7 @@ from .training import (
     predict_image_artifact,
     predict_model,
     predict_sequence_artifact,
+    predict_tabular_classification_artifact,
     predict_tensor_artifact,
     save_and_verify,
     train,
@@ -178,6 +180,7 @@ __all__ = [
     "predict_tensor_artifact",
     "predict_image_artifact",
     "predict_sequence_artifact",
+    "predict_tabular_classification_artifact",
     "predict_model",
     "generate_sequence",
     "interpret_classification",

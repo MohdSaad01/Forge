@@ -1,14 +1,16 @@
 """Milestone 86 tests: `forge.predict_model()`, the unified portable-artifact
 prediction entry point over `predict_artifact()`/`predict_tensor_artifact()`/
-`predict_image_artifact()` (Milestones 82-84).
+`predict_image_artifact()` (Milestones 82-84), extended in Milestone 91 for
+`predict_tabular_classification_artifact()`.
 
 Covers workflow determination from an artifact's own persisted metadata
 (`_determine_workflow()`, `forge/training/inference.py`), delegation
 correctness against each task-specific function, input-type validation,
 the deliberate refusal to guess for an undetermined artifact, backward
-compatibility of the three existing functions, and a genuine fresh-process
+compatibility of the existing functions, and a genuine fresh-process
 run. See `forge/training/inference.py::predict_model()` and
-`docs/development/m86-unified-artifact-prediction.md`.
+`docs/development/m86-unified-artifact-prediction.md`/
+`docs/development/m91-tabular-classification-artifact-inference.md`.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from forge.training import (
     predict_artifact,
     predict_image_artifact,
     predict_model,
+    predict_tabular_classification_artifact,
     predict_tensor_artifact,
 )
 from forge.training.inference import predict_model as predict_model_direct
@@ -102,6 +105,21 @@ def _saved_segmentation_model(tmp_path, *, seed=0) -> Path:
     return path
 
 
+def _tabular_classification_model(num_classes=3):
+    return Sequential(Linear(_N_FEATURES, 8), ReLU(), Linear(8, num_classes))
+
+
+def _saved_tabular_classification_model(tmp_path, *, classes=("normal", "warning", "critical"), seed=0) -> Path:
+    forge.random.seed(seed)
+    model = _tabular_classification_model(num_classes=len(classes))
+    path = tmp_path / "tabular_classification.forge"
+    save_model(
+        model, str(path), preprocessing=_regression_transform(), classes=list(classes),
+        task="tabular_classification",
+    )
+    return path
+
+
 # -- basic API shape ----------------------------------------------------------
 
 
@@ -144,6 +162,27 @@ def test_predict_model_dispatches_segmentation_artifact(tmp_path):
     assert set(np.unique(result.numpy()).tolist()) <= {0.0, 1.0}
 
 
+def test_predict_model_dispatches_tabular_classification_artifact(tmp_path):
+    """Milestone 91: before `task="tabular_classification"` existed, this
+    exact numeric-input classification artifact shape had no supported
+    prediction path -- `predict_model()` routed every `task="classification"`
+    artifact to `predict_artifact()` unconditionally, which requires an
+    image file path and raised `DataError` for an ndarray. See
+    `docs/development/m91-tabular-classification-artifact-inference.md`.
+
+    Returns one result per input row (see `predict_tabular_classification_
+    artifact()`'s own "one result per row, not one result overall"
+    docstring paragraph) -- a 3-row batch in must give 3 results out."""
+    model_path = _saved_tabular_classification_model(tmp_path)
+    batch = np.random.default_rng(4).standard_normal((3, _N_FEATURES)).astype(np.float32)
+
+    results = predict_model(str(model_path), batch)
+    assert isinstance(results, list) and len(results) == 3
+    for result in results:
+        assert isinstance(result, ClassificationPrediction)
+        assert result.label in ("normal", "warning", "critical")
+
+
 # -- delegation correctness ----------------------------------------------------
 
 
@@ -168,6 +207,20 @@ def test_predict_model_matches_predict_tensor_artifact_bit_for_bit(tmp_path):
     direct = predict_tensor_artifact(str(model_path), batch)
 
     np.testing.assert_array_equal(unified.numpy(), direct.numpy())
+
+
+def test_predict_model_matches_predict_tabular_classification_artifact_bit_for_bit(tmp_path):
+    model_path = _saved_tabular_classification_model(tmp_path)
+    batch = np.random.default_rng(6).standard_normal((4, _N_FEATURES)).astype(np.float32)
+
+    unified = predict_model(str(model_path), batch)
+    direct = predict_tabular_classification_artifact(str(model_path), batch)
+
+    assert len(unified) == len(direct) == 4
+    for u, d in zip(unified, direct):
+        assert u.label == d.label
+        assert u.index == d.index
+        assert u.confidence == pytest.approx(d.confidence, abs=1e-6)
 
 
 def test_predict_model_matches_predict_image_artifact_bit_for_bit(tmp_path):
@@ -233,6 +286,18 @@ def test_predict_model_rejects_a_tensor_for_a_segmentation_artifact(tmp_path):
         predict_model(str(model_path), forge.Tensor(np.zeros((1, _N_FEATURES), dtype=np.float32)))
 
 
+def test_predict_model_rejects_an_image_path_for_a_tabular_classification_artifact(tmp_path):
+    """The exact Milestone 91 blocker, still correctly rejected for the
+    genuinely wrong input type (an image path is never valid for
+    `task="tabular_classification"`, only for `task="classification"`)."""
+    model_path = _saved_tabular_classification_model(tmp_path)
+    image_path = tmp_path / "query.png"
+    _make_image(image_path)
+
+    with pytest.raises(DataError):
+        predict_model(str(model_path), str(image_path))
+
+
 # -- unsupported artifacts ------------------------------------------------
 
 
@@ -258,9 +323,9 @@ def test_predict_model_missing_file_raises_persistence_error(tmp_path):
 
 
 def test_predict_artifact_predict_tensor_artifact_predict_image_artifact_unchanged(tmp_path):
-    """predict_model() must add no new argument or behavior to the three
-    functions it delegates to -- call each directly, exactly as Milestones
-    82-84 established, and confirm they still behave identically."""
+    """predict_model() must add no new argument or behavior to the functions
+    it delegates to -- call each directly, exactly as Milestones 82-84/91
+    established, and confirm they still behave identically."""
     classification_path = _saved_classification_model(tmp_path)
     image_path = tmp_path / "query.png"
     _make_image(image_path)
@@ -276,15 +341,21 @@ def test_predict_artifact_predict_tensor_artifact_predict_image_artifact_unchang
     result = predict_image_artifact(str(segmentation_path), str(image_path))
     assert isinstance(result, forge.Tensor) and result.shape == (1, 8, 8)
 
+    tabular_classification_path = _saved_tabular_classification_model(tmp_path)
+    results = predict_tabular_classification_artifact(str(tabular_classification_path), batch)
+    assert isinstance(results, list) and len(results) == 2
+    assert all(isinstance(r, ClassificationPrediction) for r in results)
+
 
 # -- fresh process ----------------------------------------------------------
 
 
-def test_predict_model_works_from_a_genuinely_separate_process_for_all_three_artifact_shapes(tmp_path):
-    """The whole point of Milestone 86 is that `forge.predict_model()` alone
-    -- with no other knowledge of the artifact -- produces a useful
-    prediction. Prove it for all three supported artifact shapes, each
-    saved to its own file, in one real, separate OS process."""
+def test_predict_model_works_from_a_genuinely_separate_process_for_all_four_artifact_shapes(tmp_path):
+    """The whole point of Milestone 86 (extended in Milestone 91) is that
+    `forge.predict_model()` alone -- with no other knowledge of the artifact
+    -- produces a useful prediction. Prove it for all four supported
+    artifact shapes, each saved to its own file, in one real, separate OS
+    process."""
     classification_path = _saved_classification_model(tmp_path, seed=10)
     image_path = tmp_path / "query.png"
     _make_image(image_path, size=(30, 20))
@@ -296,6 +367,8 @@ def test_predict_model_works_from_a_genuinely_separate_process_for_all_three_art
     seg_image_path = tmp_path / "seg_query.png"
     _make_image(seg_image_path, size=(8, 8), fill=210)
 
+    tabular_classification_path = _saved_tabular_classification_model(tmp_path, seed=14)
+
     script = (
         "import numpy as np\n"
         "import forge\n"
@@ -303,9 +376,11 @@ def test_predict_model_works_from_a_genuinely_separate_process_for_all_three_art
         f"cls_result = forge.predict_model({str(classification_path)!r}, {str(image_path)!r})\n"
         f"reg_result = forge.predict_model({str(regression_path)!r}, raw_x)\n"
         f"seg_result = forge.predict_model({str(segmentation_path)!r}, {str(seg_image_path)!r})\n"
+        f"tab_result = forge.predict_model({str(tabular_classification_path)!r}, raw_x)[0]\n"
         "print(f'cls label={cls_result.label} index={cls_result.index} confidence={cls_result.confidence:.6f}')\n"
         "print(f'reg value={reg_result.numpy()[0, 0]:.8f}')\n"
         "print(f'seg shape={seg_result.shape} unique={sorted(set(seg_result.numpy().ravel().tolist()))}')\n"
+        "print(f'tab label={tab_result.label} index={tab_result.index} confidence={tab_result.confidence:.6f}')\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", script],
@@ -316,7 +391,9 @@ def test_predict_model_works_from_a_genuinely_separate_process_for_all_three_art
     expected_cls = predict_model(str(classification_path), str(image_path))
     expected_reg = predict_model(str(regression_path), raw_x)
     expected_seg = predict_model(str(segmentation_path), str(seg_image_path))
+    expected_tab = predict_model(str(tabular_classification_path), raw_x)[0]
 
     assert f"cls label={expected_cls.label} index={expected_cls.index}" in result.stdout
     assert f"reg value={float(expected_reg.numpy()[0, 0]):.8f}" in result.stdout
     assert f"seg shape={expected_seg.shape}" in result.stdout
+    assert f"tab label={expected_tab.label} index={expected_tab.index}" in result.stdout

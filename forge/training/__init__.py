@@ -17,6 +17,7 @@ from .inference import (
     predict_image_artifact,
     predict_model,
     predict_sequence_artifact,
+    predict_tabular_classification_artifact,
     predict_tensor_artifact,
     save_and_verify,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "predict_tensor_artifact",
     "predict_image_artifact",
     "predict_sequence_artifact",
+    "predict_tabular_classification_artifact",
     "predict_model",
     "generate_sequence",
     "interpret_classification",
