@@ -261,6 +261,32 @@ def test_repeated_early_exit_and_full_epochs_interleaved_do_not_accumulate_threa
 # -- leak testing (Section 65) ------------------------------------------------
 
 
+def _stable_cuda_and_pinned_bytes() -> "tuple[int, int]":
+    """A settled `(allocated_bytes, pinned_active_bytes)` snapshot.
+
+    `gc.collect()` first, matching the established convention this codebase
+    already uses for every other before/after CUDA-memory comparison (see
+    `test_cuda_memory.py::_stable_stats()`'s docstring). This test's own
+    Tensors never form a reference cycle -- `x + x` here is on
+    `requires_grad=False` leaves, so it attaches no `grad_fn`/`Node` -- but
+    `forge.cuda`'s allocator/pinned-memory counters are process-wide and
+    cumulative across the whole session (F1 root cause): an unrelated *other*
+    CUDA-autograd test elsewhere in a full-suite run genuinely can leave a
+    Tensor<->Node reference cycle reachable-but-uncollected at whatever
+    moment this test happens to run, still holding real "active" CUDA/pinned
+    bytes until Python's own generational GC gets around to it on its own
+    schedule. Without forcing that collection at both snapshot points, this
+    test's before/after measurement was racing that unpredictable, unrelated
+    collection rather than measuring `CUDAPrefetchLoader`'s own behavior --
+    not a leak in this loader, allocator, or pinned-memory implementation.
+    """
+    gc.collect()
+    forge.cuda.empty_cache()
+    stats = forge.cuda.memory_stats()
+    pinned_stats = forge.cuda.pinned_memory_stats()
+    return stats.allocated_bytes, pinned_stats.pinned_active_bytes
+
+
 def test_repeated_epochs_do_not_grow_cuda_or_pinned_memory():
     ds = _range_dataset(64, feature_dim=8)
     loader = DataLoader(ds, batch_size=8, shuffle=True)
@@ -268,20 +294,16 @@ def test_repeated_epochs_do_not_grow_cuda_or_pinned_memory():
 
     for x, y in prefetch_loader:  # warmup epoch (first-use allocations)
         pass
-    forge.cuda.empty_cache()
-    before = forge.cuda.memory_stats().allocated_bytes
-    before_pinned = forge.cuda.pinned_memory_stats().pinned_active_bytes
+    before, before_pinned = _stable_cuda_and_pinned_bytes()
 
     for _ in range(20):
         for x, y in prefetch_loader:
             z = x + x
             del z
 
-    forge.cuda.empty_cache()
-    after = forge.cuda.memory_stats().allocated_bytes
-    after_pinned = forge.cuda.pinned_memory_stats().pinned_active_bytes
+    after, after_pinned = _stable_cuda_and_pinned_bytes()
 
-    assert after == before, f"CUDA active bytes grew: {before} -> {after}"
+    assert after == before, f"CUDA active bytes changed: {before} -> {after}"
     assert after_pinned == before_pinned == 0, f"pinned bytes not fully released: {after_pinned}"
 
 

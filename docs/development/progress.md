@@ -5656,3 +5656,63 @@ flake documented since ~M63 (reproduced passing in isolation), no M94
 regression.
 
 Full report: `docs/development/m94-image-channel-handling.md`.
+
+### F1 — Fixed the `test_dataloader_prefetch.py` allocator-measurement flake (not a milestone)
+
+The `test_dataloader_prefetch.py::test_repeated_epochs_do_not_grow_cuda_or_
+pinned_memory` failure footnoted in every full-suite run since M63 ("passes
+alone, occasionally fails in the full suite") is now fixed, not merely
+re-documented as tolerated. **Root cause, confirmed with instrumented
+full-suite runs, not assumed**: the test took its before/after
+`forge.cuda.memory_stats().allocated_bytes`/`pinned_memory_stats()`
+snapshots without ever calling `gc.collect()` first -- the one CUDA
+before/after memory-comparison test in the whole suite that didn't already
+follow this codebase's own established convention (`test_cuda_memory.py
+::_stable_stats()`, `test_cuda_alloc_profiler.py`, `test_lifetime.py`, and
+every `test_cuda_conv2d_*` optimization test all force a `gc.collect()`
+before trusting a memory snapshot, precisely because Tensor<->`Node`
+(`forge/autograd/engine.py`) reference cycles are a real, accepted,
+documented characteristic of Forge's autograd graph -- freed only by
+Python's cyclic GC, not plain refcounting). In a full-suite run, thousands
+of earlier CUDA-autograd tests leave some such cycles reachable-but-
+uncollected at unpredictable moments (Python's generational GC runs on its
+own allocation-count thresholds, not at test boundaries); an instrumented
+run directly caught this in the act -- `gc.collect()` at the point this
+test's original "before" snapshot would have landed found **1,364**
+unreachable objects and released a real, still-"active" 32-byte CUDA
+allocation left over from an earlier, unrelated test (320 -> 288 bytes,
+exactly the delta a real un-instrumented full-suite failure had shown as
+"CUDA active bytes grew: 320 -> 288", which was actually a shrink mislabeled
+by the old assertion message). This is a **test-measurement bug, not a
+`CUDAPrefetchLoader`/allocator/pinned-memory lifecycle defect**: the
+prefetch loader's own thread/queue/pinned-buffer teardown was already
+independently verified refcounting-clean by this same file's early
+-termination tests, which were not touched.
+
+**Fix** (`tests/test_dataloader_prefetch.py` only, no `forge/` source
+change): added a `_stable_cuda_and_pinned_bytes()` helper that calls
+`gc.collect()` + `forge.cuda.empty_cache()` before reading both stats,
+matching `_stable_stats()`'s existing precedent exactly, and used it for
+both the "before" and "after" snapshots. No assertion was weakened, no
+skip/xfail/retry was added, and no global test-suite fixture was
+introduced -- the `gc.collect()` call is scoped to this one test's own two
+measurement points, per the same "narrowest correct boundary" principle
+`test_cuda_conv2d_dinput_optimization.py` already documents for its own
+`gc.collect()` placement.
+
+**Validation**: isolated run repeated 5x (all pass, ~1s each); 3 full
+consecutive `pytest tests/` runs post-fix, **2,586 passed, 0 failed** each
+time (previously 2,585 passed / 1 failed was the norm); targeted regression
+pass across `test_cuda_allocator_reentrancy.py`, `test_cuda_pinned_memory.py`,
+`test_cuda_memory.py`, `test_dataloader.py`, `test_dataloader_prefetch.py`,
+`test_dataloader_prefetch_availability.py`, `test_cuda_streams.py`, and
+`test_cuda_stream_allocator.py` (122 passed) to confirm no CUDA allocator/
+pinned-memory/stream regression from the change. All verification run on
+the real reference hardware (GeForce 940MX, CUDA 12.6) per this project's
+"never simulate GPU behavior" rule.
+
+Every prior milestone entry above that footnotes this flake (M63-M94)
+remains an accurate historical record of that milestone's own full-suite
+run and is left unchanged; this entry records only that the underlying
+cause is now fixed and the flake should not recur in future milestone
+reports.
