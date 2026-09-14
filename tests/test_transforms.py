@@ -8,6 +8,7 @@ from forge.data.transforms import (
     Flatten,
     Lambda,
     Normalize,
+    ReplaceValue,
     Reshape,
     Resize,
     ToTensor,
@@ -94,6 +95,78 @@ def test_normalize_rejects_zero_std():
 def test_normalize_rejects_non_tensor_sample():
     with pytest.raises(DataError):
         Normalize(mean=0.0, std=1.0)(np.array([1.0]))
+
+
+# -- ReplaceValue --------------------------------------------------------
+
+
+def test_replace_value_replaces_sentinel_in_targeted_columns_single_sample():
+    sample = Tensor([1.0, 0.0, 3.0, 4.0, 0.0])
+    out = ReplaceValue(sentinel=0.0, columns=[1, 4], fill=[100.0, 200.0])(sample)
+    np.testing.assert_allclose(out.numpy(), [1.0, 100.0, 3.0, 4.0, 200.0])
+
+
+def test_replace_value_leaves_untargeted_columns_alone_even_when_zero():
+    sample = Tensor([0.0, 0.0])
+    out = ReplaceValue(sentinel=0.0, columns=[1], fill=[9.0])(sample)
+    np.testing.assert_allclose(out.numpy(), [0.0, 9.0])
+
+
+def test_replace_value_only_replaces_matching_entries_in_a_batch():
+    batch = Tensor(np.array([[1.0, 0.0], [2.0, 5.0], [0.0, 0.0]], dtype=np.float32))
+    out = ReplaceValue(sentinel=0.0, columns=[0, 1], fill=[10.0, 20.0])(batch)
+    np.testing.assert_allclose(out.numpy(), [[1.0, 20.0], [2.0, 5.0], [10.0, 20.0]])
+
+
+def test_replace_value_preserves_dtype_and_device():
+    sample = Tensor([0.0, 1.0], dtype="float32")
+    out = ReplaceValue(sentinel=0.0, columns=[0], fill=[5.0])(sample)
+    assert out.dtype == sample.dtype
+    assert out.device == sample.device
+
+
+def test_replace_value_rejects_non_tensor_sample():
+    with pytest.raises(DataError):
+        ReplaceValue(sentinel=0.0, columns=[0], fill=[1.0])(np.array([0.0, 1.0]))
+
+
+def test_replace_value_rejects_mismatched_columns_and_fill_lengths():
+    with pytest.raises(DataError):
+        ReplaceValue(sentinel=0.0, columns=[0, 1], fill=[1.0])
+
+
+def test_replace_value_rejects_empty_columns():
+    with pytest.raises(DataError):
+        ReplaceValue(sentinel=0.0, columns=[], fill=[])
+
+
+def test_replace_value_rejects_duplicate_columns():
+    with pytest.raises(DataError):
+        ReplaceValue(sentinel=0.0, columns=[1, 1], fill=[1.0, 2.0])
+
+
+def test_replace_value_rejects_negative_column():
+    with pytest.raises(DataError):
+        ReplaceValue(sentinel=0.0, columns=[-1], fill=[1.0])
+
+
+def test_replace_value_rejects_out_of_range_column_at_call_time():
+    with pytest.raises(DataError):
+        ReplaceValue(sentinel=0.0, columns=[5], fill=[1.0])(Tensor([0.0, 1.0]))
+
+
+def test_replace_value_repr():
+    r = repr(ReplaceValue(sentinel=0.0, columns=[1, 2], fill=[9.0, 8.0]))
+    assert r == "ReplaceValue(sentinel=0.0, columns=[1, 2], fill=[9.0, 8.0])"
+
+
+def test_replace_value_composes_with_normalize():
+    pipeline = Compose([
+        ReplaceValue(sentinel=0.0, columns=[0], fill=[10.0]),
+        Normalize(mean=0.0, std=2.0),
+    ])
+    result = pipeline(Tensor([0.0, 4.0]))
+    np.testing.assert_allclose(result.numpy(), [5.0, 2.0])  # (10-0)/2, (4-0)/2
 
 
 # -- Reshape / Flatten ----------------------------------------------------

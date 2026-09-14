@@ -26,6 +26,7 @@ from forge.data.transforms import (
     Flatten,
     Lambda,
     Normalize,
+    ReplaceValue,
     Reshape,
     Resize,
     ToTensor,
@@ -83,6 +84,34 @@ def test_normalize_per_channel_round_trips():
     t2 = deserialize_transform(node)
     x = Tensor(np.random.default_rng(0).uniform(0, 1, size=(3, 5, 5)).astype(np.float32))
     np.testing.assert_allclose(t(x).numpy(), t2(x).numpy(), atol=1e-6)
+
+
+def test_replace_value_round_trips():
+    t = ReplaceValue(sentinel=0.0, columns=[1, 3], fill=[10.0, 20.0])
+    node = serialize_transform(t)
+    assert node == {"type": "ReplaceValue", "config": {"sentinel": 0.0, "columns": [1, 3], "fill": [10.0, 20.0]}}
+    t2 = deserialize_transform(node)
+    assert isinstance(t2, ReplaceValue)
+    x = Tensor([0.0, 0.0, 5.0, 0.0])
+    np.testing.assert_allclose(t(x).numpy(), t2(x).numpy())
+
+
+def test_replace_value_composed_with_normalize_round_trips():
+    """The Milestone 92 shape: impute-then-standardize as one persisted
+    pipeline, so a fresh raw row with a sentinel-coded missing value is
+    imputed identically to training before being standardized."""
+    t = Compose([
+        ReplaceValue(sentinel=0.0, columns=[1], fill=[50.0]),
+        Normalize(mean=[10.0, 50.0], std=[2.0, 5.0]),
+    ])
+    node = serialize_transform(t)
+    assert node["type"] == "Compose"
+    assert [c["type"] for c in node["config"]["transforms"]] == ["ReplaceValue", "Normalize"]
+
+    t2 = deserialize_transform(node)
+    raw_row_with_missing_value = Tensor([12.0, 0.0])
+    np.testing.assert_allclose(t(raw_row_with_missing_value).numpy(), t2(raw_row_with_missing_value).numpy())
+    np.testing.assert_allclose(t2(raw_row_with_missing_value).numpy(), [1.0, 0.0])  # (12-10)/2, (50-50)/5
 
 
 def test_reshape_round_trips():
@@ -218,6 +247,21 @@ def test_save_load_preprocessing_round_trip(tmp_path):
     # load_model() is unaffected -- still returns a bare, working Module.
     loaded_model = load_model(str(path))
     assert isinstance(loaded_model, Linear)
+
+
+def test_save_load_replace_value_preprocessing_round_trip(tmp_path):
+    model = Linear(4, 2)
+    pre = Compose([
+        ReplaceValue(sentinel=0.0, columns=[1, 2], fill=[5.0, 6.0]),
+        Normalize(mean=0.0, std=2.0),
+    ])
+    path = tmp_path / "model.forge"
+    save_model(model, str(path), preprocessing=pre)
+
+    loaded_pre = load_preprocessing(str(path))
+    assert isinstance(loaded_pre, Compose)
+    x = Tensor([1.0, 0.0, 0.0, 3.0])
+    np.testing.assert_allclose(pre(x).numpy(), loaded_pre(x).numpy(), atol=1e-6)
 
 
 def test_save_model_without_preprocessing_defaults_to_none(tmp_path):

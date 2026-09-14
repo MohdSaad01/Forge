@@ -81,3 +81,11 @@ examples/image_folder_classification/artifacts*/
 # `python -m examples.tabular_classification.train`; never committed. No
 # downloaded data (the dataset is generated in-process).
 examples/tabular_classification/artifacts*/
+
+# Milestone 92 real-dataset tabular classification example: generated run
+# artifacts (models) -- machine-local and reproducible via
+# `python -m examples.tabular_diabetes.train`; never committed. The bundled
+# `data/diabetes.csv` (the real, externally-sourced dataset itself) is
+# intentionally NOT ignored -- it is committed so the example needs no
+# network access to run.
+examples/tabular_diabetes/artifacts*/

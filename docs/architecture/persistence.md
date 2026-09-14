@@ -462,7 +462,10 @@ register_transform()`) mirroring the module registry described above
 exactly: a `type_name` string is looked up against transform types this
 process has already imported and opted in, never `eval`'d, pickled, or
 dynamically imported. Built-in registered transforms: `Resize`, `Compose`
-(recursively, over its own child transforms), `Normalize`, `ToTensor`,
+(recursively, over its own child transforms), `Normalize`, `ReplaceValue`
+(Milestone 92 -- replaces a sentinel value with a fixed per-column fill on
+specific columns, e.g. imputing a dataset's sentinel-coded missing values;
+see `docs/development/m92-real-dataset-ingestion.md`), `ToTensor`,
 `Reshape`, `Flatten`. **`Lambda` is deliberately never registered** -- it
 wraps an arbitrary Python callable (frequently a closure) with no safe
 general representation short of serializing executable code, which
@@ -1093,7 +1096,7 @@ never a raw exception surfaced to callers.
   inference path gained persisted preprocessing.
 - Preprocessing persistence covers only the transforms registered with
   `forge.serialization.transforms.register_transform()` (`Resize`,
-  `Compose`, `Normalize`, `ToTensor`, `Reshape`, `Flatten`) -- `Lambda` and
+  `Compose`, `Normalize`, `ReplaceValue`, `ToTensor`, `Reshape`, `Flatten`) -- `Lambda` and
   any other custom `Transform` subclass must be registered the same way a
   custom `Module` subclass must be, or expressed using a registered
   transform instead; there is no reflection/pickle-based fallback, by the

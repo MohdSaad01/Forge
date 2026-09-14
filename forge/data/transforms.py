@@ -97,6 +97,81 @@ class Normalize(Transform):
         return f"Normalize(mean={self.mean!r}, std={self.std!r})"
 
 
+class ReplaceValue(Transform):
+    """Replace a sentinel value with a fixed per-column fill value, on specific columns (Milestone 92).
+
+    Real tabular data frequently encodes a missing reading as an
+    in-range sentinel rather than leaving the field blank -- e.g. the Pima
+    Indians Diabetes dataset (`examples/tabular_diabetes`) records a
+    genuinely-missing `Insulin`/`SkinThickness`/etc. reading as `0`, a value
+    that is otherwise a normal-looking float and gives `Normalize` no reason
+    to treat it specially. `ReplaceValue` closes exactly that gap: wherever
+    `sample[..., columns[k]] == sentinel`, it is overwritten with `fill[k]`
+    (typically a training-set statistic such as a per-column median, fit
+    once and reused unchanged at inference).
+
+    Deliberately scoped to *specific columns* rather than every column with
+    `sentinel` present in it -- a sentinel that means "missing" in one
+    column (`Insulin == 0`) may be a perfectly valid value in another
+    (`Pregnancies == 0`), so replacement is opt-in per column, never
+    dataset-wide.
+
+    - `sentinel`: the value to detect (compared with `==`; not intended for
+      float values requiring tolerance-based matching).
+    - `columns`: the feature-axis indices to check, matching `fill`
+      one-to-one.
+    - `fill`: the replacement value for each entry in `columns`.
+
+    Applied along the last axis, so the same instance works whether `sample`
+    is a single unbatched `(F,)` row (as `TensorDataset.__getitem__` passes
+    it) or an already-batched `(N, F)` array (as `predict_tensor_artifact()`/
+    `predict_tabular_classification_artifact()` pass a preprocessing
+    transform its `input_data`) -- exactly like `Normalize`'s own
+    broadcast-across-either-shape behavior.
+    """
+
+    def __init__(self, sentinel: float, columns: "Iterable[int]", fill: "Iterable[float]"):
+        columns = [int(c) for c in columns]
+        fill = [float(f) for f in fill]
+        if not columns:
+            raise DataError("ReplaceValue requires at least one column.")
+        if len(columns) != len(fill):
+            raise DataError(
+                f"ReplaceValue requires columns and fill to have the same length, "
+                f"got {len(columns)} columns and {len(fill)} fill values."
+            )
+        if any(c < 0 for c in columns):
+            raise DataError(f"ReplaceValue requires non-negative column indices, got {columns}.")
+        if len(set(columns)) != len(columns):
+            raise DataError(f"ReplaceValue requires unique column indices, got {columns}.")
+
+        self.sentinel = float(sentinel)
+        self.columns = columns
+        self.fill = fill
+
+    def __call__(self, sample: Tensor) -> Tensor:
+        if not isinstance(sample, Tensor):
+            raise DataError(
+                f"ReplaceValue expects a Tensor sample, got {type(sample).__name__}."
+            )
+        n_features = sample.shape[-1]
+        for c in self.columns:
+            if c >= n_features:
+                raise DataError(
+                    f"ReplaceValue column index {c} is out of range for a sample whose "
+                    f"last axis has size {n_features}."
+                )
+
+        array = sample.numpy().copy()
+        for c, fill_value in zip(self.columns, self.fill):
+            column = array[..., c]
+            array[..., c] = np.where(column == self.sentinel, fill_value, column)
+        return Tensor(array, dtype=sample.dtype, device=sample.device)
+
+    def __repr__(self) -> str:
+        return f"ReplaceValue(sentinel={self.sentinel!r}, columns={self.columns!r}, fill={self.fill!r})"
+
+
 class Reshape(Transform):
     """Reshape a single Tensor sample to the given shape (see `Tensor.reshape`)."""
 
@@ -218,4 +293,4 @@ class Lambda(Transform):
         return self.fn(sample)
 
 
-__all__ = ["Transform", "Compose", "ToTensor", "Normalize", "Reshape", "Flatten", "Resize", "Lambda"]
+__all__ = ["Transform", "Compose", "ToTensor", "Normalize", "ReplaceValue", "Reshape", "Flatten", "Resize", "Lambda"]

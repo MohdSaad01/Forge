@@ -5530,3 +5530,77 @@ segmentation/sequence workflows all retrained fresh and re-verified via CLI
 re-running clean and unchanged).
 
 Full report: `docs/development/m91-tabular-classification-artifact-inference.md`.
+
+### M92 — Real dataset ingestion: `forge.data.ReplaceValue`
+Third workload-driven milestone: selected a real, externally-sourced
+dataset (the Pima Indians Diabetes CSV, 768 patients, 8 numeric features,
+binary `Outcome`) to test whether M91's tabular-classification workflow
+survives contact with ordinary real-world data, not just synthetic data.
+Attempted the full workload with existing public APIs before writing any
+framework code: stdlib `csv` + NumPy -> `TensorDataset` -> `random_split`
+-> `Normalize` -> `DataLoader` -> `Sequential`/`CrossEntropyLoss`/`Adam` ->
+`forge.train_and_save(task="tabular_classification")` ->
+`forge.predict_model()` all worked completely unmodified, reaching 71.0%
+test accuracy against a 65.1% majority-class baseline (this dataset's real
+34.9%/65.1% class imbalance, not a uniform 50% coin-flip, is the honest
+triviality bar). CSV ingestion needed no framework change (`csv.reader` +
+`np.array(..., dtype=np.float32)` was already trivial); `random_split`
+already handled the real (non-class-sorted) row order correctly. **Real
+problem found, not a crash**: five features (`Glucose`/`BloodPressure`/
+`SkinThickness`/`Insulin`/`BMI`) encode "not measured" as literal `0`
+(`Insulin` alone is `0` in 48.7% of rows) -- a well-known real-world
+data-quality issue with this exact dataset. Manually imputing those
+sentinel zeros with training-split medians in raw NumPy, before Forge ever
+saw the array, measurably improved test accuracy (72.9% vs. 71.0%,
+identical seed/split/epochs) -- but that step had no representation in
+`forge.data.Normalize` (a pure affine transform) or in any other registered
+preprocessing transform, so it was **silently lost** the moment a model
+was saved with `preprocessing=Normalize(...)`. Reproduced directly against
+a real trained artifact: the identical raw patient row (with a genuine
+missing `Insulin` reading) predicted `no_diabetes` at 100% confidence when
+fed straight through the saved `Normalize`-only preprocessing, and
+`diabetes` at 70.2% confidence when the developer manually reimplemented
+the exact training-time imputation constants by hand -- constants with no
+way to be recovered from the `.forge` file itself. Root cause: `forge.
+serialization.transforms`'s registry (M71) only covered transforms whose
+entire behavior is flat JSON-safe constructor arguments (`Resize`,
+`Compose`, `Normalize`, `ToTensor`, `Reshape`, `Flatten`); nothing could
+express "conditionally replace a specific value in a specific column."
+Fixed by adding `forge.data.ReplaceValue(sentinel, columns, fill)`
+(`forge/data/transforms.py`) -- replaces a sentinel value with a fixed
+per-column fill on explicit column indices only (never blanket-replaced
+across every column, since a sentinel meaning "missing" in one column, e.g.
+`Insulin == 0`, can be a valid value in another, e.g. `Pregnancies == 0`),
+operating along the last axis so the same instance works on both an
+unbatched `(F,)` `TensorDataset` sample and an already-batched `(N, F)`
+inference-time array -- registered for persistence
+(`forge/serialization/transforms.py`) exactly like every other built-in
+transform, so `Compose([ReplaceValue(...), Normalize(...)])` round-trips
+recursively through `Compose`'s existing serialization with no further
+changes. No new artifact task type, no CLI changes, no feature-schema
+metadata, no categorical-encoding or general missing-value framework --
+none demonstrated as necessary by this workload. New example
+`examples/tabular_diabetes/` (`dataset.py`/`model.py`/`train.py`/
+`infer.py`/`README.md`, plus the committed real CSV,
+`data/diabetes.csv`) -- fits `ReplaceValue`'s per-column medians and
+`Normalize`'s mean/std both from the training split only (imputation
+first, then standardization on the imputed data), saves the composed
+pipeline as one `preprocessing=`, no `--resume`/checkpoint (this workload
+trains in seconds). 30 new tests: 12 in `tests/test_transforms.py`
+(`ReplaceValue` unit coverage), 3 in `tests/test_preprocessing_persistence.py`
+(round-trip coverage, including the full `Compose([ReplaceValue,
+Normalize])` artifact-level round trip), 12 in new
+`tests/test_tabular_diabetes_workflow.py` (CPU -- including a direct
+reproduction of the M92 finding), 3 in new
+`tests/test_tabular_diabetes_workflow_cuda.py` (CUDA, hardware-verified on
+the reference GeForce 940MX). No `FORMAT_VERSION` bump; fully backward/
+forward-compatible. 2,556 collected (30 new over M91's 2,526); full suite:
+2,555 passed, 1 failed -- the same pre-existing `test_dataloader_prefetch.py`
+allocator-measurement flake documented since ~M63 (reproduced passing in
+isolation), no M92 regression (classification/regression/segmentation/
+sequence workflows all retrained fresh and re-verified via CLI `inspect`/
+`predict` or fresh-process `infer.py`, in addition to their own test suites
+re-running clean and unchanged). Real dataset result: 72.1% test accuracy
+on CPU (72.7% on CUDA) against the real 65.1% majority-class baseline.
+
+Full report: `docs/development/m92-real-dataset-ingestion.md`.

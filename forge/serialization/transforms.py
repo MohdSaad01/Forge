@@ -17,7 +17,7 @@ forge.serialization.transforms.serialize_transform(Resize((64, 64)))
 ```
 
 **Only configuration-representable transforms are registered**: `Resize`,
-`Compose`, `Normalize`, `ToTensor`, `Reshape`, `Flatten` -- every transform
+`Compose`, `Normalize`, `ReplaceValue`, `ToTensor`, `Reshape`, `Flatten` -- every transform
 in `forge.data.transforms` whose entire behavior is already just a handful
 of JSON-safe constructor arguments. `Lambda` wraps an arbitrary Python
 callable (frequently a closure) with no safe general representation short
@@ -48,7 +48,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ..data.transforms import Compose, Flatten, Normalize, Reshape, Resize, ToTensor, Transform
+from ..data.transforms import Compose, Flatten, Normalize, ReplaceValue, Reshape, Resize, ToTensor, Transform
 from ..exceptions import PersistenceError
 
 
@@ -224,6 +224,11 @@ def _register_builtins() -> None:
             "dtype": str(m.dtype) if m.dtype is not None else None,
             "device": m.device,
         },
+    )
+    register_transform(
+        "ReplaceValue",
+        ReplaceValue,
+        get_config=lambda m: {"sentinel": m.sentinel, "columns": list(m.columns), "fill": list(m.fill)},
     )
     register_transform(
         "Reshape",

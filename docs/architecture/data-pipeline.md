@@ -55,8 +55,8 @@ representation a custom `Dataset` documents for itself.
 
 ## Transforms
 `forge.data.Transform`/`Compose` (M5) are composable and focused on
-training-relevant preprocessing: `Normalize`, `Reshape`, `Flatten`,
-`ToTensor`, `Resize` (M70), `Lambda`. A transform operates on one sample
+training-relevant preprocessing: `Normalize`, `ReplaceValue` (M92),
+`Reshape`, `Flatten`, `ToTensor`, `Resize` (M70), `Lambda`. A transform operates on one sample
 component (typically the features Tensor), not a whole `(features,
 target)` tuple -- `TensorDataset` wires `transform`/`target_transform` to
 the feature/target positions separately so a feature transform cannot

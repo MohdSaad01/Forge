@@ -6,7 +6,7 @@ forge/
     data/
         dataset.py       Dataset, TensorDataset, Subset, random_split
         dataloader.py    DataLoader, batch collation
-        transforms.py    Transform, Compose, ToTensor, Normalize, Reshape, Flatten, Resize, Lambda
+        transforms.py    Transform, Compose, ToTensor, Normalize, ReplaceValue, Reshape, Flatten, Resize, Lambda
         image_folder.py  ImageFolder, IMAGE_EXTENSIONS (Milestone 69)
 ```
 `forge.data` is exposed as a submodule of `forge` (`forge.data.TensorDataset`,
@@ -182,6 +182,13 @@ alone.
   not a differentiable Tensor op, so it introduces no CUDA kernel and no
   `Tensor.resize()` primitive. See
   `docs/development/m70-image-preprocessing.md`.
+- `ReplaceValue(sentinel, columns, fill)` (Milestone 92): replaces a
+  sentinel value with a fixed per-column fill value, on specific feature-
+  axis columns only. Applied along the last axis, so it works whether
+  `sample` is a single unbatched `(F,)` row or an already-batched `(N, F)`
+  array. Added for real tabular data that encodes a missing reading as an
+  in-range sentinel (e.g. `0`) rather than leaving the field blank --
+  see `docs/development/m92-real-dataset-ingestion.md`.
 - `Lambda(fn)`: wraps an arbitrary callable as a `Transform`.
 
 Deliberately not a computer-vision transform library -- `Resize` is the one
