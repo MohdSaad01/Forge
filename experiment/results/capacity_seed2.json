@@ -1,0 +1,23 @@
+{
+  "name": "capacity_seed2",
+  "hidden": [
+    64,
+    32
+  ],
+  "lr": 0.001,
+  "epochs": 60,
+  "batch_size": 32,
+  "init_seed": 2,
+  "split_seed": 0,
+  "device": "cpu",
+  "train_samples": 460,
+  "val_samples": 154,
+  "test_samples": 154,
+  "majority_baseline": 0.6510416666666666,
+  "train_loss_first": 0.6650261521339417,
+  "train_loss_last": 0.24997069058210952,
+  "val_loss_last": 0.6410495464677934,
+  "val_accuracy_last": 0.7337662337662337,
+  "duration_sec": 3.5861168000265025,
+  "artifact_path": "C:\\Zeus\\Forge\\experiment\\artifacts\\capacity_seed2.forge"
+}

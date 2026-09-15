@@ -1,0 +1,23 @@
+{
+  "name": "baseline_seed1",
+  "hidden": [
+    32,
+    16
+  ],
+  "lr": 0.001,
+  "epochs": 60,
+  "batch_size": 32,
+  "init_seed": 1,
+  "split_seed": 0,
+  "device": "cpu",
+  "train_samples": 460,
+  "val_samples": 154,
+  "test_samples": 154,
+  "majority_baseline": 0.6510416666666666,
+  "train_loss_first": 0.7159389107123665,
+  "train_loss_last": 0.3083208575196888,
+  "val_loss_last": 0.5782237060658344,
+  "val_accuracy_last": 0.7727272727272727,
+  "duration_sec": 4.463275299989618,
+  "artifact_path": "C:\\Zeus\\Forge\\experiment\\artifacts\\baseline_seed1.forge"
+}
