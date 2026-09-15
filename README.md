@@ -1,5 +1,8 @@
 # Forge
 
+[![CI](https://github.com/MohdSaad01/Forge/actions/workflows/ci.yml/badge.svg)](https://github.com/MohdSaad01/Forge/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Forge** is a deep-learning framework built from scratch in Python: its own
 `Tensor`/autograd engine, CPU and CUDA execution backends, neural-network
 modules, optimizers, data pipeline, training loop, and model/checkpoint
@@ -9,9 +12,11 @@ every layer, gradient, and training step is Forge's own code.
 
 Forge is a solo-developer, pre-release project. It is not a production
 framework, is not API-stable, and is not a PyTorch/TensorFlow replacement.
-It is, however, real and working: three complete model families train,
-evaluate, checkpoint, persist, and reload end-to-end today (see
-[Examples](#examples) below), each with hardware-verified CPU/CUDA parity.
+It is, however, real and working: twelve example workloads spanning five
+task types -- image classification, dense image segmentation, sequence
+generation, tabular classification, and regression (see
+[Examples](#examples) below) -- train, evaluate, checkpoint, persist, and
+reload end-to-end today, each with hardware-verified CPU/CUDA parity.
 
 ## Architecture
 
@@ -39,66 +44,56 @@ See `docs/architecture/architecture.md` for the full design rules and
 
 - **Tensor / autograd** (`forge.Tensor`) -- reverse-mode automatic
   differentiation over elementwise ops, `matmul`, `sum`/`reshape`,
-  `relu`/`tanh`/`exp`/`log`/`sqrt`, `conv2d`/`max_pool2d`, `cross_entropy`,
-  `embedding_lookup`, `batch_norm2d`, and a vanilla-RNN recurrence step
-  (`rnn_cell`) -- all differentiable and CPU/CUDA dispatched identically.
-  `no_grad()` suspends graph construction for inference/evaluation.
+  `relu`/`tanh`/`sigmoid`/`exp`/`log`/`sqrt`, `conv2d`/`max_pool2d`/
+  `upsample_nearest2d`, `cross_entropy`, `embedding_lookup`, `batch_norm2d`,
+  and a vanilla-RNN recurrence step (`rnn_cell`) -- all differentiable and
+  CPU/CUDA dispatched identically. `no_grad()` suspends graph construction
+  for inference/evaluation.
 - **`forge.nn`** -- `Module`/`Parameter` composition; layers `Linear`,
-  `Conv2d`, `MaxPool2d`, `Conv1d`, `MaxPool1d`, `BatchNorm2d`, `RNNCell`,
-  `Embedding`, `Dropout`, `Sequential`, `ReLU`, `Tanh`; losses `MSELoss`,
-  `CrossEntropyLoss`.
+  `Conv2d`, `MaxPool2d`, `Conv1d`, `MaxPool1d`, `UpsampleNearest2d`,
+  `BatchNorm2d`, `RNNCell`, `LSTMCell`, `Embedding`, `Dropout`, `Sequential`,
+  `Flatten`, `ReLU`, `Tanh`; losses `MSELoss`, `CrossEntropyLoss`.
 - **`forge.optim`** -- `SGD`, `Adam`.
-- **`forge.data`** -- `Dataset`/`TensorDataset`, `ImageFolder` (directory-
-  per-class image classification, via Pillow decoding), transforms
-  (`Normalize`, `Compose`, `Reshape`, `Resize`, ...), `DataLoader` (batching,
-  shuffling, `random_split`), and `CUDAPrefetchLoader` for overlapped
-  host-to-device transfer.
-- **`forge.training`** -- `train()`, the single-call high-level entry point
-  (`forge.train(model, dataset, loss=..., optimizer=..., epochs=10)`) that
-  builds its own `DataLoader`(s), moves the model to `device=`, and drives
-  `Trainer.fit()` underneath -- see [Training, checkpointing, and
-  persistence](#training-checkpointing-and-persistence) below; `Trainer`
-  (`fit`/`evaluate`/checkpoint resume), metrics (`Accuracy`,
-  `MeanAbsoluteError`, ...), `TrainingHistory`, `predict()` -- standalone
-  post-training inference (`forge.predict(model, x)`), no `Loss`/`Optimizer`
-  required -- `save_and_verify()`, which saves a model and immediately
-  proves the file is portable by reloading it fresh and confirming a sample
-  prediction agrees; `train_and_save()`, which calls `train()` then
-  `save_and_verify()` in one step, returning the completed history, the
-  final train/validation result, the reloaded, verified model, and the
-  artifact path that was actually written, together (`TrainAndSaveResult`);
-  `train()` itself returns a `TrainingResult` -- a `TrainingHistory` plus the
-  trained model and final-epoch loss/metrics accessors, so a caller can
-  answer "what happened when I trained this model?" from the return value
-  alone; and `start_training_session()`, which builds a fresh `Trainer` or resumes one
-  from a checkpoint (including the `DataLoader` shuffle-generator state
-  needed for exact resume equivalence) from one call, replacing the
-  resume-or-fresh-start branch every checkpoint-capable example used to
-  hand-roll (`train()`/`train_and_save()` themselves have no
-  checkpoint/resume -- use `start_training_session()`/`Trainer` directly
-  for that); `predict_artifact()`, which turns a portable `.forge`
-  image-classification artifact and one new image file directly into a
-  human-readable prediction; `predict_tensor_artifact()`, its
-  non-classification counterpart for a portable artifact whose input is a
-  plain numeric array (e.g. a regression model) -- preprocessing optional,
-  no class-vocabulary concept, returns the raw numeric prediction `Tensor`;
-  and `predict_image_artifact()`, the counterpart for an image-to-image
-  dense-prediction artifact (e.g. `examples/segmentation`) -- input is an
-  image file like `predict_artifact()`'s, but the output is another
-  image-shaped `Tensor` (a thresholded per-pixel mask), ready for
-  `forge.data.save_image()`.
+- **`forge.data`** -- `Dataset`/`TensorDataset`/`Subset`, `ImageFolder`
+  (directory-per-class image classification, via Pillow decoding),
+  transforms (`Normalize`, `ReplaceValue`, `Compose`, `Reshape`, `Resize`,
+  ...), `DataLoader` (batching, shuffling, `random_split`/
+  `sequential_split`), `save_image()`, and `CUDAPrefetchLoader` for
+  overlapped host-to-device transfer.
+- **`forge.training`** -- a single-call high-level path from a `Dataset` to
+  a portable, verified model: `train()` builds its own `DataLoader`(s) and
+  drives `Trainer.fit()` underneath, returning a `TrainingResult`
+  (history plus the trained model and final-epoch loss/metrics); `predict()`
+  is standalone post-training inference with no `Loss`/`Optimizer` required;
+  `train_and_save()` composes `train()` with `save_and_verify()` (which
+  saves a model and immediately proves the file is portable by reloading it
+  fresh and comparing a prediction) into one call returning
+  `TrainAndSaveResult`. Lower-level pieces -- `Trainer` (`fit`/`evaluate`/
+  checkpoint resume), metrics (`Accuracy`, `MeanAbsoluteError`, ...), and
+  `start_training_session()` (fresh-or-resumed `Trainer` in one call,
+  including exact `DataLoader`-shuffle resume equivalence) -- remain
+  available directly for cases `train()` doesn't cover, such as
+  checkpoint/resume. On the consuming side, five task-specific
+  `predict_*_artifact()` functions (image classification, plain numeric
+  regression, image-to-image segmentation, sequence generation, tabular
+  classification) turn a saved `.forge` file into a prediction with no
+  manual preprocessing/class-vocabulary reconstruction, and
+  `predict_model()` picks the right one automatically from the artifact's
+  own `task` metadata. See [Training, checkpointing, and
+  persistence](#training-checkpointing-and-persistence) below.
 - **`forge.serialization`** -- `save_model`/`load_model` (architecture +
   parameters, via an explicit module registry -- never arbitrary code
   execution) and `save_checkpoint`/`load_checkpoint` (adds optimizer state,
   epoch/step, and RNG state, for exact training resume). `save_model(...,
   preprocessing=...)`/`load_preprocessing()` optionally save and reconstruct
-  a model's required input-preprocessing `Transform` (e.g. `Resize`/
-  `Normalize`/`Compose`) alongside it, via the same explicit-registry
-  principle. `save_model(..., task=...)` optionally declares which of
-  `"classification"`/`"regression"`/`"segmentation"` the artifact represents
-  -- the authoritative signal `forge.predict_model()` uses to dispatch
-  reliably, closing the ambiguity an architecture-based guess could not
-  always resolve. See `docs/architecture/persistence.md`.
+  a model's required input-preprocessing `Transform` alongside it, via the
+  same explicit-registry principle. `save_model(..., task=...)` optionally
+  declares which of `"classification"`/`"regression"`/`"segmentation"`/
+  `"sequence"`/`"tabular_classification"` the artifact represents -- the
+  authoritative signal `forge.predict_model()` uses to dispatch reliably.
+  `inspect_model()` reads an artifact's architecture/preprocessing/classes/
+  task without reconstructing a live model or requiring CUDA. See
+  `docs/architecture/persistence.md`.
 - **CUDA backend** (`forge.backend.cuda`, `forge.cuda`) -- a real,
   hardware-tested backend (not simulated): device tensor storage, a caching
   memory allocator, explicit streams, pinned-memory async transfer, and
@@ -108,10 +103,10 @@ See `docs/architecture/architecture.md` for the full design rules and
   `Trainer(device="cuda")`) is opt-in and raises `forge.CUDAError` cleanly
   when it isn't.
 - **CLI** (`forge ...` / `python -m forge ...`) -- `model inspect`/`convert`
-  and `checkpoint inspect`/`convert` over the persistence format above,
-  `model predict` (task-aware over classification/regression/segmentation
-  artifacts, driven by their own persisted `task` metadata), plus `forge
-  benchmark`. See `docs/development/cli.md`.
+  and `checkpoint inspect`/`convert` over the persistence format above, and
+  `model predict` (task-aware over all five task types above, driven by
+  each artifact's own persisted `task` metadata), plus `forge benchmark`.
+  See `docs/development/cli.md`.
 
 Not in Forge (by design, not oversight): attention/Transformer layers,
 convolution beyond 2D, distributed/multi-GPU training, mixed-precision
@@ -239,21 +234,24 @@ python examples/trainer_demo.py
 
 ## Examples
 
+Forge has 12 example workloads under `examples/`, each with its own
+README (exact commands, expected numbers, CUDA verification), plus three
+small standalone demo scripts. A representative sample:
+
 | Example | What it shows |
 |---|---|
 | `examples/trainer_demo.py` | The first-model path above, runnable directly. |
 | `examples/mnist/` | Image classification (CNN), a real external dataset. |
-| `examples/char_rnn/` | Character-level language modeling (`RNNCell`). |
-| `examples/word_rnn/` | Word-level language modeling (`Embedding` + `RNNCell`). |
-| `examples/regression/` | Tabular regression (MLP over continuous features). |
-| `examples/waveform_classification/` | 1D time-series classification (`Conv1d`/`MaxPool1d`). |
+| `examples/char_rnn/`, `examples/word_rnn/` | Character- and word-level language modeling (`RNNCell`/`Embedding`). |
+| `examples/regression/`, `examples/tabular_diabetes/` | Tabular regression and classification (MLP), the latter on a real external dataset. |
+| `examples/segmentation/` | Dense per-pixel prediction (encoder/decoder CNN). |
+| `examples/image_folder_classification/` | Classifying image files on disk via a directory-per-class layout. |
 
-`mnist`, `char_rnn`/`word_rnn`, `regression`, and `waveform_classification`
-are Forge's production-quality, hardware-verified workload families -- each
-trains, evaluates, checkpoints/resumes, and saves/reloads a model on both
-CPU and CUDA. See `examples/README.md` for the full index (what each
-demonstrates, which Forge APIs it exercises) and each example's own README
-for exact commands and expected numbers. Quick start:
+Every example above is production-quality and hardware-verified on both
+CPU and CUDA (trains, evaluates, checkpoints/resumes, and saves/reloads a
+model). See [`examples/README.md`](examples/README.md) for the full index
+-- all 12 workloads, what each demonstrates, and which Forge APIs it
+exercises. Quick start:
 
 ```bash
 python -m examples.regression.train --epochs 40 --device cpu
@@ -293,31 +291,29 @@ task=...)` composes `train()` + `save_and_verify()` into the one call every
 Trainer-based example's `train.py` ends with. `forge.inspect_model(path)`
 answers "what is this artifact?" -- model architecture summary,
 preprocessing, classes, task, format/device -- without reconstructing a live
-model or requiring CUDA. On the consuming side, `forge.predict_artifact(path,
-image_path)` turns a saved image-classification artifact and one new image
-file into a prediction in one call, `forge.predict_tensor_artifact(path,
-input_data)` does the same for a non-classification artifact (e.g.
-`examples/regression/`) whose input is a plain numeric array rather than a
-file, `forge.predict_image_artifact(path, image_path)` does the same for an
-image-to-image dense-prediction artifact (e.g. `examples/segmentation/`),
-returning another image-shaped `Tensor` ready for `forge.data.save_image()`,
-and `forge.predict_model(path, input_data)` picks the right one of the three
-automatically -- from the artifact's own explicit `task=` metadata when
-present, falling back to an isolated, documented architecture heuristic only
-for artifacts saved without it. Every example under `examples/` demonstrates
-the producing side; `mnist`/`image_folder_classification`, `regression`, and
-`segmentation` respectively demonstrate the three consuming functions -- see
-`docs/architecture/persistence.md` for the file format and trust model (no
-arbitrary code execution on load) and `docs/architecture/training-engine.md`
-for
-`train()`/`train_and_save()`/`predict_artifact()`/`predict_tensor_artifact()`/
-`predict_image_artifact()`/`predict_model()`'s full contracts and their
-`Trainer`/`TrainingSession` boundary.
+model or requiring CUDA.
+
+On the consuming side, five task-specific functions turn a saved `.forge`
+file into a prediction with no manual reconstruction of training-time
+preprocessing/interpretation: `predict_artifact()` (image classification),
+`predict_tensor_artifact()` (plain numeric input, e.g. `examples/regression`),
+`predict_image_artifact()` (image-to-image dense prediction, e.g.
+`examples/segmentation`, returning a mask `Tensor` ready for
+`forge.data.save_image()`), `predict_sequence_artifact()` (autoregressive
+generation from a stepwise-recurrence model, e.g. `examples/char_rnn`), and
+`predict_tabular_classification_artifact()` (numeric input, classification
+output, e.g. `examples/tabular_diabetes`). `forge.predict_model(path,
+input_data)` picks the right one automatically from the artifact's own
+`task=` metadata (falling back to an architecture heuristic only for legacy
+artifacts saved without it). See `docs/architecture/persistence.md` for the
+file format and trust model (no arbitrary code execution on load) and
+`docs/architecture/training-engine.md` for every function's full contract
+and the `Trainer`/`TrainingSession` boundary.
 
 ## Testing
 
 ```bash
-python -m pytest tests/            # full suite (~1,800 tests, a couple minutes)
+python -m pytest tests/                # full suite
 python -m pytest tests/test_smoke.py   # fast import + minimal-model smoke check
 ```
 
@@ -325,13 +321,34 @@ CUDA-specific tests (`tests/test_cuda_*.py` and the `*_cuda_integration.py`
 example tests) skip cleanly (`pytest.mark.skipif`) on a machine without a
 working CUDA backend; they are hardware-verified on this project's own
 reference GPU rather than assumed to pass elsewhere. CPU tests never
-require CUDA.
+require CUDA. CI (`.github/workflows/ci.yml`) runs the CPU-visible half of
+the suite plus a real wheel-build/install smoke test on every push to
+`main`.
+
+## Project status
+
+Forge is under active, incremental development -- there is no fixed
+release date or version-1.0 target. The framework itself (Tensor/autograd,
+CPU+CUDA backends, `nn`/`optim`/`data`/`training`/`serialization`, CLI) is
+feature-complete for everything the current examples need. The most recent
+engineering milestone made a training run's own return value report what
+happened during training (`TrainingResult`); since then, development has
+been in a documentation/repository-cleanup phase, bringing this README,
+`CLAUDE.md`, and the examples index in line with the current codebase
+before the next engineering milestone begins. See
+[`docs/development/progress.md`](docs/development/progress.md) for the
+full milestone-by-milestone history and
+[`docs/development/roadmap.md`](docs/development/roadmap.md) for how
+future milestones get chosen.
 
 ## Where things live
 
 - `forge/` -- the framework itself (public surface documented in
   `forge/__init__.py`'s module docstring).
 - `examples/` -- runnable workloads; see `examples/README.md`.
+- `experiment/` -- an application built entirely on Forge's public API for
+  repeatably comparing trained models against the same held-out data; see
+  `experiment/README.md`.
 - `tests/` -- the test suite (one file per unit under test, mirroring
   `forge/`'s layout).
 - `docs/architecture/` -- per-layer design documents (Tensor, autograd,

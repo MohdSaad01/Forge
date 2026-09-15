@@ -6,7 +6,14 @@ Forge is a from-scratch deep-learning framework. It owns the ML abstractions and
 ## Current objective
 Build Forge incrementally through small, working vertical slices. Read the relevant `docs/` files before changing architecture or public APIs.
 
+## Orientation
+- `README.md` -- what Forge is, its current capabilities, and how to run it (developer-facing, not this file's audience).
+- `examples/README.md` -- the index of runnable example workloads and which Forge APIs each one exercises.
+- `docs/architecture/` -- per-layer design documents; read the one for the layer you're touching.
+- `docs/development/roadmap.md` -- how milestones are chosen; `docs/development/progress.md` -- the historical record every completed milestone is appended to.
+
 ## Core principles
+- Inspect existing code, tests, and the relevant `docs/architecture/*.md` file before implementing anything -- most milestones extend or formalize something that already exists rather than building from zero.
 - Prefer simple, explicit abstractions over speculative framework machinery.
 - Keep high-level model code independent of the execution backend.
 - CPU must remain independently testable.
@@ -14,6 +21,7 @@ Build Forge incrementally through small, working vertical slices. Read the relev
 - Use NumPy or other numerical infrastructure where it reduces unnecessary low-level reinvention, but keep tensors, autograd, model abstractions, training, and optimization inside Forge.
 - Preserve clear boundaries between tensor computation, autograd, neural-network modules, data, training, serialization, and backends.
 - Do not silently expand milestone scope.
+- Do not perform unrelated refactors while implementing a milestone; follow the conventions an area has already established (e.g. every `examples/<name>/` follows `dataset.py`/`model.py`/`train.py`/`README.md`).
 - Do not introduce cloud services or paid dependencies.
 - Do not commit, push, or rewrite Git history.
 
@@ -23,6 +31,8 @@ Forge should remain generally usable on more capable hardware; development workl
 
 ## Testing
 Every implementation change must have appropriate tests. Prefer deterministic, small tests. CPU tests must not require CUDA. CUDA-specific tests should skip cleanly when CUDA is unavailable and must be explicitly hardware-verified when the milestone requires it.
+
+Run the focused test file(s) for the area you changed while iterating, then run the full suite (`python -m pytest tests/ -q`) before reporting a milestone complete.
 
 ## Documentation
 Update only documentation affected by meaningful architectural changes. Do not create speculative documents. Keep public API decisions documented.
