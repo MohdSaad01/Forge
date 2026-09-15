@@ -65,8 +65,12 @@ See `docs/architecture/architecture.md` for the full design rules and
   proves the file is portable by reloading it fresh and confirming a sample
   prediction agrees; `train_and_save()`, which calls `train()` then
   `save_and_verify()` in one step, returning the completed history, the
-  final validation result, and the reloaded, verified model together; and
-  `start_training_session()`, which builds a fresh `Trainer` or resumes one
+  final train/validation result, the reloaded, verified model, and the
+  artifact path that was actually written, together (`TrainAndSaveResult`);
+  `train()` itself returns a `TrainingResult` -- a `TrainingHistory` plus the
+  trained model and final-epoch loss/metrics accessors, so a caller can
+  answer "what happened when I trained this model?" from the return value
+  alone; and `start_training_session()`, which builds a fresh `Trainer` or resumes one
   from a checkpoint (including the `DataLoader` shuffle-generator state
   needed for exact resume equivalence) from one call, replacing the
   resume-or-fresh-start branch every checkpoint-capable example used to
@@ -267,8 +271,11 @@ Pass `--device cuda` in place of `--device cpu` on a machine where
 `forge.train(model, dataset, loss=..., optimizer=..., epochs=...)` is the
 high-level entry point for the common case: it builds a `DataLoader` from
 `dataset` (or accepts one directly), moves `model` to `device=` if given,
-and runs `Trainer.fit()` underneath, returning the same `TrainingHistory`.
-`Trainer.fit()` itself runs the standard loop (forward -> loss -> backward
+and runs `Trainer.fit()` underneath, returning a `TrainingResult` -- a
+`TrainingHistory` (so `len()`/indexing/iteration all still work exactly as
+before) plus the trained `model` and final-epoch convenience accessors
+(`final_train_loss`, `final_val_metrics`, ...). `Trainer.fit()` itself runs
+the standard loop (forward -> loss -> backward
 -> optimizer step, with optional validation) for callers who construct the
 `DataLoader`/`Trainer` themselves -- needed for anything `train()` doesn't
 expose: CUDA prefetch, a custom `DataLoader` generator, or checkpoint/resume.

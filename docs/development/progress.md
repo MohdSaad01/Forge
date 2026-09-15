@@ -5716,3 +5716,34 @@ remains an accurate historical record of that milestone's own full-suite
 run and is left unchanged; this entry records only that the underlying
 cause is now fixed and the flake should not recur in future milestone
 reports.
+
+### M99 — First-class training-run result: `TrainingResult`, `TrainAndSaveResult.artifact_path`
+
+Brief asked whether Forge itself can answer "what happened when I trained
+this model?" from `train()`/`train_and_save()`'s own return value, instead
+of a developer reconstructing it from scattered local variables --
+`experiment/run_experiment.py` (M98) was the concrete evidence: it tracks
+`model_path` in its own variable and indexes `history[-1].train_loss`/
+`history[-1].val_metrics["accuracy"]` by hand. `train()` now returns
+`TrainingResult` (`forge/training/api.py`) -- a `TrainingHistory` *subclass*
+(fully backward compatible: `isinstance(result, TrainingHistory)` is `True`,
+`len()`/indexing/iteration/`train_losses`/`val_losses` unchanged) that adds
+`model` (the trained `Module`, same object), `epochs_completed`, and
+`final_train_loss`/`final_train_metrics`/`final_val_loss`/
+`final_val_metrics`. `TrainAndSaveResult` gained `artifact_path` (the `path`
+that was actually written and verified -- previously only available from the
+caller's own `path` variable) and `train_loss`/`train_metrics` (mirroring
+the existing `val_loss`/`val_metrics` fields, for the same "no
+`history[-1]` indexing needed" reason). No new training semantics, no
+experiment tracking, no `.forge` serialization of the result itself --
+`TrainingResult`/`TrainAndSaveResult` are training-operation records, kept
+deliberately separate from the portable model artifact. `examples/
+tabular_diabetes/train.py` retrofitted to use `train_result.artifact_path`/
+`train_result.train_loss`/`train_result.val_loss` in place of its own
+`model_path` variable and `history[-1]` indexing. 19 new CPU tests
+(`tests/test_training_result.py`) + 4 new CUDA tests (`tests/
+test_training_result_cuda.py`, hardware-verified on the 940MX), covering
+backward compatibility, model identity, validation/no-validation, artifact
+path + independent reload, determinism, repeated-access stability, and
+`TrainAndSaveResult`'s frozen-dataclass immutability. Full suite: all
+pre-existing tests unaffected, +23 new.

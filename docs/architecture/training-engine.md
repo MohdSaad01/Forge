@@ -1,4 +1,4 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82; single-call numeric-artifact inference via `predict_tensor_artifact()` as of Milestone 83; single-call image-to-image artifact inference via `predict_image_artifact()` as of Milestone 84; unified portable-artifact prediction via `predict_model()` as of Milestone 86; explicit task-metadata dispatch as of Milestone 87)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82; single-call numeric-artifact inference via `predict_tensor_artifact()` as of Milestone 83; single-call image-to-image artifact inference via `predict_image_artifact()` as of Milestone 84; unified portable-artifact prediction via `predict_model()` as of Milestone 86; explicit task-metadata dispatch as of Milestone 87; first-class `TrainingResult`/`TrainAndSaveResult.artifact_path` as of Milestone 99)
 
 ## Package layout
 ```
@@ -8,7 +8,9 @@ forge/
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
         inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78, task= as of 87), predict_artifact() (Milestone 82), predict_tensor_artifact() (Milestone 83), predict_image_artifact() (Milestone 84), predict_model() (Milestone 86, task-first dispatch as of 87)
         session.py     TrainingSession, start_training_session() (Milestone 73)
-        api.py         train() (Milestone 79), train_and_save(), TrainAndSaveResult (Milestone 81)
+        api.py         train() (Milestone 79) -> TrainingResult (Milestone 99),
+                       train_and_save() -> TrainAndSaveResult (Milestone 81,
+                       artifact_path/train_loss/train_metrics as of Milestone 99)
     autograd/engine.py  no_grad, is_grad_enabled (new in this milestone)
 ```
 `forge.training` is exposed as a submodule of `forge` (`forge.training.Trainer`),
@@ -796,10 +798,35 @@ moves every `Parameter` in place, preserving Python identity
 is exactly the `model = build_model().to(args.device)` line every existing
 example already writes by hand, folded into one keyword.
 
-**Returns `Trainer.fit()`'s own `TrainingHistory`** -- there is no separate
-high-level result type, and `train()` does not return the model (the caller
-already holds the reference it passed in; `model`/`optimizer` are mutated in
-place by training, the same convention `Trainer.fit()` itself uses).
+**Returns a `TrainingResult` (Milestone 99).** Before Milestone 99, `train()`
+returned `Trainer.fit()`'s own bare `TrainingHistory` and did not return the
+model at all (the caller already held the reference it passed in). Milestone
+99's brief asked Forge to answer "what happened when I trained this model?"
+from the training call's own return value, rather than the caller
+reconstructing it from scattered local variables (exactly what `experiment/
+run_experiment.py`, Milestone 98, still does by hand: `model_path` tracked
+separately, `history[-1].train_loss` indexed manually). `TrainingResult`
+(`forge/training/api.py`) *subclasses* `TrainingHistory` rather than wrapping
+it, so it stays fully backward compatible -- `isinstance(result,
+TrainingHistory)` is `True`, and `len()`/iteration/indexing/`train_losses`/
+`val_losses` all work unchanged on the object `train()` returns. It adds:
+- `model` -- the same trained `Module` object the caller passed in (not a
+  copy), so `result.model` answers "what did I just train?" without the
+  caller keeping its own reference.
+- `epochs_completed` -- `len(self)`, spelled out for readability.
+- `final_train_loss`/`final_train_metrics`/`final_val_loss`/
+  `final_val_metrics` -- the last completed epoch's own `EpochResult` fields,
+  copied here so "what was the final performance?" does not require knowing
+  `history[-1]`'s indexing convention. `final_val_loss`/`final_val_metrics`
+  are `None`/`{}` when `train()` was called without a `validation_dataset`,
+  exactly `EpochResult`'s own convention.
+- `history` -- a property that returns `self` (`TrainingResult` *is* the
+  history; there is no second, separate history representation to keep in
+  sync).
+
+`model`/`optimizer` are still mutated in place by training, the same
+convention `Trainer.fit()` itself uses; `TrainingResult` adds no new training
+semantics, only a richer view onto what already happened.
 
 ### What `train()` does not cover: checkpoint/resume
 `TrainingSession`/`start_training_session()` (Milestone 73) already own the
@@ -895,20 +922,33 @@ result = forge.train_and_save(
     classes=full_dataset.classes,
     task="classification",
 )
-result.history       # train()'s own TrainingHistory
+result.history        # train()'s own TrainingResult (Milestone 99)
+result.train_loss     # the last epoch's training loss
 result.val_metrics    # the last epoch's validation metrics, e.g. {"accuracy": 0.97}
 result.model          # save_and_verify()'s freshly reloaded, verified Module
+result.artifact_path  # the path save_and_verify() actually wrote and verified (Milestone 99)
 ```
 Calls `train()` then `save_and_verify()` exactly once each, in that order,
 with no new validation/training/persistence logic -- every condition either
 function documents (required `loss`/`optimizer`, `sample` already batched,
 `TrainerError`/`DataError`/`PersistenceError` on the same conditions) applies
-unchanged. `TrainAndSaveResult.val_loss`/`val_metrics` are copied from the
-*last* `EpochResult` in `result.history` -- already computed once per epoch
-via `validation_dataset=`, not recomputed by a second evaluation pass (a
-`forge.evaluate()`-style standalone post-training evaluation call was
-considered and rejected in Milestone 80's own report for exactly this
-reason: every real consumer already gets per-epoch evaluation for free).
+unchanged. `TrainAndSaveResult.train_loss`/`train_metrics`/`val_loss`/
+`val_metrics` are copied from the *last* `EpochResult` in `result.history` --
+already computed once per epoch via `validation_dataset=`, not recomputed by
+a second evaluation pass (a `forge.evaluate()`-style standalone post-training
+evaluation call was considered and rejected in Milestone 80's own report for
+exactly this reason: every real consumer already gets per-epoch evaluation
+for free).
+
+**`artifact_path` (Milestone 99).** Before Milestone 99, the `path` a caller
+passed in was not echoed back anywhere on `TrainAndSaveResult` -- a caller
+that wanted to print, inspect, or hand the artifact to another process (e.g.
+`experiment/run_experiment.py`'s own `record["artifact_path"] = str(
+model_path)`) had to keep its own `path`/`model_path` variable around
+separately from the result. `artifact_path` is that same string, copied onto
+the result -- not a new save call, not a different value than what `path=`
+was, just the one already-known fact made part of the answer to "what
+happened when I trained this model?" instead of the caller's own bookkeeping.
 
 **Real consumers.** Both `examples/mnist/train.py` and `examples/
 image_folder_classification/train.py`'s fresh paths now call

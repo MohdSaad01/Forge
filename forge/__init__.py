@@ -34,7 +34,12 @@ Public subpackages:
   proves it by reloading it fresh and confirming a sample prediction agrees
   with the pre-save model; `train_and_save()` (Milestone 81), which calls
   `train()` then `save_and_verify()` in one step, returning a
-  `TrainAndSaveResult` (history, final validation result, reloaded model);
+  `TrainAndSaveResult` (history, final train/validation result, reloaded
+  model, artifact path); `TrainingResult` (Milestone 99), what `train()`
+  itself now returns -- a `TrainingHistory` plus the trained model and
+  final-epoch loss/metrics accessors, so a developer can answer "what
+  happened when I trained this model?" from the training call's own return
+  value instead of scattered local variables (see `forge/training/api.py`);
   `predict_artifact()` (Milestone 82), which turns a portable `.forge`
   image-classification artifact and one new image file directly into a
   `ClassificationPrediction` (or a raw class index, when no `classes=` was
@@ -123,6 +128,7 @@ from .tensor import DEFAULT_DTYPE, DType, Tensor
 from .training import (
     ClassificationPrediction,
     TrainAndSaveResult,
+    TrainingResult,
     generate_sequence,
     interpret_classification,
     predict,
@@ -187,5 +193,6 @@ __all__ = [
     "ClassificationPrediction",
     "train",
     "train_and_save",
+    "TrainingResult",
     "TrainAndSaveResult",
 ]

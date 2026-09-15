@@ -1,5 +1,7 @@
 """`forge.train()`/`forge.train_and_save()`: the single-call high-level
-training and train-to-artifact entry points (Milestones 79/81).
+training and train-to-artifact entry points (Milestones 79/81), returning
+`TrainingResult`/`TrainAndSaveResult` (extended in Milestone 99 -- see that
+section below).
 
 Every Trainer-based Forge example's `train.py` still starts with the same
 hand-assembled sequence before it ever calls `.fit()`:
@@ -73,10 +75,30 @@ train.py` call `train()` and then immediately `save_and_verify()`
 (`forge/training/inference.py`, Milestone 78) on the result -- the identical
 two-call sequence, in the same order, in both scripts. `train_and_save()` is
 that sequence, written once, returning a `TrainAndSaveResult` (`history`,
-`val_loss`/`val_metrics` from the final epoch, and the freshly reloaded,
-verified `model`) instead of a plain `TrainingHistory`. It adds no
+`train_loss`/`train_metrics`/`val_loss`/`val_metrics` from the final epoch,
+the freshly reloaded, verified `model`, and the `artifact_path` actually
+written) instead of a plain `TrainingHistory`. It adds no
 validation/training/persistence logic beyond calling `train()` then
 `save_and_verify()` exactly once each -- see that function's own docstring.
+
+## `TrainingResult`: what `train()` actually returns (Milestone 99)
+
+Before Milestone 99, `train()` returned `Trainer.fit()`'s own bare
+`TrainingHistory`, and a caller who wanted the trained model, the final
+epoch's loss/metrics, or (for `train_and_save()`) the artifact path it just
+wrote had to keep its own local variables for all of it -- exactly the
+"scattered objects" problem `experiment/run_experiment.py` (Milestone 98)
+hand-rolls today (`model_path = output_dir / ...` tracked separately,
+`history[-1].train_loss`/`history[-1].val_metrics["accuracy"]` indexed by
+hand into the returned history). `TrainingResult` (subclasses
+`TrainingHistory` -- see its own docstring) and `TrainAndSaveResult`'s new
+`artifact_path` field close that gap: `train()`/`train_and_save()` now
+return everything a caller needs immediately after one training operation,
+without giving up any existing behavior (`isinstance(result,
+TrainingHistory)` is still `True`; indexing/iteration/`len()` are unchanged).
+This is a training-*result* capability only -- it adds no experiment
+tracking, no persistence of its own (`TrainingResult`/`TrainAndSaveResult`
+are never written into a `.forge` file), and no new training semantics.
 """
 
 from __future__ import annotations
@@ -108,6 +130,77 @@ def _resolve_loader(data: "Dataset | DataLoader", batch_size: int, shuffle: bool
     return DataLoader(data, batch_size=batch_size, shuffle=shuffle)
 
 
+class TrainingResult(TrainingHistory):
+    """`train()`'s return value (Milestone 99): a `TrainingHistory` plus the trained model.
+
+    `TrainingResult` *is* a `TrainingHistory` -- it subclasses it rather than
+    wrapping it, so every existing caller written against `history =
+    forge.train(...)` (`len(history)`, `for record in history`, `history[i]`,
+    `history.train_losses`/`history.val_losses`) keeps working completely
+    unchanged; `isinstance(result, TrainingHistory)` is `True`. `result.history`
+    returns `result` itself -- there is no second, separate history object to
+    keep in sync with `train()`'s own docstring's "no second `history`
+    representation" rule.
+
+    What it adds over a plain `TrainingHistory`:
+
+    - `model` -- the trained `Module`, i.e. the exact object `train()` was
+      called with (already mutated in place by training, per `train()`'s own
+      docstring) -- not a copy or reconstruction. Exposed here so
+      `result.model` answers "what did I just train?" without the caller
+      needing to have kept its own reference.
+    - `epochs_completed` -- `len(self)`, spelled out for readability; Forge
+      training has no early stopping, so this always equals the requested
+      `epochs`, but a caller answering "how many epochs actually ran?"
+      should not have to know that `TrainingHistory` supports `len()`.
+    - `final_train_loss`/`final_train_metrics`/`final_val_loss`/
+      `final_val_metrics` -- the last completed epoch's own `EpochResult`
+      fields, copied here so "what was the final performance?" does not
+      require knowing `history[-1]`'s indexing convention.
+      `final_val_loss`/`final_val_metrics` are `None`/`{}` when `train()` was
+      called without a `validation_dataset` -- exactly `EpochResult`'s own
+      convention, never fabricated.
+
+    Never constructed directly by a caller -- `train()` is the only producer.
+    """
+
+    def __init__(self, history: TrainingHistory, model: Module) -> None:
+        super().__init__()
+        self.records = history.records
+        self.model = model
+
+    @property
+    def history(self) -> "TrainingResult":
+        return self
+
+    @property
+    def epochs_completed(self) -> int:
+        return len(self.records)
+
+    @property
+    def final_train_loss(self) -> float:
+        return self.records[-1].train_loss
+
+    @property
+    def final_train_metrics(self) -> "dict[str, float]":
+        return self.records[-1].train_metrics
+
+    @property
+    def final_val_loss(self) -> "float | None":
+        return self.records[-1].val_loss
+
+    @property
+    def final_val_metrics(self) -> "dict[str, float]":
+        return self.records[-1].val_metrics
+
+    def __repr__(self) -> str:
+        return (
+            f"TrainingResult(epochs_completed={self.epochs_completed}, "
+            f"final_train_loss={self.final_train_loss:.4f}, "
+            f"final_val_loss={self.final_val_loss})"
+        )
+
+
 def train(
     model: Module,
     dataset: "Dataset | DataLoader",
@@ -121,7 +214,7 @@ def train(
     device: "str | Device | None" = None,
     metrics: "Iterable[Metric] | None" = None,
     verbose: bool = True,
-) -> TrainingHistory:
+) -> TrainingResult:
     """Train `model` on `dataset` for `epochs` epochs -- the common case, in one call.
 
     ```python
@@ -170,13 +263,17 @@ def train(
 
     **Validation.** `validation_dataset`, when given, is evaluated once per
     epoch via `Trainer.fit(..., validation_loader=...)` -- identical
-    semantics, reflected in the returned `TrainingHistory`'s
+    semantics, reflected in the returned `TrainingResult`'s
     `val_loss`/`val_metrics` per `EpochResult`.
 
-    Returns `Trainer.fit()`'s own `TrainingHistory` -- there is no separate
-    "high-level result" type. `model`/`optimizer` are mutated in place by
-    training (the same convention `Trainer.fit()` itself uses); this
-    function does not return the model, since the caller already holds it.
+    Returns a `TrainingResult` (Milestone 99) -- a `TrainingHistory` (exactly
+    `Trainer.fit()`'s own record-per-epoch object; no second history
+    representation) with the trained `model` and final-epoch convenience
+    accessors (`final_train_loss`, `final_val_loss`, ...) attached -- see
+    `TrainingResult`'s own docstring. `model`/`optimizer` are still mutated in
+    place by training (the same convention `Trainer.fit()` itself uses);
+    `result.model` is that same object, not a copy, for a caller that would
+    rather read it off the result than keep its own reference.
     """
     if not isinstance(model, Module):
         raise TrainerError(f"forge.train() requires a forge.nn.Module model, got {type(model).__name__}.")
@@ -197,30 +294,39 @@ def train(
         metrics=metrics,
         verbose=verbose,
     )
-    return trainer.fit(train_loader, epochs=epochs, validation_loader=validation_loader)
+    history = trainer.fit(train_loader, epochs=epochs, validation_loader=validation_loader)
+    return TrainingResult(history, model)
 
 
 @dataclass(frozen=True)
 class TrainAndSaveResult:
-    """`train_and_save()`'s return value (Milestone 81).
+    """`train_and_save()`'s return value (Milestone 81, extended Milestone 99).
 
-    The same three things a caller gets from `train()` + `save_and_verify()`
-    separately, standing side by side rather than split across two return
-    values: `history` is `train()`'s own `TrainingHistory`, `model` is
+    Everything a caller gets from `train()` + `save_and_verify()` separately,
+    standing side by side rather than split across two return values and two
+    manually-tracked local variables: `history` is `train()`'s own
+    `TrainingResult` (a `TrainingHistory` plus the trained model and
+    final-epoch accessors -- see that class's own docstring), `model` is
     `save_and_verify()`'s freshly reloaded, verified `Module` (not the
-    original -- see that function's docstring for why), and `val_loss`/
-    `val_metrics` are the *last* epoch's validation result -- already
-    computed once per epoch via `validation_dataset=` (`None`/`{}` when no
-    `validation_dataset` was given), copied here so a caller doesn't need to
-    know to index `history[-1]` to find the final evaluation result. No
-    second evaluation pass runs to produce these -- see `train_and_save()`'s
-    own docstring.
+    original, and not `history.model` either -- see that function's docstring
+    for why they differ), `artifact_path` is the `path` this call actually
+    wrote and verified (Milestone 99 -- previously only available from the
+    caller's own `path` variable), and `train_loss`/`train_metrics`/
+    `val_loss`/`val_metrics` are the *last* epoch's training/validation
+    result -- already computed once per epoch via `validation_dataset=`
+    (`val_loss`/`val_metrics` are `None`/`{}` when no `validation_dataset`
+    was given), copied here so a caller doesn't need to know to index
+    `history[-1]` to find the final result. No second training or evaluation
+    pass runs to produce these -- see `train_and_save()`'s own docstring.
     """
 
-    history: TrainingHistory
+    history: TrainingResult
+    train_loss: float
+    train_metrics: "dict[str, float]"
     val_loss: "float | None"
     val_metrics: "dict[str, float]"
     model: Module
+    artifact_path: str
 
 
 def train_and_save(
@@ -260,9 +366,10 @@ def train_and_save(
         classes=full_dataset.classes,
         task="classification",
     )
-    result.history       # the TrainingHistory train() returned
-    result.val_metrics    # the last epoch's validation metrics, e.g. {"accuracy": 0.97}
-    result.model          # the freshly reloaded, verified Module
+    result.history       # the TrainingResult train() returned
+    result.val_metrics   # the last epoch's validation metrics, e.g. {"accuracy": 0.97}
+    result.model         # the freshly reloaded, verified Module
+    result.artifact_path # the path that was actually written and verified
     ```
 
     `examples/mnist/train.py` and `examples/image_folder_classification/
@@ -317,8 +424,14 @@ def train_and_save(
     )
     last = history[-1]
     return TrainAndSaveResult(
-        history=history, val_loss=last.val_loss, val_metrics=last.val_metrics, model=reloaded,
+        history=history,
+        train_loss=last.train_loss,
+        train_metrics=last.train_metrics,
+        val_loss=last.val_loss,
+        val_metrics=last.val_metrics,
+        model=reloaded,
+        artifact_path=path,
     )
 
 
-__all__ = ["train", "train_and_save", "TrainAndSaveResult"]
+__all__ = ["train", "train_and_save", "TrainingResult", "TrainAndSaveResult"]

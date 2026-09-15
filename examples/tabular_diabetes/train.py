@@ -120,11 +120,11 @@ def main(argv=None) -> None:
     history = train_result.history
 
     samples_per_sec = (len(train_ds) * args.epochs) / duration if duration > 0 else float("inf")
-    print(f"\nTrained {args.epochs} epoch(s) on '{args.device}' in {duration:.1f}s "
+    print(f"\nTrained {train_result.history.epochs_completed} epoch(s) on '{args.device}' in {duration:.1f}s "
           f"({samples_per_sec:.0f} train samples/sec).")
-    print(f"train loss: {history[0].train_loss:.4f} -> {history[-1].train_loss:.4f}")
-    print(f"val loss:   {history[-1].val_loss:.4f}")
-    print(f"val accuracy: {history[-1].val_metrics['accuracy']:.1%}")
+    print(f"train loss: {history[0].train_loss:.4f} -> {train_result.train_loss:.4f}")
+    print(f"val loss:   {train_result.val_loss:.4f}")
+    print(f"val accuracy: {train_result.val_metrics['accuracy']:.1%}")
 
     from forge.training import Trainer
     final_eval = Trainer(
@@ -133,10 +133,14 @@ def main(argv=None) -> None:
     print(f"\nFinal test evaluation: loss={final_eval.loss:.4f}, accuracy={final_eval.metrics['accuracy']:.1%}")
     print(f"Majority-class baseline accuracy was {stats['majority_baseline']:.1%}.")
 
-    print(f"\nSaved + verified model + preprocessing -> {model_path}")
+    # train_result.artifact_path (Milestone 99) is the path save_and_verify()
+    # actually wrote and verified -- the same string passed in as path=
+    # above, echoed back on the result so this script does not need its own
+    # model_path variable to remember where training put the artifact.
+    print(f"\nSaved + verified model + preprocessing -> {train_result.artifact_path}")
 
     print("\nInspect the generated artifact with the M19 CLI:")
-    print(f"  python -m forge model inspect {model_path}")
+    print(f"  python -m forge model inspect {train_result.artifact_path}")
 
     # A raw new patient row, taken directly from the untouched CSV (via its
     # original row index, not test_ds[0]'s already-preprocessed Tensor) --
@@ -147,11 +151,11 @@ def main(argv=None) -> None:
     X_raw, _ = load_raw()
     raw_query = X_raw[test_ds.indices[0]]
     print("\nPredicting a brand-new raw tabular row via forge.predict_model():")
-    result = forge.predict_model(str(model_path), raw_query.reshape(1, N_FEATURES).astype(np.float32))[0]
+    result = forge.predict_model(train_result.artifact_path, raw_query.reshape(1, N_FEATURES).astype(np.float32))[0]
     print(f"  Prediction: {result.label} (confidence {result.confidence:.1%}) "
           f"-- true label was '{CLASS_NAMES[int(query_y.numpy())]}'")
     print(f"\nPredict from the saved artifact alone, in a fresh process:")
-    print(f"  python -m examples.tabular_diabetes.infer --model {model_path} "
+    print(f"  python -m examples.tabular_diabetes.infer --model {train_result.artifact_path} "
           f"--input '{raw_query.tolist()}'")
 
 
