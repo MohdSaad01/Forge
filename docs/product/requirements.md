@@ -40,7 +40,7 @@
 ### Backends
 - Provide a backend/device abstraction.
 - CPU is the baseline backend.
-- CUDA is a first-class target and must use actual CUDA execution for supported operations. As of Milestone 8, a real CUDA backend exists for a small forward-only operation set (tensor transfer, `add`/`sub`/`mul`, `matmul`, `sum`, `reshape`) on the verified 940MX -- see `docs/architecture/cuda-backend.md`.
+- CUDA is a first-class target and must use actual CUDA execution for supported operations, never simulated. A real, hardware-verified CUDA backend exists on the verified 940MX, covering every differentiable Tensor primitive Forge currently supports (forward and backward) -- see `docs/architecture/cuda-backend.md` for the current operation set and `README.md`'s "What's currently in Forge" for the current public API surface.
 
 ### CLI
 - Provide CLI entry points that call the same underlying framework services as the Python API.

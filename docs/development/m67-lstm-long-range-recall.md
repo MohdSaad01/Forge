@@ -29,10 +29,10 @@ Directly inspected (not assumed from memory) before any implementation:
   (`__getitem__`/`split`/`chunk`).
 - `examples/char_rnn/`, `examples/word_rnn/`: both use `RNNCell`, both with
   short unroll lengths (`char_rnn` default `seq_len=40`, `word_rnn` `20`).
-- `docs/development/m54-post-m54-assessment.md` through
-  `m57-post-m56-assessment.md`: `LSTM`/`GRU` listed as absent, "still no
-  consumer," every time -- confirming this had never been re-examined with
-  a direct measurement, only re-stated.
+- `docs/development/m55-post-m54-assessment.md` and `progress.md`'s M56-M58
+  entries: `LSTM`/`GRU` listed as absent, "still no consumer," every time --
+  confirming this had never been re-examined with a direct measurement, only
+  re-stated.
 
 ## 4. Concrete workload/consumer
 

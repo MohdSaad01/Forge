@@ -45,6 +45,16 @@ too (`add_backward`, `matmul_backward`, `relu_backward`, etc. -- see
 section and `docs/architecture/cuda-backend.md`'s **CUDA autograd**
 section) -- CUDA execution is no longer forward-only.
 
+The CUDA operation set described above was this backend's *starting*
+scope, not its current one -- later milestones (`Conv2d`/`MaxPool2d` in
+15, `BatchNorm2d` in 53, `Embedding` in 54, `RNNCell`/`LSTMCell` in 50/67,
+among others) each added their own forward+backward kernel pair following
+this same boundary, plus a caching allocator (25) and stream-based async
+execution (27). `docs/architecture/cuda-backend.md` is the authoritative,
+continuously updated record of exactly what runs on CUDA today; this
+document only describes the boundary's shape, not an exhaustive current
+operation list.
+
 ## Consistency
 For operations implemented on both backends, tests should compare CPU and CUDA results using appropriate tolerances.
 

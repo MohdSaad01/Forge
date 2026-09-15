@@ -344,7 +344,7 @@ before (via `git stash` to the pre-fix code) and after:
 
 All deltas are within this hardware's known microbenchmark noise floor for
 operations at this timescale (single-digit microseconds; see
-`docs/development/m47-bottleneck-recharacterization.md`'s thermal-drift
+`docs/performance/m47-bottleneck-recharacterization.md`'s thermal-drift
 methodology note) and show no consistent direction -- post-fix is equal to
 or faster than pre-fix in most trials. No meaningful regression. This is
 expected: the fix replaces one unconditional list-literal allocation plus a
