@@ -94,3 +94,11 @@ examples/tabular_classification/artifacts*/
 # intentionally NOT ignored -- it is committed so the example needs no
 # network access to run.
 examples/tabular_diabetes/artifacts*/
+
+# C1.0 cleanup: Milestone 98 experiment/comparison workflow's generated run
+# outputs (trained models + per-run metric records) -- machine-local and
+# reproducible via `python -m experiment.run_experiment`; never committed.
+# The one lasting artifact of these runs, the accuracy comparison table and
+# keep/reject decisions, is preserved in experiment/README.md, not here.
+experiment/artifacts/
+experiment/results/
