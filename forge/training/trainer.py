@@ -428,6 +428,28 @@ class Trainer:
         `forge.no_grad()`, so it never builds an autograd graph and
         `optimizer.step()` is never called -- parameters cannot change as a
         result of evaluation.
+
+        **Does not apply persisted artifact preprocessing (Milestone 97).**
+        `evaluate()` predates `preprocessing=`/`load_preprocessing()`
+        (Milestone 71) and runs whatever batches `loader` yields through
+        `self.model` exactly as given -- it has no hook to fetch or apply a
+        saved artifact's `Compose([...])` transform. This makes it the wrong
+        tool for evaluating a loaded `.forge` artifact against raw,
+        unpreprocessed data: on `examples/tabular_diabetes`, calling this
+        method with a `DataLoader` over the raw held-out rows silently
+        returns a *worse-than-baseline* 37.0% accuracy (no error, no
+        warning) instead of the artifact's real 72.1%, because the
+        sentinel-zero missing-value encoding that dataset's `ReplaceValue`
+        step corrects is never applied. For artifact-level evaluation,
+        compose `load_model()` + `load_preprocessing()` + `forge.predict()`
+        + a `forge.training.Metric` directly instead -- see `examples/
+        tabular_diabetes/evaluate.py` for the full pattern -- so
+        preprocessing is applied exactly once, the same way
+        `predict_tensor_artifact()`/`predict_tabular_classification_
+        artifact()` already do. This method remains the right tool for
+        validation/test evaluation *during* training, when `loader` already
+        yields correctly-preprocessed batches (e.g. a `Dataset` constructed
+        with `transform=` directly, as every example's own `train.py` does).
         """
         self._validate_loader(loader, "loader")
         self._check_model_device()

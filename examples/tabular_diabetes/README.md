@@ -193,6 +193,34 @@ python -m examples.tabular_diabetes.infer \
 A standalone script independent of `train.py` -- see `infer.py`'s own
 module docstring.
 
+## Evaluating the artifact on unseen labeled data (Milestone 97)
+
+```bash
+python -m examples.tabular_diabetes.evaluate \
+    --model examples/tabular_diabetes/artifacts/tabular_diabetes_model.forge \
+    --data examples/tabular_diabetes/data/diabetes_holdout_eval.csv
+```
+
+```text
+Model:             examples/tabular_diabetes/artifacts/tabular_diabetes_model.forge
+Test samples:      154
+Accuracy:          72.1%
+Baseline accuracy: 62.3%
+Improvement:       +9.7 percentage points
+-> model is meaningfully better than the majority-class baseline.
+```
+
+A standalone script, independent of `train.py`/`dataset.py`/`model.py`
+exactly like `infer.py` -- it composes `forge.load_model()` +
+`forge.load_preprocessing()` + `forge.predict()` + `forge.training.Accuracy`
+directly, deliberately **not** `Trainer.evaluate()` (see that method's own
+updated docstring, `forge/training/trainer.py`, for why: it has no hook for
+persisted preprocessing and silently produces a badly wrong, worse-than-
+baseline number on this dataset's raw rows). `data/diabetes_holdout_eval.csv`
+is `dataset.make_datasets(seed=0)`'s own `test_ds` split, exported once to a
+plain CSV so it is reachable without importing any producer code -- see
+`evaluate.py`'s own module docstring for exact reproduction.
+
 ## Column order
 
 Like `tabular_classification`, this example does not introduce a feature-
