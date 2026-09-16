@@ -193,6 +193,31 @@ python -m examples.tabular_diabetes.infer \
 A standalone script independent of `train.py` -- see `infer.py`'s own
 module docstring.
 
+## Multi-row inference without reloading the artifact per row (Milestone 102)
+
+```bash
+python -m examples.tabular_diabetes.app \
+    --model examples/tabular_diabetes/artifacts/tabular_diabetes_model.forge \
+    --input '[[2, 130, 70, 25, 0, 28.5, 0.5, 35], [1, 85, 66, 29, 0, 26.6, 0.351, 31]]'
+```
+
+```text
+Loaded examples/tabular_diabetes/artifacts/tabular_diabetes_model.forge once (tabular_classification artifact, 2 classes) -- predicting 2 row(s).
+Row 0: no_diabetes (confidence 64.4%)
+Row 1: no_diabetes (confidence 75.7%)
+```
+
+`infer.py` is the right tool for one patient row (`forge.predict_model()`
+reloads the artifact for that one call). A real application predicting on
+many rows should not pay that reload cost per row -- `app.py` loads the
+artifact exactly once via `forge.load_predictor()`, then calls
+`predictor.predict(row)` per row, reusing the same cached model,
+preprocessing, and `InputSchema` for every prediction. A structurally
+invalid row (wrong feature count) is reported inline rather than aborting
+the rest of the batch. See `forge.load_predictor()`'s own docstring for the
+full reusable-inference contract, and `app.py`'s own module docstring for
+this script's independence from `train.py`/`dataset.py`.
+
 ## Evaluating the artifact on unseen labeled data (Milestone 97)
 
 ```bash

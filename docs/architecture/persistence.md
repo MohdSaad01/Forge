@@ -1093,6 +1093,104 @@ a `Sequential([Linear, ...])`-shaped architecture, with no re-save required.
 "Preprocessing detail" line's own omit-when-absent convention);
 `--json` mode adds `"input_feature_count"` (an int, or `null`).
 
+## Reusable artifact inference: `forge.load_predictor()` (Milestone 102)
+
+Every function above `predict_model()` composes -- `predict_artifact()`,
+`predict_tensor_artifact()`, `predict_image_artifact()`, `predict_sequence_
+artifact()`, `predict_tabular_classification_artifact()` -- reopens and
+reconstructs the entire `.forge` artifact on every single call:
+`inspect_model()`, `load_model()`, `load_preprocessing()`, `load_classes()`,
+all over again. That is the right tradeoff for a genuinely one-off
+prediction, but it means an application making many predictions from the
+same artifact (a batch job, a loop over incoming rows, a long-running
+process) repeats the same disk read, archive parsing, and model
+reconstruction for no reason -- the artifact never changes between calls.
+
+```python
+predictor = forge.load_predictor("model.forge")   # loads once
+
+result_1 = predictor.predict(input_1)
+result_2 = predictor.predict(input_2)
+result_3 = predictor.predict(input_3)
+```
+
+`forge.load_predictor(path, device=None)` performs exactly the loading work
+`predict_model()` performs on every call, once, and returns an
+`ArtifactPredictor` (`forge/training/inference.py`) retaining:
+
+- the loaded `Module` (`.model`);
+- the reconstructed preprocessing pipeline, if any;
+- the class/vocabulary list, if any (`.classes`);
+- the resolved `InputSchema`, if any (`.input_schema`, Milestone 101);
+- which of the five workflows `_determine_workflow()` resolved the artifact
+  to (`.task`).
+
+`predictor.predict(input_data, *, length=None, rng=None, threshold=0.5)`
+then reruns only the genuinely per-call work -- input validation,
+preprocessing, the forward pass -- by delegating to the same
+artifact-independent core functions (`_classify_image_core()`,
+`_predict_tensor_core()`, `_segment_image_core()`, `_generate_sequence_
+core()`) the five one-shot functions themselves call. **This is not a
+second inference engine**: a prediction through `ArtifactPredictor` and the
+equivalent one-shot call agree exactly, for the same artifact/input/device,
+because both run the identical code after loading.
+
+### What moves to load time
+
+For a `"classification"`/`"segmentation"` artifact, a missing preprocessing
+configuration -- previously an error raised by `predict_artifact()`/
+`predict_image_artifact()` on every call -- is now raised once, by
+`load_predictor()` itself. For a `"sequence"` artifact, a missing vocabulary
+or a model that does not implement the stepwise-recurrence protocol
+(`init_hidden`/`step`) are checked the same way. `InputSchema` validation
+(Milestone 101) still runs on every `predict()` call, because it is
+genuinely a per-input check -- but it validates against the `InputSchema`
+already cached on the predictor, never by calling `inspect_model()` again.
+
+### Task support
+
+All five workflows `predict_model()` supports are supported here unchanged:
+`classification`, `regression`, `segmentation`, `sequence`,
+`tabular_classification`. `predict()`'s calling convention mirrors
+`predict_model()`'s own -- an image file path, a `Tensor`/NumPy array/
+nested list, or a non-empty token sequence with `length=` -- so a caller
+switching from `predict_model()` to `load_predictor()` for the same
+artifact changes nothing about how it calls it, only how many times loading
+happens.
+
+### Lifetime, ownership, and concurrency
+
+An `ArtifactPredictor` owns its loaded state for exactly as long as the
+Python object exists -- ordinary object lifetime, no context manager, no
+global cache, no model registry. Forge never tracks or reuses predictor
+instances on a caller's behalf. `predict()` mutates no state on `self`
+beyond what `predict()`/`generate_sequence()` themselves already do
+(`model.eval()`/`no_grad()`/mode restoration), so repeated sequential reuse
+from one thread is safe by construction; concurrent calls from multiple
+threads carry whatever thread-safety guarantee (or lack of one) calling
+`predict()` directly on a shared model from multiple threads already has --
+this milestone adds no new concurrency infrastructure and makes no new
+thread-safety claim.
+
+### Not a model server
+
+`ArtifactPredictor` is an in-process Python object, not a serving layer: no
+HTTP/gRPC/socket interface, no request queue, no worker pool, no dynamic
+batching, no global cache. `forge.predict_model()` remains the right choice
+for a single, one-off prediction; `load_predictor()` is the natural next
+step once an application makes more than one prediction from the same
+artifact.
+
+### Compatibility
+
+No `FORMAT_VERSION` change (still `2`) and no new bytes written by
+`save_model()` -- `load_predictor()` composes existing, unchanged reads.
+`predict_model()` and the five task-specific `predict_*_artifact()`
+functions are themselves unmodified in behavior (only refactored internally
+to share their core logic with `ArtifactPredictor.predict()` -- see
+`forge/training/inference.py`'s own Milestone 102 module docstring
+paragraph) and remain fully supported.
+
 ## Custom-module limitations
 See **Custom/composite modules** above: only module types registered via
 `forge.serialization.register_module()` in the *loading* process can be

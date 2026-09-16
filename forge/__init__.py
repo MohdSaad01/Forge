@@ -126,12 +126,14 @@ from .serialization import (
 )
 from .tensor import DEFAULT_DTYPE, DType, Tensor
 from .training import (
+    ArtifactPredictor,
     ClassificationPrediction,
     EarlyStopping,
     TrainAndSaveResult,
     TrainingResult,
     generate_sequence,
     interpret_classification,
+    load_predictor,
     predict,
     predict_artifact,
     predict_image_artifact,
@@ -197,4 +199,6 @@ __all__ = [
     "TrainingResult",
     "TrainAndSaveResult",
     "EarlyStopping",
+    "ArtifactPredictor",
+    "load_predictor",
 ]

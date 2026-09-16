@@ -10,9 +10,11 @@ logic of its own. See `docs/architecture/training-engine.md`.
 from .api import TrainAndSaveResult, TrainingResult, train, train_and_save
 from .early_stopping import EarlyStopping
 from .inference import (
+    ArtifactPredictor,
     ClassificationPrediction,
     generate_sequence,
     interpret_classification,
+    load_predictor,
     predict,
     predict_artifact,
     predict_image_artifact,
@@ -53,4 +55,6 @@ __all__ = [
     "TrainingSession",
     "start_training_session",
     "EarlyStopping",
+    "ArtifactPredictor",
+    "load_predictor",
 ]

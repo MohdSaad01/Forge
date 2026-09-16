@@ -123,6 +123,26 @@ input-contract validation** section, for the explicit, tested limitation
 this does *not* solve: Forge's training APIs never capture which column is
 which, so same-length feature reordering is undetectable and this milestone
 does not pretend otherwise.
+
+**Reusable inference (Milestone 102).** Every function above -- `predict_
+artifact()`, `predict_tensor_artifact()`, `predict_image_artifact()`,
+`predict_sequence_artifact()`, `predict_tabular_classification_artifact()`,
+and `predict_model()` on top of them -- reopens and reconstructs the entire
+`.forge` artifact (`inspect_model()`, `load_model()`, `load_preprocessing()`,
+`load_classes()`) on every call. That is the right tradeoff for a single,
+one-off prediction, but wasteful for an application making many predictions
+from the same artifact. `forge.load_predictor(path)` performs that same
+loading exactly once and returns an `ArtifactPredictor` -- a small object
+retaining the loaded model/preprocessing/classes/`InputSchema` -- whose
+`predict()` method reruns only the genuinely per-call work (input
+validation, preprocessing, the forward pass), by delegating to the same
+artifact-independent core functions (`_classify_image_core()`,
+`_predict_tensor_core()`, `_segment_image_core()`, `_generate_sequence_
+core()`) the five functions above already call -- see `ArtifactPredictor`'s
+own docstring for the full contract. `predict_model()` and the five
+task-specific functions are unchanged and remain the right choice for a
+single prediction; `load_predictor()` is the natural next step for "load
+once, predict many times."
 """
 
 from __future__ import annotations
@@ -239,6 +259,176 @@ def _validate_feature_count(data: Tensor, expected: "int | None", fn_name: str) 
     actual = data.shape[-1]
     if actual != expected:
         raise DataError(f"{fn_name}() expected {expected} input feature(s), received {actual}.")
+
+
+def _require_preprocessing(path: str, preprocessing: "Any | None", fn_name: str) -> None:
+    """Shared "preprocessing is mandatory for this artifact shape" check
+    (Milestone 102), extracted from `predict_artifact()`/`predict_image_
+    artifact()`'s own identical body so `load_predictor()` can run the same
+    check once, at load time, instead of at every `predict()` call.
+    """
+    if preprocessing is None:
+        raise PersistenceError(
+            f"'{path}' was saved with no preprocessing configuration (see "
+            f"forge.save_model(..., preprocessing=...)) -- {fn_name}() has no automatic "
+            "way to prepare the input image for this model."
+        )
+
+
+def _coerce_numeric_input(input_data: Any, fn_name: str) -> Tensor:
+    """Shared "turn a Tensor/ndarray/list/tuple into a Tensor, or reject it"
+    step every numeric-input artifact function requires (Milestone 102).
+    """
+    if isinstance(input_data, Tensor):
+        return input_data
+    if isinstance(input_data, (np.ndarray, list, tuple)):
+        return Tensor(input_data)
+    raise DataError(
+        f"{fn_name}() requires input_data to be a Tensor, NumPy array, or list/tuple of "
+        f"numbers, got {type(input_data).__name__}."
+    )
+
+
+def _require_image_path(image: Any, fn_name: str) -> None:
+    """Shared "image must be a file path" guard (Milestone 102), extracted
+    from `predict_artifact()`/`predict_image_artifact()`'s own identical
+    check so `_classify_image_core()`/`_segment_image_core()` -- and
+    therefore `ArtifactPredictor.predict()` too -- reject a non-path `image`
+    with the same clear `DataError` instead of a raw `TypeError` surfacing
+    from deep inside `pathlib`/`ImageFolder._load_image()`.
+    """
+    if not isinstance(image, (str, os.PathLike)):
+        raise DataError(
+            f"{fn_name}() requires image to be a file path (str or os.PathLike), "
+            f"got {type(image).__name__}."
+        )
+
+
+def _classify_image_core(
+    model: Module,
+    preprocessing: Any,
+    classes: "list[str] | None",
+    image: "str | os.PathLike",
+    fn_name: str = "predict_artifact",
+) -> "ClassificationPrediction | int":
+    """The artifact-independent body of `predict_artifact()` (Milestone 102):
+    decode/preprocess/predict/interpret against an already-loaded `model`/
+    `preprocessing`/`classes`, with no file I/O of its own beyond decoding
+    `image`. `predict_artifact()` and `ArtifactPredictor.predict()` both call
+    this unchanged, so the two never drift -- see this module's Milestone 102
+    paragraph.
+    """
+    _require_image_path(image, fn_name)
+    raw = _decode_image_for_model(model, image)
+    prepared = preprocessing(raw)
+    batch = prepared.reshape(1, *prepared.shape)
+    output = predict(model, batch)
+    if classes is not None:
+        return interpret_classification(output, classes)[0]
+    return int(np.argmax(output.numpy(), axis=1)[0])
+
+
+def _segment_image_core(
+    model: Module,
+    preprocessing: Any,
+    image: "str | os.PathLike",
+    threshold: float,
+    fn_name: str = "predict_image_artifact",
+) -> Tensor:
+    """The artifact-independent body of `predict_image_artifact()` (Milestone
+    102) -- see `_classify_image_core()`'s own docstring for why this split
+    exists.
+    """
+    _require_image_path(image, fn_name)
+    raw = _decode_image_for_model(model, image)
+    prepared = preprocessing(raw)
+    batch = prepared.reshape(1, *prepared.shape)
+    output = predict(model, batch)
+    mask = (output.numpy() >= threshold).astype(np.float32)
+    return Tensor(mask[0], device="cpu")
+
+
+def _predict_tensor_core(
+    model: Module,
+    preprocessing: "Any | None",
+    input_schema: "Any | None",
+    input_data: "Tensor | np.ndarray | Sequence[Any]",
+    fn_name: str,
+) -> Tensor:
+    """The artifact-independent body shared by `predict_tensor_artifact()`
+    and `predict_tabular_classification_artifact()` (Milestone 102): coerce
+    `input_data`, validate it against `input_schema` (Milestone 101,
+    unchanged), apply `preprocessing` if present, then `predict()`.
+    """
+    prepared = _coerce_numeric_input(input_data, fn_name)
+    expected_features = input_schema.feature_count if input_schema is not None else None
+    _validate_feature_count(prepared, expected_features, fn_name)
+    if preprocessing is not None:
+        prepared = preprocessing(prepared)
+    return predict(model, prepared)
+
+
+def _require_sequence_vocab(path: str, vocab: "list[str] | None", fn_name: str) -> None:
+    """Shared "a sequence artifact must have a saved vocabulary" load-time
+    check (Milestone 102), extracted so `load_predictor()` runs it once
+    instead of at every `predict()` call.
+    """
+    if vocab is None:
+        raise PersistenceError(
+            f"'{path}' was saved with no vocabulary (see forge.save_model(..., classes=..., "
+            f"task='sequence')) -- {fn_name}() has no way to encode/decode tokens for this model."
+        )
+
+
+def _require_sequence_protocol(path: str, model: Module, fn_name: str) -> None:
+    """Shared "a sequence artifact's model must implement `init_hidden`/`step`"
+    load-time check (Milestone 102), extracted for the same reason as
+    `_require_sequence_vocab()`.
+    """
+    if not hasattr(model, "init_hidden") or not hasattr(model, "step"):
+        raise PersistenceError(
+            f"'{path}' does not implement the stepwise-recurrence protocol "
+            "(model.init_hidden(batch_size, device=...) and model.step(x, state)) that "
+            f"{fn_name}() requires -- see forge.training.generate_sequence()'s own docstring "
+            "for the full protocol."
+        )
+
+
+def _generate_sequence_core(
+    model: Module,
+    vocab: "list[str]",
+    seed: "Sequence[str]",
+    length: int,
+    rng: "np.random.Generator | None",
+    fn_name: str,
+) -> list:
+    """The artifact-independent body of `predict_sequence_artifact()`
+    (Milestone 102): validate `seed` against `vocab`, build the one-hot
+    `encode`/`decode` closures, and call `generate_sequence()`. Takes an
+    already-loaded `model`/`vocab` -- the missing-vocabulary and
+    protocol (`init_hidden`/`step`) checks stay in the caller, since those
+    are artifact-loading concerns, not per-prediction ones (see
+    `load_predictor()`, which runs them once).
+    """
+    if not isinstance(seed, (list, tuple)) or not seed:
+        raise DataError(f"{fn_name}() requires seed to be a non-empty sequence of tokens.")
+
+    token_to_index = {token: i for i, token in enumerate(vocab)}
+    unknown = [token for token in seed if token not in token_to_index]
+    if unknown:
+        raise DataError(f"{fn_name}() seed contains token(s) not in the saved vocabulary: {unknown!r}.")
+
+    vocab_size = len(vocab)
+
+    def _encode(token: str) -> Tensor:
+        one_hot = np.zeros((1, vocab_size), dtype=np.float32)
+        one_hot[0, token_to_index[token]] = 1.0
+        return Tensor(one_hot)
+
+    def _decode(index: int) -> str:
+        return vocab[index]
+
+    return generate_sequence(model, seed=list(seed), encode=_encode, decode=_decode, length=length, rng=rng)
 
 
 def _extract_input(batch: Any) -> Tensor:
@@ -498,24 +688,11 @@ def predict_artifact(
     from ..serialization.model import load_preprocessing as _load_preprocessing
 
     preprocessing = _load_preprocessing(path)
-    if preprocessing is None:
-        raise PersistenceError(
-            f"'{path}' was saved with no preprocessing configuration (see "
-            "forge.save_model(..., preprocessing=...)) -- predict_artifact() has no automatic "
-            "way to prepare the input image for this model."
-        )
+    _require_preprocessing(path, preprocessing, "predict_artifact")
 
     model = _load_model(path, device=device.type if isinstance(device, Device) else device)
-
-    raw = _decode_image_for_model(model, image)
-    prepared = preprocessing(raw)
-    batch = prepared.reshape(1, *prepared.shape)
-    output = predict(model, batch)
-
     classes = _load_classes(path)
-    if classes is not None:
-        return interpret_classification(output, classes)[0]
-    return int(np.argmax(output.numpy(), axis=1)[0])
+    return _classify_image_core(model, preprocessing, classes, image)
 
 
 def predict_tensor_artifact(
@@ -601,26 +778,12 @@ def predict_tensor_artifact(
     from ..serialization.model import load_model as _load_model
     from ..serialization.model import load_preprocessing as _load_preprocessing
 
-    if isinstance(input_data, Tensor):
-        prepared = input_data
-    elif isinstance(input_data, (np.ndarray, list, tuple)):
-        prepared = Tensor(input_data)
-    else:
-        raise DataError(
-            f"predict_tensor_artifact() requires input_data to be a Tensor, NumPy array, or "
-            f"list/tuple of numbers, got {type(input_data).__name__}."
-        )
+    checked = _coerce_numeric_input(input_data, "predict_tensor_artifact")
 
     info = _inspect_model(path)
-    expected_features = info.input_schema.feature_count if info.input_schema is not None else None
-    _validate_feature_count(prepared, expected_features, "predict_tensor_artifact")
-
     preprocessing = _load_preprocessing(path)
-    if preprocessing is not None:
-        prepared = preprocessing(prepared)
-
     model = _load_model(path, device=device.type if isinstance(device, Device) else device)
-    return predict(model, prepared)
+    return _predict_tensor_core(model, preprocessing, info.input_schema, checked, "predict_tensor_artifact")
 
 
 def predict_image_artifact(
@@ -703,22 +866,10 @@ def predict_image_artifact(
     from ..serialization.model import load_preprocessing as _load_preprocessing
 
     preprocessing = _load_preprocessing(path)
-    if preprocessing is None:
-        raise PersistenceError(
-            f"'{path}' was saved with no preprocessing configuration (see "
-            "forge.save_model(..., preprocessing=...)) -- predict_image_artifact() has no automatic "
-            "way to prepare the input image for this model."
-        )
+    _require_preprocessing(path, preprocessing, "predict_image_artifact")
 
     model = _load_model(path, device=device.type if isinstance(device, Device) else device)
-
-    raw = _decode_image_for_model(model, image)
-    prepared = preprocessing(raw)
-    batch = prepared.reshape(1, *prepared.shape)
-    output = predict(model, batch)
-
-    mask = (output.numpy() >= threshold).astype(np.float32)
-    return Tensor(mask[0], device="cpu")
+    return _segment_image_core(model, preprocessing, image, threshold)
 
 
 def predict_sequence_artifact(
@@ -801,41 +952,12 @@ def predict_sequence_artifact(
         raise DataError("predict_sequence_artifact() requires seed to be a non-empty sequence of tokens.")
 
     vocab = _load_classes(path)
-    if vocab is None:
-        raise PersistenceError(
-            f"'{path}' was saved with no vocabulary (see forge.save_model(..., classes=..., "
-            "task='sequence')) -- predict_sequence_artifact() has no way to encode/decode tokens "
-            "for this model."
-        )
-
-    token_to_index = {token: i for i, token in enumerate(vocab)}
-    unknown = [token for token in seed if token not in token_to_index]
-    if unknown:
-        raise DataError(
-            f"predict_sequence_artifact() seed contains token(s) not in '{path}''s saved "
-            f"vocabulary: {unknown!r}."
-        )
+    _require_sequence_vocab(path, vocab, "predict_sequence_artifact")
 
     model = _load_model(path, device=device.type if isinstance(device, Device) else device)
-    if not hasattr(model, "init_hidden") or not hasattr(model, "step"):
-        raise PersistenceError(
-            f"'{path}' does not implement the stepwise-recurrence protocol "
-            "(model.init_hidden(batch_size, device=...) and model.step(x, state)) that "
-            "predict_sequence_artifact() requires -- see forge.training.generate_sequence()'s "
-            "own docstring for the full protocol."
-        )
+    _require_sequence_protocol(path, model, "predict_sequence_artifact")
 
-    vocab_size = len(vocab)
-
-    def _encode(token: str) -> Tensor:
-        one_hot = np.zeros((1, vocab_size), dtype=np.float32)
-        one_hot[0, token_to_index[token]] = 1.0
-        return Tensor(one_hot)
-
-    def _decode(index: int) -> str:
-        return vocab[index]
-
-    return generate_sequence(model, seed=list(seed), encode=_encode, decode=_decode, length=length, rng=rng)
+    return _generate_sequence_core(model, vocab, seed, length, rng, "predict_sequence_artifact")
 
 
 def predict_tabular_classification_artifact(
@@ -933,26 +1055,14 @@ def predict_tabular_classification_artifact(
     from ..serialization.model import load_model as _load_model
     from ..serialization.model import load_preprocessing as _load_preprocessing
 
-    if isinstance(input_data, Tensor):
-        prepared = input_data
-    elif isinstance(input_data, (np.ndarray, list, tuple)):
-        prepared = Tensor(input_data)
-    else:
-        raise DataError(
-            f"predict_tabular_classification_artifact() requires input_data to be a Tensor, "
-            f"NumPy array, or list/tuple of numbers, got {type(input_data).__name__}."
-        )
+    checked = _coerce_numeric_input(input_data, "predict_tabular_classification_artifact")
 
     info = _inspect_model(path)
-    expected_features = info.input_schema.feature_count if info.input_schema is not None else None
-    _validate_feature_count(prepared, expected_features, "predict_tabular_classification_artifact")
-
     preprocessing = _load_preprocessing(path)
-    if preprocessing is not None:
-        prepared = preprocessing(prepared)
-
     model = _load_model(path, device=device.type if isinstance(device, Device) else device)
-    output = predict(model, prepared)
+    output = _predict_tensor_core(
+        model, preprocessing, info.input_schema, checked, "predict_tabular_classification_artifact",
+    )
 
     classes = _load_classes(path)
     if classes is not None:
@@ -1150,6 +1260,265 @@ def predict_model(
     return predict_sequence_artifact(path, input_data, length, device=device)
 
 
+class ArtifactPredictor:
+    """A `.forge` artifact loaded once, for repeated in-process inference (Milestone 102).
+
+    ```python
+    predictor = forge.load_predictor("model.forge")
+
+    result_1 = predictor.predict(input_1)
+    result_2 = predictor.predict(input_2)
+    result_3 = predictor.predict(input_3)
+    ```
+
+    `forge.predict_model()` (Milestones 86/87/90/91) is a genuinely convenient
+    one-shot call, but it reopens and reconstructs the entire artifact --
+    `inspect_model()`, `load_model()`, `load_preprocessing()`, `load_classes()`
+    -- on every single call. That is invisible for one prediction; for an
+    application making many predictions from the same artifact (a batch job,
+    a loop over incoming rows, a long-running process), it means every call
+    repeats the same disk read, archive parsing, and model reconstruction for
+    no reason -- the artifact never changes between calls. `ArtifactPredictor`
+    is the reusable counterpart: `forge.load_predictor(path)` performs exactly
+    the loading `predict_model()` would have performed, once, and returns an
+    object that retains it -- the model, its preprocessing, its class/
+    vocabulary metadata, its `InputSchema` (Milestone 101), and which of the
+    five workflows (`_determine_workflow()`) the artifact represents.
+    `predictor.predict(...)` then reruns only the genuinely per-call work:
+    validating this input, applying preprocessing, and running the model
+    forward pass.
+
+    **This is not a second inference engine.** `predict()` delegates to the
+    exact same artifact-independent core functions (`_classify_image_core()`,
+    `_predict_tensor_core()`, `_segment_image_core()`, `_generate_sequence_
+    core()`) that `predict_artifact()`/`predict_tensor_artifact()`/
+    `predict_image_artifact()`/`predict_tabular_classification_artifact()`/
+    `predict_sequence_artifact()` themselves call -- see this module's own
+    Milestone 102 paragraph. A prediction through `ArtifactPredictor` and the
+    equivalent one-shot call agree exactly, for the same artifact/input/
+    device, because they run the identical code path after loading.
+
+    **Construction.** Never constructed directly -- `forge.load_predictor()`
+    is the only producer, mirroring `TrainingResult`'s own "never constructed
+    directly" convention. This keeps "an `ArtifactPredictor` always reflects
+    a successfully loaded, validated artifact" an invariant a caller can rely
+    on, rather than a bare dataclass a caller could partially construct.
+
+    **Task support.** All five workflows `predict_model()` supports --
+    `classification`, `regression`, `segmentation`, `sequence`,
+    `tabular_classification` -- are supported here, unchanged. `predict()`'s
+    calling convention matches `predict_model()`'s own: an image file path
+    for classification/segmentation, a `Tensor`/NumPy array/nested list for
+    regression/tabular classification, or a non-empty token sequence (plus
+    required `length=`) for sequence generation.
+
+    **Metadata.** `.task`/`.input_schema`/`.classes` expose the same
+    already-loaded `ModelInfo` fields `inspect_model()` would have returned --
+    no second `inspect_model()`/archive read. `.model` exposes the loaded
+    `Module` itself, read-only in spirit (Forge does not enforce Python
+    attribute immutability): mutating it invalidates the "this predictor's
+    cached state matches what was loaded from `path`" assumption the same way
+    directly mutating any other loaded object would, and is the caller's own
+    responsibility, not something `predict()` guards against on every call.
+
+    **Lifetime.** An `ArtifactPredictor` owns its loaded model/preprocessing
+    for exactly as long as the object exists -- ordinary Python object
+    lifetime, no context manager, no global cache. Forge never tracks or
+    reuses `ArtifactPredictor` instances on the caller's behalf; a caller
+    wanting one loaded model shared across a request handler keeps its own
+    reference, exactly as it would for any other Python object.
+
+    **Concurrency.** No thread-safety infrastructure is added or implied.
+    `predict()` mutates no persistent state on `self` (the same `model.eval()`
+    /`no_grad()`/mode-restoration discipline `predict()` itself already
+    documents), so sequential reuse from one thread is safe by construction,
+    but concurrent calls from multiple threads follow whatever thread-safety
+    `forge.nn.Module.__call__`/the active backend already provide -- the same
+    guarantee (or lack of one) calling `predict()` directly on a shared model
+    from multiple threads would have. This milestone does not change that.
+
+    **Immutability of the artifact.** `predict()` never writes to `path` --
+    loading happens once, in `load_predictor()`, and nothing afterward
+    reopens the archive.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        info: Any,
+        workflow: str,
+        model: Module,
+        preprocessing: "Any | None",
+        classes: "list[str] | None",
+    ) -> None:
+        self._path = path
+        self._info = info
+        self._workflow = workflow
+        self._model = model
+        self._preprocessing = preprocessing
+        self._classes = classes
+
+    @property
+    def task(self) -> "str | None":
+        """The workflow this artifact was resolved to (`_determine_workflow()`'s result) --
+        one of `forge.serialization.model.TASK_TYPES`. Never `None`: unlike
+        `ModelInfo.task` (which is `None` for a legacy artifact with no
+        `task=` metadata), `load_predictor()` already resolved the workflow
+        (falling back to `_legacy_infer_workflow()` when needed) or raised
+        `PersistenceError` trying -- an existing `ArtifactPredictor` always
+        has a definite, resolved workflow.
+        """
+        return self._workflow
+
+    @property
+    def input_schema(self) -> "Any | None":
+        """`InputSchema | None` (Milestone 101), read from the artifact's own
+        `ModelInfo` at load time -- see `InputSchema`'s own docstring for
+        what it is and is not.
+        """
+        return self._info.input_schema
+
+    @property
+    def classes(self) -> "list[str] | None":
+        """The saved class/vocabulary list, or `None` -- the same value
+        `load_classes(path)` would return, read once at load time.
+        """
+        return self._classes
+
+    @property
+    def model(self) -> Module:
+        """The loaded `forge.nn.Module` this predictor runs -- see this
+        class's own **Metadata** docstring paragraph for the mutability
+        contract.
+        """
+        return self._model
+
+    def predict(
+        self,
+        input_data: Any,
+        *,
+        length: "int | None" = None,
+        rng: "np.random.Generator | None" = None,
+        threshold: float = 0.5,
+    ) -> Any:
+        """Run one prediction through the already-loaded artifact -- no reload, no reconstruction.
+
+        `input_data` must match this predictor's own `.task`, exactly as
+        `predict_model()`'s own `input_data` must match the artifact's task
+        (see that function's docstring): an image file path for
+        `"classification"`/`"segmentation"`, a `Tensor`/NumPy array/nested
+        list for `"regression"`/`"tabular_classification"`, or a non-empty
+        token sequence for `"sequence"` (with `length=` required for that
+        task -- omitting it raises `forge.DataError`, mirroring
+        `predict_model()`'s own requirement). `rng`/`threshold` are only used
+        for `"sequence"`/`"segmentation"` respectively, and silently ignored
+        otherwise -- the same "irrelevant keyword is ignored, not an error"
+        policy `predict_model()`'s own `device=`/`length=` already use.
+
+        Returns exactly what the equivalent one-shot function would have
+        returned for the same artifact/input (`ClassificationPrediction`/
+        `int` for classification, `Tensor` for regression/segmentation,
+        `list[ClassificationPrediction]`/`list[int]` for tabular
+        classification, `list` of tokens for sequence).
+        """
+        if self._workflow == "classification":
+            return _classify_image_core(self._model, self._preprocessing, self._classes, input_data)
+        if self._workflow == "regression":
+            return _predict_tensor_core(
+                self._model, self._preprocessing, self.input_schema, input_data, "ArtifactPredictor.predict",
+            )
+        if self._workflow == "segmentation":
+            return _segment_image_core(self._model, self._preprocessing, input_data, threshold)
+        if self._workflow == "tabular_classification":
+            output = _predict_tensor_core(
+                self._model, self._preprocessing, self.input_schema, input_data, "ArtifactPredictor.predict",
+            )
+            if self._classes is not None:
+                return interpret_classification(output, self._classes)
+            return [int(i) for i in np.argmax(output.numpy(), axis=1)]
+
+        if length is None:
+            raise DataError(
+                "ArtifactPredictor.predict() requires length= for a sequence artifact -- the "
+                "number of new tokens to generate (see forge.predict_sequence_artifact()'s own "
+                "length parameter)."
+            )
+        return _generate_sequence_core(
+            self._model, self._classes, input_data, length, rng, "ArtifactPredictor.predict",
+        )
+
+    def __repr__(self) -> str:
+        return f"ArtifactPredictor(path={self._path!r}, task={self._workflow!r})"
+
+
+def load_predictor(path: str, *, device: "str | Device | None" = None) -> ArtifactPredictor:
+    """Load a portable `.forge` artifact once and return a reusable `ArtifactPredictor` (Milestone 102).
+
+    ```python
+    predictor = forge.load_predictor("model.forge")
+    for row in incoming_rows:
+        result = predictor.predict(row)
+    ```
+
+    Performs exactly the loading work `predict_model()` performs on every
+    call -- `inspect_model()` (task/preprocessing/classes/`InputSchema`
+    metadata, Milestone 85/101), `_determine_workflow()` (Milestones 86/87),
+    `load_model()`, `load_preprocessing()`, `load_classes()` -- exactly once,
+    and retains the results on the returned `ArtifactPredictor` (see that
+    class's own docstring for the full state it keeps and why). Use this
+    instead of `forge.predict_model()` when an application will make more
+    than one prediction from the same artifact; use `predict_model()`
+    directly for a single, one-off prediction, where the extra object this
+    function returns has no benefit.
+
+    `device` defaults to the device recorded in the archive (`load_model()`'s
+    own default) -- pass `device="cpu"`/`device="cuda"` to load the model
+    there instead. Every subsequent `predictor.predict(...)` call runs on
+    that same, already-loaded model; there is no per-call `device=` override
+    (a caller needing a different device loads a second `ArtifactPredictor`).
+
+    **Validation performed at load time, not at every `predict()` call**:
+    for a `"classification"`/`"segmentation"` artifact, a missing
+    preprocessing configuration raises `forge.PersistenceError` here (the
+    same condition `predict_artifact()`/`predict_image_artifact()` raise, now
+    caught once instead of on every prediction); for a `"sequence"` artifact,
+    a missing vocabulary or a model that does not implement the
+    stepwise-recurrence protocol (`init_hidden`/`step`) each raise
+    `forge.PersistenceError` here too, mirroring `predict_sequence_
+    artifact()`'s own checks.
+
+    Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
+    artifact (the same conditions `inspect_model()` itself raises), and also
+    when the artifact's metadata does not reliably identify one of the five
+    supported workflows (`_determine_workflow()`'s own deliberate refusal to
+    guess) -- identical failure conditions to `predict_model()`'s own.
+
+    **Scope.** Composes exactly `inspect_model()` + `load_model()` +
+    `load_preprocessing()` + `load_classes()`, each called unchanged, once.
+    No new artifact format, model cache, or serving infrastructure -- see
+    this module's own Milestone 102 paragraph.
+    """
+    from ..serialization.model import inspect_model as _inspect_model
+    from ..serialization.model import load_classes as _load_classes
+    from ..serialization.model import load_model as _load_model
+    from ..serialization.model import load_preprocessing as _load_preprocessing
+
+    info = _inspect_model(path)
+    workflow = _determine_workflow(info)
+
+    model = _load_model(path, device=device.type if isinstance(device, Device) else device)
+    preprocessing = _load_preprocessing(path)
+    classes = _load_classes(path)
+
+    if workflow in ("classification", "segmentation"):
+        _require_preprocessing(path, preprocessing, "load_predictor")
+    if workflow == "sequence":
+        _require_sequence_vocab(path, classes, "load_predictor")
+        _require_sequence_protocol(path, model, "load_predictor")
+
+    return ArtifactPredictor(path, info, workflow, model, preprocessing, classes)
+
+
 def generate_sequence(
     model: Module,
     seed: "Sequence[Any]",
@@ -1345,5 +1714,5 @@ def interpret_classification(output: Tensor, classes: "Sequence[str]") -> "list[
 __all__ = [
     "predict", "save_and_verify", "predict_artifact", "predict_tensor_artifact", "predict_image_artifact",
     "predict_sequence_artifact", "predict_tabular_classification_artifact", "predict_model", "generate_sequence",
-    "interpret_classification", "ClassificationPrediction",
+    "interpret_classification", "ClassificationPrediction", "ArtifactPredictor", "load_predictor",
 ]
