@@ -46,6 +46,7 @@ replacing the architecture-based guess Milestone 86 had to fall back on. See
 
 from .checkpoint import Checkpoint, CHECKPOINT_FORMAT_VERSION, load_checkpoint, save_checkpoint
 from .model import (
+    InputSchema,
     ModelInfo,
     ModelSummary,
     PreprocessingInfo,
@@ -62,7 +63,7 @@ from .transforms import register_transform
 
 __all__ = [
     "save_model", "load_model", "load_preprocessing", "load_classes", "register_module",
-    "inspect_model", "ModelInfo", "ModelSummary", "PreprocessingInfo", "TASK_TYPES",
+    "inspect_model", "ModelInfo", "ModelSummary", "PreprocessingInfo", "InputSchema", "TASK_TYPES",
     "save_checkpoint", "load_checkpoint", "Checkpoint", "CHECKPOINT_FORMAT_VERSION",
     "register_optimizer", "register_transform",
 ]

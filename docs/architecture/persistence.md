@@ -921,6 +921,178 @@ addition to its existing "Preprocessing: yes/no" line); `--json` mode adds
 the same string under `"preprocessing_description"`. The command's per-module
 and per-parameter listing is unchanged.
 
+## Portable input-contract validation (Milestone 101)
+
+`predict_tensor_artifact()`/`predict_tabular_classification_artifact()`
+already composed `load_model()`/`load_preprocessing()`/`predict()` correctly
+-- but neither ever checked that a caller's raw input actually matched the
+shape the saved model expects before handing it to `preprocessing`/`Linear`.
+Two real, reproduced failure modes followed:
+
+```text
+too few / too many features
+    -> reaches Normalize/Linear anyway
+    -> ShapeMismatchError deep inside preprocessing or the model
+       ("Cannot apply '-' to shapes (1, 7) and (8,): not broadcastable.")
+
+same feature count, columns swapped (e.g. Glucose/Pregnancies)
+    -> the tensor shape is correct
+    -> the model executes successfully
+    -> a plausible-looking but wrong prediction, with no error at all
+```
+
+The first case was already an error, just a confusing, internals-leaking
+one, raised well after the input crossed the artifact's public boundary. The
+second case produced no error whatsoever -- this is the more serious of the
+two, and it is what this section is really about.
+
+### What is actually knowable
+
+`forge.train()`/`forge.train_and_save()` receive a `forge.data.Dataset` and
+a `Module` -- never a per-column name. The one thing Forge's training path
+*does* reliably fix, for a plain `Sequential` MLP, is the width of the first
+`Linear` layer's input (`in_features`) -- already present, unmodified, in
+every saved artifact's `metadata.json` `"root"` tree (`Linear`'s own
+registered `get_config()`, since Milestone 7). No new information needs to
+be captured at training time, and no new metadata is written by
+`save_model()` -- **Milestone 101 required no `FORMAT_VERSION` change.**
+
+### `InputSchema`
+
+```python
+info = forge.inspect_model("model.forge")
+info.input_schema                # InputSchema(feature_count=8), or None
+info.input_schema.feature_count  # 8
+```
+
+`forge.serialization.InputSchema` (a frozen dataclass, mirroring
+`ModelSummary`/`PreprocessingInfo`) has exactly one field: `feature_count`.
+`ModelInfo.input_schema` is populated only when **both**:
+
+1. the artifact was saved with `task="regression"` or
+   `task="tabular_classification"` (`forge.save_model(..., task=...)`,
+   Milestones 87/91) -- the two workflows whose input genuinely is "an
+   already-batched fixed-width numeric feature vector"
+   (`predict_tensor_artifact()`/`predict_tabular_classification_artifact()`);
+   and
+2. the saved architecture is a plain `Sequential` container whose first
+   child is a `Linear` layer (`_leading_linear_in_features()`,
+   `forge/serialization/model.py`) -- every real fixed-width-vector workload
+   in this repo (`examples/regression`, `examples/tabular_diabetes`,
+   `examples/tabular_classification`) is exactly this shape.
+
+Otherwise `input_schema` is `None` -- **never guessed**. In particular:
+
+- `task="classification"`/`"segmentation"` (an image file path input) and
+  `task="sequence"` (a token-vocabulary seed, no fixed-width vector concept
+  at all) never get an `input_schema`, even if a `Linear` classifier head
+  exists somewhere deep in a CNN -- gating on `task` first means a
+  `Conv2d`-first architecture is never even inspected for this.
+- A legacy artifact saved with no `task=` at all gets no `input_schema`
+  either, mirroring `_legacy_infer_workflow()`'s own "an absent `task` is
+  never a license to guess" stance for the unrelated classification/
+  regression ambiguity Milestone 87 closed. **Do not invent metadata for an
+  artifact that never declared what kind of workflow it is.**
+- A custom architecture whose raw input is not immediately consumed by a
+  `Linear` (any container type other than `Sequential`, or a `Sequential`
+  whose first child is not `Linear`) also gets `None` -- rather than a wrong
+  guess about which layer "really" receives the input.
+
+### Validation boundary
+
+`predict_tensor_artifact()`/`predict_tabular_classification_artifact()`
+each call `inspect_model(path)` and, when `input_schema` is not `None`,
+check `input_data`'s last-axis width against `feature_count` -- **before**
+`load_preprocessing()`'s transform or the model ever run:
+
+```python
+result = forge.predict_tensor_artifact("model.forge", seven_values)
+# forge.DataError: predict_tensor_artifact() expected 8 input feature(s), received 7.
+```
+
+This is deliberately the *raw* input, not a post-preprocessing shape: every
+registered tabular preprocessing step today (`ReplaceValue`, `Normalize`)
+operates elementwise/per-column and never changes the feature-axis width,
+so checking before preprocessing runs is equivalent to checking just before
+the model, but fails immediately with a clear, artifact-level message
+instead of surfacing from inside `Normalize`'s broadcast arithmetic. Both a
+single unbatched sample (`(feature_count,)`) and a batch
+(`(N, feature_count)`) remain valid -- exactly the two shapes `Linear`/
+`predict()` already accept; only `feature_count` itself is checked, never
+the batch dimension. Any other rank is left untouched, falling through to
+whatever error the model/preprocessing already raises for it.
+
+`predict_model()` needs no separate change: it already delegates to these
+two functions unchanged, so the validation applies automatically to every
+caller, including `forge model predict` (`forge/cli/model.py`).
+
+### What this explicitly does not validate
+
+**Feature ordering/semantics.** A same-width input whose columns have been
+permuted (the diabetes dataset's real
+`[Pregnancies, Glucose, BloodPressure, ...]` reordered to
+`[Glucose, Pregnancies, BloodPressure, ...]`) passes this check --
+`InputSchema` only ever recorded a count, because a count is the only thing
+`forge.train()`'s `Dataset`-in, `Module`-in calling convention ever gave
+Forge to record. This was verified empirically, not assumed: reordering two
+real feature columns on the real `examples/tabular_diabetes` artifact
+changed the model's reported confidence but produced no error and no shape
+difference. Detecting this would require an explicit, per-column feature-
+name declaration Forge's current public data/training API has no natural
+place to express (`forge.data.Dataset`/`TensorDataset` carry no column
+names) -- deliberately not built here; see **Out of scope** below.
+
+**Dtype.** No dtype contract is recorded or checked -- `Tensor(input_data)`
+already normalizes any numeric NumPy dtype into the model's own parameter
+dtype at construction time (the same conversion `predict_tensor_artifact()`
+already relied on before this milestone), so there is nothing this
+milestone needed to add here.
+
+**Sequence artifacts.** `task="sequence"` inputs are a seed *token
+sequence* against a saved vocabulary, not a fixed-width numeric vector --
+`predict_sequence_artifact()` already validates the one thing that actually
+matters for this shape (every seed token must be a member of the saved
+vocabulary, `forge.DataError` otherwise, Milestone 90) and gets no
+`InputSchema` at all; forcing a `feature_count` concept onto it would
+misrepresent what a stepwise-recurrence model's input actually is.
+
+**Image artifacts.** `task="classification"`/`"segmentation"` already have
+an input-adaptation mechanism (`_expected_image_channels()`, Milestone 94)
+that *converts* a mismatched grayscale/RGB input rather than rejecting it --
+a fundamentally different, already-solved problem (a real image with the
+wrong channel count can be losslessly converted; a tabular row with the
+wrong feature count or order cannot be "converted" into a correct one).
+Investigated for a demonstrated gap and found none: Milestone 94's behavior
+is unchanged by Milestone 101.
+
+### Out of scope
+
+No dataframe/CSV/feature-store/schema-registry/Pandera-style capability was
+built, and no automatic feature-name inference was added. If a future
+milestone gives `forge.train()`'s `Dataset`/`DataLoader` path a natural,
+optional place for a caller to declare per-column names, a genuinely
+semantic (order-aware) contract could be built on top of this same
+`InputSchema` mechanism -- deferred, not attempted here, since no such place
+exists in the current public data API and inventing one was explicitly out
+of this milestone's scope.
+
+### Compatibility
+
+No `FORMAT_VERSION` change (still `2`); no new bytes written by
+`save_model()`. Every existing artifact -- including files saved before
+Milestone 87 introduced `task=` -- remains loadable exactly as before.
+`ModelInfo.input_schema` is computed purely from `inspect_model()`'s
+existing metadata read, so it is available immediately for every artifact
+already saved with `task="regression"`/`task="tabular_classification"` and
+a `Sequential([Linear, ...])`-shaped architecture, with no re-save required.
+
+### CLI
+
+`forge model inspect model.forge` prints an `Input: N feature(s)` line
+(omitted entirely when `input_schema` is `None`, matching the existing
+"Preprocessing detail" line's own omit-when-absent convention);
+`--json` mode adds `"input_feature_count"` (an int, or `null`).
+
 ## Custom-module limitations
 See **Custom/composite modules** above: only module types registered via
 `forge.serialization.register_module()` in the *loading* process can be

@@ -167,6 +167,11 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     info = inspect_model(args.path)
     preprocessing_description = info.preprocessing.description if info.preprocessing is not None else None
     task = info.task
+    # Milestone 101: `info.input_schema` is `None` for any artifact this
+    # milestone builds no feature-count contract for (no task="regression"/
+    # "tabular_classification", or an architecture the contract can't be
+    # derived from) -- reported as `null`/"n/a", never fabricated.
+    input_feature_count = info.input_schema.feature_count if info.input_schema is not None else None
 
     if args.json:
         payload = {
@@ -178,6 +183,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             "preprocessing_description": preprocessing_description,
             "classes": classes,
             "task": task,
+            "input_feature_count": input_feature_count,
             "modules": [{"name": name, "type": type_name} for name, type_name in modules],
             "parameters": [
                 {
@@ -197,6 +203,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     print(f"Format version: {metadata['forge_format_version']}")
     print(f"Device: {metadata['device']}")
     print(f"Task: {task if task is not None else 'unknown (legacy artifact, saved before Milestone 87)'}")
+    if input_feature_count is not None:
+        print(f"Input: {input_feature_count} feature(s)")
     print(f"Training: {'train' if training else 'eval'}")
     print(f"Preprocessing: {'yes' if has_preprocessing else 'no'}")
     if preprocessing_description is not None:

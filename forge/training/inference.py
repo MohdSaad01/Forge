@@ -107,6 +107,22 @@ to already know which of the five functions above applies --
 workflow it describes, then delegates unchanged to the matching function
 above. See its own docstring for exactly which persisted signal decides
 this, and why.
+
+**Input-contract validation (Milestone 101).** `predict_tensor_artifact()`/
+`predict_tabular_classification_artifact()` now reject a structurally
+wrong-length numeric input (`forge.DataError`) before preprocessing or the
+model ever run, using `forge.inspect_model()`'s new `ModelInfo.input_schema`
+(`forge.serialization.InputSchema`) -- derived purely from already-persisted
+architecture metadata, no format change. This closes a real, demonstrated
+gap: previously a wrong-length input either reached `Normalize`/`Linear` and
+failed there with a confusing, internals-revealing shape error, or -- for a
+same-length but *reordered* input -- produced no error at all, a
+structurally valid but semantically wrong prediction. See each function's
+own docstring, and `docs/architecture/persistence.md`'s **Portable
+input-contract validation** section, for the explicit, tested limitation
+this does *not* solve: Forge's training APIs never capture which column is
+which, so same-length feature reordering is undetectable and this milestone
+does not pretend otherwise.
 """
 
 from __future__ import annotations
@@ -189,6 +205,40 @@ def _decode_image_for_model(model: Module, image: "str | os.PathLike") -> Tensor
 
     channels = _expected_image_channels(model)
     return ImageFolder._load_image(Path(image), channels=channels if channels is not None else 3)
+
+
+def _validate_feature_count(data: Tensor, expected: "int | None", fn_name: str) -> None:
+    """Reject an input whose last-axis width disagrees with an artifact's
+    known feature-count contract, before preprocessing or model execution
+    (Milestone 101).
+
+    `expected` is `ModelInfo.input_schema.feature_count` -- `None` for any
+    artifact this milestone does not build a contract for (no explicit
+    `task="regression"`/`task="tabular_classification"`, or an architecture
+    `_leading_linear_in_features()` cannot resolve), in which case this is a
+    silent no-op: the pre-Milestone-101 behavior (the model's own `Linear`,
+    or a `Normalize`/`ReplaceValue` preprocessing step, still raises its own
+    shape error, just later and less clearly -- see `docs/architecture/
+    persistence.md`'s **Portable input-contract validation** section).
+
+    Only checks a 1-D `(feature_count,)` (single unbatched sample) or 2-D
+    `(N, feature_count)` (batch) input, matching `Linear`'s/`predict()`'s own
+    two supported input shapes exactly (Milestone 101's **Batch dimension**
+    policy) -- any other rank is left to fail with whatever error the model
+    or preprocessing itself already raises for it, since this function's
+    only job is the specific, common "right rank, wrong width" mistake.
+
+    **What this does not check.** Only the *count* of values, never their
+    order or meaning -- a same-width input whose feature columns have been
+    swapped passes this check and always will, since Forge's training APIs
+    never captured which column is which (see `InputSchema`'s own
+    docstring). This function never claims otherwise.
+    """
+    if expected is None or data.ndim not in (1, 2):
+        return
+    actual = data.shape[-1]
+    if actual != expected:
+        raise DataError(f"{fn_name}() expected {expected} input feature(s), received {actual}.")
 
 
 def _extract_input(batch: Any) -> Tensor:
@@ -521,6 +571,22 @@ def predict_tensor_artifact(
     override, exactly as `load_model()`/`predict_artifact()` themselves
     accept.
 
+    **Input-contract validation (Milestone 101).** When `path` was saved
+    with `task="regression"` and its architecture is a `Linear`-first
+    `Sequential` (`inspect_model(path).input_schema` is not `None`),
+    `input_data`'s last-axis width is checked against
+    `input_schema.feature_count` *before* preprocessing or the model ever
+    run, raising `forge.DataError` with a clear, actionable message (e.g.
+    `"predict_tensor_artifact() expected 8 input feature(s), received 7."`)
+    instead of a confusing shape error surfacing deep inside `Normalize` or
+    `Linear`. This is a purely *structural* check -- see `InputSchema`'s own
+    docstring and `docs/architecture/persistence.md`'s **Portable
+    input-contract validation** section for exactly what it can and cannot
+    catch (in particular: it cannot detect same-width feature reordering).
+    An artifact with no `task=`, or an architecture this milestone cannot
+    resolve to a fixed feature count, gets no such check -- this call
+    behaves exactly as it did before Milestone 101.
+
     Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
     artifact or an unreconstructable `"preprocessing"` entry (the same
     conditions `load_model()`/`load_preprocessing()` already raise).
@@ -531,6 +597,7 @@ def predict_tensor_artifact(
     docstring, and `docs/architecture/training-engine.md`'s own
     Milestone-83 section).
     """
+    from ..serialization.model import inspect_model as _inspect_model
     from ..serialization.model import load_model as _load_model
     from ..serialization.model import load_preprocessing as _load_preprocessing
 
@@ -543,6 +610,10 @@ def predict_tensor_artifact(
             f"predict_tensor_artifact() requires input_data to be a Tensor, NumPy array, or "
             f"list/tuple of numbers, got {type(input_data).__name__}."
         )
+
+    info = _inspect_model(path)
+    expected_features = info.input_schema.feature_count if info.input_schema is not None else None
+    _validate_feature_count(prepared, expected_features, "predict_tensor_artifact")
 
     preprocessing = _load_preprocessing(path)
     if preprocessing is not None:
@@ -840,6 +911,12 @@ def predict_tabular_classification_artifact(
     own default) -- pass `device="cpu"`/`device="cuda"` to override, exactly
     as `load_model()`/`predict_tensor_artifact()` themselves accept.
 
+    **Input-contract validation (Milestone 101).** Identical to
+    `predict_tensor_artifact()`'s own -- see that function's docstring for
+    the exact mechanism, message format, and honest scope limits (structural
+    width only, never feature order/semantics). Here the required task is
+    `task="tabular_classification"` rather than `"regression"`.
+
     Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
     artifact or an unreconstructable `"preprocessing"` entry (the same
     conditions `load_model()`/`load_preprocessing()` already raise), and
@@ -851,6 +928,7 @@ def predict_tabular_classification_artifact(
     task-detection machinery, mirroring `predict_tensor_artifact()`'s own
     Scope paragraph.
     """
+    from ..serialization.model import inspect_model as _inspect_model
     from ..serialization.model import load_classes as _load_classes
     from ..serialization.model import load_model as _load_model
     from ..serialization.model import load_preprocessing as _load_preprocessing
@@ -864,6 +942,10 @@ def predict_tabular_classification_artifact(
             f"predict_tabular_classification_artifact() requires input_data to be a Tensor, "
             f"NumPy array, or list/tuple of numbers, got {type(input_data).__name__}."
         )
+
+    info = _inspect_model(path)
+    expected_features = info.input_schema.feature_count if info.input_schema is not None else None
+    _validate_feature_count(prepared, expected_features, "predict_tabular_classification_artifact")
 
     preprocessing = _load_preprocessing(path)
     if preprocessing is not None:

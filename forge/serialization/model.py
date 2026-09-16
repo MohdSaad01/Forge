@@ -681,6 +681,85 @@ class PreprocessingInfo:
 
 
 @dataclass(frozen=True)
+class InputSchema:
+    """The portable structural input contract for a fixed-width numeric artifact (Milestone 101).
+
+    Answers exactly one question: *how many values does one input row need?*
+    `feature_count` is the width `predict_tensor_artifact()`/
+    `predict_tabular_classification_artifact()` require along an input's last
+    axis, for either a single unbatched sample (`(feature_count,)`) or a
+    batch (`(N, feature_count)`) -- the same two shapes `predict()`/`Linear`
+    already accept (see **Batch dimension** in `docs/architecture/
+    persistence.md`'s own Milestone 101 section).
+
+    **What this is not.** This is a *structural* contract only -- it says
+    nothing about which value belongs in which position. A same-length input
+    whose columns have been reordered (e.g. swapping `Glucose` and
+    `Pregnancies` in `examples/tabular_diabetes`) passes this contract and
+    still reaches the model, because Forge's training APIs never captured a
+    per-column name to check against -- only a plain, unlabeled `Tensor`/
+    NumPy array ever crosses `forge.train()`'s `dataset=` boundary. See
+    `docs/architecture/persistence.md`'s **Portable input-contract
+    validation** section for the full semantic-honesty discussion of what
+    this does and does not catch.
+    """
+
+    feature_count: int
+
+
+def _leading_linear_in_features(node: "dict | None") -> "int | None":
+    """Find the `in_features` of the `Linear` layer that actually consumes a
+    saved model's raw input, reading only already-persisted architecture
+    metadata (Milestone 101) -- no model reconstruction, no format change.
+
+    Descends through `"Sequential"` wrapper nodes only (following their
+    first child, `"0"`, in construction order -- the same key
+    `nn.Sequential`'s own registration already uses) to reach the module that
+    actually receives the model's input; every real fixed-width numeric
+    workload in this repo (`examples/regression`, `examples/
+    tabular_diabetes`, `examples/tabular_classification`) is exactly this
+    shape: a `Sequential` of `Linear`/`ReLU` layers, input-first. Deliberately
+    does **not** descend into or search any other container/module type, and
+    does not search past the first child -- an architecture whose raw input
+    is not immediately consumed by a `Linear` (e.g. a CNN, where the first
+    `Linear` is a classifier head deep after `Conv2d`/`Flatten` layers) must
+    not be misidentified as a fixed-width-vector-input model, so this
+    returns `None` for any shape it cannot resolve unambiguously -- no
+    guessing, matching this milestone's semantic-honesty requirement.
+    """
+    current = node
+    while isinstance(current, dict):
+        node_type = current.get("type")
+        if node_type == "Linear":
+            in_features = current.get("config", {}).get("in_features")
+            return int(in_features) if isinstance(in_features, int) and not isinstance(in_features, bool) else None
+        if node_type != "Sequential":
+            return None
+        children = current.get("children")
+        if not isinstance(children, dict) or "0" not in children:
+            return None
+        current = children["0"]
+    return None
+
+
+# Milestone 101: the only two tasks whose input is genuinely "an already-
+# batched fixed-width numeric feature vector" -- see `predict_tensor_
+# artifact()`/`predict_tabular_classification_artifact()`'s own docstrings.
+# `"classification"`/`"segmentation"` take an image *file path* (a
+# Conv2d-first architecture would make `_leading_linear_in_features()` return
+# `None` anyway, but gating on task explicitly avoids ever computing a
+# feature-count contract for a workflow whose input isn't a plain numeric
+# vector at all); `"sequence"` has no fixed-width input (see
+# `docs/architecture/persistence.md`'s **Portable input-contract validation**
+# section, Sequence-artifacts sub-section); a legacy artifact with no `task`
+# at all gets no contract either -- never invented for an artifact that
+# never explicitly declared what kind of workflow it is (mirroring
+# `_legacy_infer_workflow()`'s own "no `task=` means no free guess" stance
+# for a *different*, but analogous, ambiguity).
+_INPUT_SCHEMA_TASKS = ("regression", "tabular_classification")
+
+
+@dataclass(frozen=True)
 class ModelInfo:
     """The structured, stable result of `inspect_model()` (Milestone 85).
 
@@ -699,14 +778,17 @@ class ModelInfo:
     task: "str | None"
     format_version: int
     device: str
+    input_schema: "InputSchema | None" = None
 
     def __str__(self) -> str:
         preprocessing_line = self.preprocessing.description if self.preprocessing is not None else "none"
         classes_line = ", ".join(self.classes) if self.classes else "none"
         task_line = self.task if self.task is not None else "unknown (legacy artifact, saved before Milestone 87)"
+        input_line = f"{self.input_schema.feature_count} feature(s)" if self.input_schema is not None else "n/a"
         return (
             f"Model: {self.model.type} ({self.model.parameter_count:,} parameters)\n"
             f"Task: {task_line}\n"
+            f"Input: {input_line}\n"
             f"Input preprocessing: {preprocessing_line}\n"
             f"Classes: {classes_line}\n"
             f"Artifact format: version {self.format_version} (device={self.device})"
@@ -759,6 +841,7 @@ def inspect_model(path: str) -> ModelInfo:
     info.preprocessing.description  # "Resize(size=(64, 64)) -> Normalize(mean=0.0, std=255.0)"
     info.classes                 # ["cat", "dog"], or None
     info.task                    # one of forge.serialization.model.TASK_TYPES, or None
+    info.input_schema            # InputSchema(feature_count=8), or None (Milestone 101)
     ```
 
     Answers "what is this artifact?" -- a question a developer holding just a
@@ -849,6 +932,12 @@ def inspect_model(path: str) -> ModelInfo:
             f"{TASK_TYPES!r} or null, got {task!r})."
         )
 
+    input_schema = None
+    if task in _INPUT_SCHEMA_TASKS:
+        feature_count = _leading_linear_in_features(root)
+        if feature_count is not None:
+            input_schema = InputSchema(feature_count=feature_count)
+
     return ModelInfo(
         model=model_summary,
         preprocessing=preprocessing_info,
@@ -856,11 +945,12 @@ def inspect_model(path: str) -> ModelInfo:
         task=task,
         format_version=version,
         device=device,
+        input_schema=input_schema,
     )
 
 
 __all__ = [
     "save_model", "load_model", "load_preprocessing", "load_classes", "inspect_model",
-    "ModelInfo", "ModelSummary", "PreprocessingInfo", "FORMAT_VERSION", "SUPPORTED_DEVICE_TYPES",
-    "TASK_TYPES",
+    "ModelInfo", "ModelSummary", "PreprocessingInfo", "InputSchema", "FORMAT_VERSION",
+    "SUPPORTED_DEVICE_TYPES", "TASK_TYPES",
 ]
