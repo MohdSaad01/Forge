@@ -221,6 +221,45 @@ is `dataset.make_datasets(seed=0)`'s own `test_ds` split, exported once to a
 plain CSV so it is reachable without importing any producer code -- see
 `evaluate.py`'s own module docstring for exact reproduction.
 
+## Early stopping (Milestone 100)
+
+Milestone 98's own experiment comparison found this workload's validation
+loss visibly bottoms out well before the default 60 epochs. `--early-stopping`
+(off by default, so plain `python -m examples.tabular_diabetes.train` behaves
+exactly as before) turns on `forge.training.EarlyStopping`:
+
+```bash
+python -m examples.tabular_diabetes.train --epochs 60 --seed 0 --device cpu \
+    --early-stopping --patience 5
+```
+
+Reference run (this repository, `--seed 0`, `patience=5`, `min_delta=0.0`,
+`restore_best=True`, default hyperparameters otherwise) versus a plain fixed
+60-epoch run with the same seed:
+
+```text
+                    fixed 60 epochs   60-epoch max + early stopping
+epochs completed    60                12
+best epoch          --                7
+best val_loss       --                0.5204
+final val_loss       0.5775           0.5211 (epoch 12, not restored)
+test loss            0.5858           0.5115
+test accuracy         72.1%            72.1%
+demo-row confidence   99.8%            90.4%
+```
+
+Early stopping activated for real (`stopped_early=True`) and restored epoch
+7's parameters -- test *accuracy* happened to match the fixed run exactly at
+this sample size, but test *loss* is meaningfully lower and the restored
+model is visibly less overconfident on the demo row (90.4% vs. 99.8%),
+consistent with the fixed run having overfit past its best validation point.
+This is a single-seed, single-dataset comparison, not a claim that early
+stopping is universally better here -- see `docs/development/progress.md`'s
+Milestone 100 entry. `--patience`/`--min-delta` are also exposed for
+experimentation; `--early-stopping` requires no other flag changes since
+`validation_dataset=val_loader` is always already passed to
+`forge.train_and_save()`.
+
 ## Column order
 
 Like `tabular_classification`, this example does not introduce a feature-

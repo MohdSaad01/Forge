@@ -54,6 +54,7 @@ from ..nn.loss import Loss
 from ..nn.module import Module
 from ..optim.optimizer import Optimizer
 from ..tensor.tensor import Tensor
+from .early_stopping import EarlyStopping, _restore_model_state, _snapshot_model_state
 from .metrics import Metric
 
 
@@ -98,6 +99,16 @@ class TrainingHistory:
 
     def __init__(self) -> None:
         self.records: "list[EpochResult]" = []
+        # Milestone 100: early-stopping outcome, always present but only
+        # ever non-default when `fit(..., early_stopping=...)` was used --
+        # see `Trainer.fit()`'s own docstring. Plain mutable attributes
+        # (matching `self.epoch`/`self.global_step`'s own convention on
+        # `Trainer`), not constructor arguments, so every existing
+        # `TrainingHistory()` call site is unaffected.
+        self.stopped_early: bool = False
+        self.best_epoch: "int | None" = None
+        self.best_monitored_value: "float | None" = None
+        self.monitored_quantity: "str | None" = None
 
     def append(self, record: EpochResult) -> None:
         self.records.append(record)
@@ -498,8 +509,9 @@ class Trainer:
         train_loader: Any,
         epochs: int,
         validation_loader: "Any | None" = None,
+        early_stopping: "EarlyStopping | None" = None,
     ) -> TrainingHistory:
-        """Train `self.model` for `epochs` epochs over `train_loader`.
+        """Train `self.model` for up to `epochs` epochs over `train_loader`.
 
         One epoch is exactly one full pass over `train_loader` (as many
         batches as it yields). `epochs` must be a positive int -- `epochs
@@ -509,21 +521,69 @@ class Trainer:
         an empty loader raises `TrainerError` rather than dividing by zero
         samples.
 
-        Every epoch that runs is recorded in the returned `TrainingHistory`,
-        in order -- there is no partial/early-stopping skip in this
-        milestone. If `validation_loader` is supplied, it is evaluated via
-        `self.evaluate()` once at the end of each training epoch (never
-        before, never mid-epoch), and its loss/metrics are attached to that
-        epoch's `EpochResult`. Progress for each epoch is printed unless
-        `Trainer(..., verbose=False)` was set at construction.
+        Every epoch that *runs* is recorded in the returned
+        `TrainingHistory`, in order. Without `early_stopping`, every
+        requested epoch runs -- unchanged from before Milestone 100.
+
+        **Early stopping (Milestone 100).** `early_stopping`, when given,
+        must be a `forge.training.EarlyStopping` and requires
+        `validation_loader` (raises `TrainerError` immediately otherwise --
+        there is nothing to monitor without validation data). After each
+        epoch's validation result is computed, `early_stopping` compares its
+        monitored quantity (default `"val_loss"`) against the best value
+        seen so far in *this* `fit()` call:
+
+        - The first validation result always becomes the initial best (nothing
+          to compare against yet); `epochs_since_improvement` starts at 0.
+        - A value that improves on the best by more than `min_delta` becomes
+          the new best (`best_epoch` updated to this epoch's global epoch
+          number) and resets `epochs_since_improvement` to 0. When
+          `early_stopping.restore_best` is set, this epoch's model
+          parameters/buffers are also snapshotted in memory.
+        - Otherwise `epochs_since_improvement` increments; once it reaches
+          `early_stopping.patience`, the loop stops after this epoch --
+          e.g. `patience=2` stops after the *second consecutive*
+          non-improving epoch, not the third.
+
+        When the loop ends (by patience or by exhausting `epochs`) and
+        `early_stopping.restore_best` is set and at least one improvement
+        was ever recorded, `self.model`'s parameters/buffers are restored in
+        place to the best snapshot -- see `EarlyStopping`'s own docstring
+        for exactly what is and is not restored (optimizer state is not).
+        The returned `TrainingHistory`'s `stopped_early`/`best_epoch`/
+        `best_monitored_value`/`monitored_quantity` reflect the outcome;
+        these are `False`/`None`/`None`/`None` when `early_stopping` was not
+        given.
+
+        If `validation_loader` is supplied (with or without
+        `early_stopping`), it is evaluated via `self.evaluate()` once at the
+        end of each training epoch (never before, never mid-epoch), and its
+        loss/metrics are attached to that epoch's `EpochResult`. Progress
+        for each epoch is printed unless `Trainer(..., verbose=False)` was
+        set at construction.
         """
         self._validate_epochs(epochs)
         self._validate_loader(train_loader, "train_loader")
         if validation_loader is not None:
             self._validate_loader(validation_loader, "validation_loader")
+        if early_stopping is not None:
+            if not isinstance(early_stopping, EarlyStopping):
+                raise TrainerError(
+                    "fit() early_stopping must be a forge.training.EarlyStopping, got "
+                    f"{type(early_stopping).__name__}."
+                )
+            if validation_loader is None:
+                raise TrainerError(
+                    "fit() early_stopping requires validation_loader (early stopping has "
+                    "nothing to monitor without validation data)."
+                )
         self._check_model_device()
 
         history = TrainingHistory()
+        best_value: "float | None" = None
+        best_state: "dict[str, Any] | None" = None
+        epochs_since_improvement = 0
+
         for local_epoch in range(1, epochs + 1):
             self.epoch += 1
             start = time.perf_counter()
@@ -550,6 +610,27 @@ class Trainer:
             history.append(record)
             if self.verbose:
                 self._report(record, local_epoch, epochs)
+
+            if early_stopping is not None:
+                value = early_stopping._extract(record)
+                improved = best_value is None or early_stopping._is_improvement(value, best_value)
+                if improved:
+                    best_value = value
+                    history.best_epoch = record.epoch
+                    epochs_since_improvement = 0
+                    if early_stopping.restore_best:
+                        best_state = _snapshot_model_state(self.model)
+                else:
+                    epochs_since_improvement += 1
+                if epochs_since_improvement >= early_stopping.patience:
+                    history.stopped_early = True
+                    break
+
+        if early_stopping is not None:
+            history.best_monitored_value = best_value
+            history.monitored_quantity = early_stopping.monitor
+            if early_stopping.restore_best and best_state is not None:
+                _restore_model_state(self.model, best_state)
 
         return history
 

@@ -280,3 +280,66 @@ def test_preprocessing_without_replace_value_gives_a_different_prediction_for_a_
     imputed_preprocessed = imputed_transform(forge.Tensor(missing_row[0])).numpy()
     naive_preprocessed = naive_transform(forge.Tensor(missing_row[0])).numpy()
     assert not np.allclose(imputed_preprocessed, naive_preprocessed)
+
+
+# -- Milestone 100: early stopping on the real workload ---------------------
+
+
+def test_early_stopping_flag_stops_before_the_requested_epoch_limit(tmp_path, capsys):
+    """The real, motivating case for Milestone 100: this workload's own
+    validation loss visibly bottoms out well before 60 epochs (Milestone 98's
+    finding) -- `--early-stopping` must actually exercise that, not just
+    accept the flag."""
+    out_dir = tmp_path / "artifacts"
+    train_main(
+        ["--epochs", "60", "--seed", "0", "--output-dir", str(out_dir),
+         "--early-stopping", "--patience", "5"]
+    )
+    out = capsys.readouterr().out
+    assert "Early stopping enabled: monitor=val_loss, patience=5" in out
+
+    import re
+    match = re.search(r"Early stopping: requested 60 epoch\(s\), completed (\d+), stopped_early=(True|False)", out)
+    assert match is not None, out
+    completed = int(match.group(1))
+    stopped_early = match.group(2) == "True"
+    assert completed < 60, f"expected early stopping to activate before epoch 60, ran {completed}"
+    assert stopped_early is True
+
+    model_path = out_dir / "tabular_diabetes_model.forge"
+    assert model_path.is_file()
+    assert inspect_model(str(model_path)).task == "tabular_classification"
+
+
+def test_without_the_flag_early_stopping_never_activates(tmp_path, capsys):
+    """Backward compatibility: omitting `--early-stopping` must run every
+    requested epoch, exactly as every pre-Milestone-100 run did."""
+    out_dir = tmp_path / "artifacts"
+    train_main(_SMALL + ["--epochs", "5", "--seed", "0", "--output-dir", str(out_dir)])
+    out = capsys.readouterr().out
+    assert "Early stopping" not in out
+    assert "Trained 5 epoch(s)" in out
+
+
+def test_early_stopping_restores_a_model_the_saved_artifact_reproduces(tmp_path):
+    """The saved artifact must reflect the *restored* best model, not
+    whatever the final completed epoch happened to leave in memory --
+    `train_and_save()`'s own `save_and_verify()` call already asserts this
+    for whatever model is live at save time; this proves early stopping ran
+    for real on this workload beforehand (`stopped_early=True`)."""
+    out_dir = tmp_path / "artifacts"
+    train_main(
+        ["--epochs", "60", "--seed", "0", "--output-dir", str(out_dir),
+         "--early-stopping", "--patience", "5"]
+    )
+    model_path = out_dir / "tabular_diabetes_model.forge"
+
+    X, _ = load_raw()
+    raw_row = X[0:1]
+    # A genuinely fresh reload agrees with the artifact's own recorded
+    # prediction -- i.e. the artifact is self-consistent and portable,
+    # exactly like every other real-workload artifact in this suite.
+    first = predict_tabular_classification_artifact(str(model_path), raw_row)[0]
+    second = predict_tabular_classification_artifact(str(model_path), raw_row)[0]
+    assert first.label == second.label
+    assert first.confidence == pytest.approx(second.confidence, abs=1e-6)

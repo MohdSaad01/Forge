@@ -127,6 +127,7 @@ from .serialization import (
 from .tensor import DEFAULT_DTYPE, DType, Tensor
 from .training import (
     ClassificationPrediction,
+    EarlyStopping,
     TrainAndSaveResult,
     TrainingResult,
     generate_sequence,
@@ -195,4 +196,5 @@ __all__ = [
     "train_and_save",
     "TrainingResult",
     "TrainAndSaveResult",
+    "EarlyStopping",
 ]

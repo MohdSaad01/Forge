@@ -8,6 +8,7 @@ logic of its own. See `docs/architecture/training-engine.md`.
 """
 
 from .api import TrainAndSaveResult, TrainingResult, train, train_and_save
+from .early_stopping import EarlyStopping
 from .inference import (
     ClassificationPrediction,
     generate_sequence,
@@ -51,4 +52,5 @@ __all__ = [
     "ClassificationPrediction",
     "TrainingSession",
     "start_training_session",
+    "EarlyStopping",
 ]

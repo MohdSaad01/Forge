@@ -45,7 +45,7 @@ import forge
 from forge.data import DataLoader
 from forge.nn import CrossEntropyLoss
 from forge.optim import Adam
-from forge.training import Accuracy
+from forge.training import Accuracy, EarlyStopping
 
 try:
     from .dataset import CLASS_NAMES, N_FEATURES, load_raw, make_datasets
@@ -65,6 +65,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate.")
     parser.add_argument("--seed", type=int, default=0, help="Seed for forge.random, the split, and DataLoader shuffling.")
     parser.add_argument("--output-dir", default="examples/tabular_diabetes/artifacts", help="Where to write the model file.")
+    parser.add_argument(
+        "--early-stopping", action="store_true",
+        help="Monitor val_loss and stop once it stops improving, restoring the best-epoch model "
+             "(Milestone 100). Off by default, matching this example's pre-Milestone-100 behavior.",
+    )
+    parser.add_argument("--patience", type=int, default=5, help="EarlyStopping patience (only used with --early-stopping).")
+    parser.add_argument("--min-delta", type=float, default=0.0, help="EarlyStopping min_delta (only used with --early-stopping).")
     return parser.parse_args(argv)
 
 
@@ -94,6 +101,11 @@ def main(argv=None) -> None:
     model = build_model().to(args.device)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
+    early_stopping = None
+    if args.early_stopping:
+        early_stopping = EarlyStopping(patience=args.patience, min_delta=args.min_delta, restore_best=True)
+        print(f"Early stopping enabled: monitor=val_loss, patience={args.patience}, min_delta={args.min_delta}")
+
     start = time.perf_counter()
     train_result = forge.train_and_save(
         model, train_loader,
@@ -103,6 +115,7 @@ def main(argv=None) -> None:
         validation_dataset=val_loader,
         device=args.device,
         metrics=[Accuracy()],
+        early_stopping=early_stopping,
         path=str(model_path),
         sample=query_x_batch,
         # The fitted Compose([ReplaceValue, Normalize]) pipeline -- both the
@@ -125,6 +138,11 @@ def main(argv=None) -> None:
     print(f"train loss: {history[0].train_loss:.4f} -> {train_result.train_loss:.4f}")
     print(f"val loss:   {train_result.val_loss:.4f}")
     print(f"val accuracy: {train_result.val_metrics['accuracy']:.1%}")
+    if args.early_stopping:
+        print(f"\nEarly stopping: requested {args.epochs} epoch(s), completed {history.epochs_completed}, "
+              f"stopped_early={train_result.stopped_early}")
+        print(f"  best_epoch={train_result.best_epoch}, best_val_loss={train_result.best_monitored_value:.4f}, "
+              f"final_val_loss={train_result.val_loss:.4f}")
 
     from forge.training import Trainer
     final_eval = Trainer(

@@ -114,6 +114,7 @@ from ..nn.loss import Loss
 from ..nn.module import Module
 from ..optim.optimizer import Optimizer
 from ..tensor.tensor import Tensor
+from .early_stopping import EarlyStopping
 from .inference import save_and_verify
 from .metrics import Metric
 from .trainer import Trainer, TrainingHistory
@@ -160,6 +161,11 @@ class TrainingResult(TrainingHistory):
       `final_val_loss`/`final_val_metrics` are `None`/`{}` when `train()` was
       called without a `validation_dataset` -- exactly `EpochResult`'s own
       convention, never fabricated.
+    - `stopped_early`/`best_epoch`/`best_monitored_value`/
+      `monitored_quantity` (Milestone 100) -- copied from the underlying
+      `Trainer.fit()` call's own `TrainingHistory`; see `EarlyStopping`'s
+      docstring. All four are `False`/`None`/`None`/`None` when `train()`
+      was called with no `early_stopping=`.
 
     Never constructed directly by a caller -- `train()` is the only producer.
     """
@@ -168,6 +174,10 @@ class TrainingResult(TrainingHistory):
         super().__init__()
         self.records = history.records
         self.model = model
+        self.stopped_early = history.stopped_early
+        self.best_epoch = history.best_epoch
+        self.best_monitored_value = history.best_monitored_value
+        self.monitored_quantity = history.monitored_quantity
 
     @property
     def history(self) -> "TrainingResult":
@@ -214,6 +224,7 @@ def train(
     device: "str | Device | None" = None,
     metrics: "Iterable[Metric] | None" = None,
     verbose: bool = True,
+    early_stopping: "EarlyStopping | None" = None,
 ) -> TrainingResult:
     """Train `model` on `dataset` for `epochs` epochs -- the common case, in one call.
 
@@ -266,6 +277,17 @@ def train(
     semantics, reflected in the returned `TrainingResult`'s
     `val_loss`/`val_metrics` per `EpochResult`.
 
+    **Early stopping (Milestone 100).** `early_stopping`, when given, is
+    passed straight through to `Trainer.fit(..., early_stopping=...)` --
+    requires `validation_dataset` (raises `forge.TrainerError` otherwise, the
+    same error `Trainer.fit()` itself raises). See `forge.training.
+    EarlyStopping`'s own docstring for `monitor`/`patience`/`min_delta`/
+    `restore_best` semantics. `result.stopped_early`/`result.best_epoch`/
+    `result.best_monitored_value` report the outcome; `result.model` (and,
+    for `train_and_save()`, the saved artifact) already reflects the
+    restored best parameters when `restore_best=True` fired, since `fit()`
+    performs that restoration in place before returning.
+
     Returns a `TrainingResult` (Milestone 99) -- a `TrainingHistory` (exactly
     `Trainer.fit()`'s own record-per-epoch object; no second history
     representation) with the trained `model` and final-epoch convenience
@@ -294,7 +316,9 @@ def train(
         metrics=metrics,
         verbose=verbose,
     )
-    history = trainer.fit(train_loader, epochs=epochs, validation_loader=validation_loader)
+    history = trainer.fit(
+        train_loader, epochs=epochs, validation_loader=validation_loader, early_stopping=early_stopping,
+    )
     return TrainingResult(history, model)
 
 
@@ -327,6 +351,9 @@ class TrainAndSaveResult:
     val_metrics: "dict[str, float]"
     model: Module
     artifact_path: str
+    stopped_early: bool = False
+    best_epoch: "int | None" = None
+    best_monitored_value: "float | None" = None
 
 
 def train_and_save(
@@ -348,6 +375,7 @@ def train_and_save(
     classes: "list[str] | None" = None,
     task: "str | None" = None,
     atol: float = 1e-5,
+    early_stopping: "EarlyStopping | None" = None,
 ) -> TrainAndSaveResult:
     """Train `model`, then save + verify it as a portable artifact, in one call (Milestone 81).
 
@@ -412,12 +440,23 @@ def train_and_save(
     attach task metadata. See `save_model()`'s own docstring for the exact
     vocabulary; omitting it (the default) writes no task metadata, exactly
     like omitting `classes`/`preprocessing`.
+
+    **Early stopping (Milestone 100).** `early_stopping` is passed straight
+    through to `train()`. Because `train()`'s own `Trainer.fit()` call
+    restores the best-epoch parameters/buffers *in place* before `train()`
+    returns (when `early_stopping.restore_best` fired), `model` already
+    holds the restored best state by the time `save_and_verify()` runs --
+    the artifact this call saves and verifies is the restored best model,
+    never the later, possibly-worse final-epoch state. `result.
+    stopped_early`/`result.best_epoch`/`result.best_monitored_value` mirror
+    `TrainingResult`'s own fields for a caller who only kept this result.
     """
     history = train(
         model, dataset,
         loss=loss, optimizer=optimizer, epochs=epochs,
         batch_size=batch_size, shuffle=shuffle,
         validation_dataset=validation_dataset, device=device, metrics=metrics, verbose=verbose,
+        early_stopping=early_stopping,
     )
     reloaded = save_and_verify(
         model, path, sample, preprocessing=preprocessing, classes=classes, task=task, atol=atol,
@@ -431,6 +470,9 @@ def train_and_save(
         val_metrics=last.val_metrics,
         model=reloaded,
         artifact_path=path,
+        stopped_early=history.stopped_early,
+        best_epoch=history.best_epoch,
+        best_monitored_value=history.best_monitored_value,
     )
 
 

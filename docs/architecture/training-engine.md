@@ -1,10 +1,11 @@
-# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82; single-call numeric-artifact inference via `predict_tensor_artifact()` as of Milestone 83; single-call image-to-image artifact inference via `predict_image_artifact()` as of Milestone 84; unified portable-artifact prediction via `predict_model()` as of Milestone 86; explicit task-metadata dispatch as of Milestone 87; first-class `TrainingResult`/`TrainAndSaveResult.artifact_path` as of Milestone 99)
+# Training Engine (Milestone 6; CUDA device support as of Milestone 12; CUDA classification via `CrossEntropyLoss` as of Milestone 14; checkpointing/resume as of Milestone 18; standalone inference via `predict()` as of Milestone 68; prediction interpretation via `interpret_classification()` as of Milestone 72; fresh-or-resumed session construction via `start_training_session()` as of Milestone 73; portable-artifact save+verify via `save_and_verify()` as of Milestone 78; single-call high-level training via `train()` as of Milestone 79; train-to-verified-artifact via `train_and_save()` as of Milestone 81; single-call portable-artifact inference via `predict_artifact()` as of Milestone 82; single-call numeric-artifact inference via `predict_tensor_artifact()` as of Milestone 83; single-call image-to-image artifact inference via `predict_image_artifact()` as of Milestone 84; unified portable-artifact prediction via `predict_model()` as of Milestone 86; explicit task-metadata dispatch as of Milestone 87; first-class `TrainingResult`/`TrainAndSaveResult.artifact_path` as of Milestone 99; early stopping via `EarlyStopping` as of Milestone 100)
 
 ## Package layout
 ```
 forge/
     training/
         trainer.py     Trainer, EpochResult, EvaluationResult, TrainingHistory
+        early_stopping.py  EarlyStopping (Milestone 100)
         metrics.py     Metric, MeanSquaredError, MeanAbsoluteError, Accuracy
         inference.py   predict() (Milestone 68), interpret_classification(), ClassificationPrediction (Milestone 72), save_and_verify() (Milestone 78, task= as of 87), predict_artifact() (Milestone 82), predict_tensor_artifact() (Milestone 83), predict_image_artifact() (Milestone 84), predict_model() (Milestone 86, task-first dispatch as of 87)
         session.py     TrainingSession, start_training_session() (Milestone 73)
@@ -259,8 +260,102 @@ trainer.fit(train_loader, epochs=10, validation_loader=val_loader)
 `validation_loader` is optional. When given, it is evaluated via
 `self.evaluate(validation_loader)` exactly once, at the end of each training
 epoch (never before, never mid-epoch) -- so validation always reflects that
-epoch's just-updated parameters. No early stopping and no checkpointing are
-implemented on top of this (explicitly out of scope for this milestone).
+epoch's just-updated parameters. No checkpointing is implemented on top of
+this (`Trainer.save_checkpoint()`/`TrainingSession` own that, separately --
+see **Checkpointing and resume** below). Early stopping is no longer out of
+scope -- see **Early stopping** below (Milestone 100).
+
+## Early stopping (Milestone 100)
+Milestone 98 measured a real overfitting curve on `examples/tabular_diabetes`:
+validation loss reaches its minimum around epoch 9-14 while training loss
+keeps improving through epoch 60. Milestone 99's `TrainingResult` let a
+caller see that only *after* training finished; `fit()` can now act on it
+*during* training:
+
+```python
+result = forge.train(
+    model, train_dataset,
+    loss=loss_fn, optimizer=optimizer, epochs=60,
+    validation_dataset=val_dataset,
+    early_stopping=forge.training.EarlyStopping(patience=5, restore_best=True),
+)
+result.stopped_early          # True if patience was exhausted before epoch 60
+result.best_epoch             # the global epoch number with the best monitored value
+result.best_monitored_value   # that epoch's val_loss (or whatever `monitor` named)
+```
+
+`EarlyStopping` (`forge/training/early_stopping.py`) is a small dataclass:
+`monitor` (default `"val_loss"`, or `"val_<metric name>"` for any `Metric`
+passed to `Trainer(..., metrics=[...])`, e.g. `"val_accuracy"`), `patience`
+(default 5), `min_delta` (default `0.0`), `restore_best` (default `True`),
+and `mode` (`"min"`/`"max"`, default `"min"` -- not inferred from `monitor`'s
+name, matching the explicit-over-guessed precedent `task=` (Milestone 87)
+already set). Passed to `Trainer.fit(..., early_stopping=...)` or
+`forge.train()`/`forge.train_and_save()` (which forward it straight through);
+requires `validation_loader`/`validation_dataset` -- `TrainerError`
+immediately otherwise, since there is nothing to monitor without validation
+data.
+
+**Patience.** After each epoch's validation result, `fit()` compares
+`early_stopping`'s monitored quantity against the best value seen so far in
+*this* `fit()` call. The first validation result always becomes the initial
+best (nothing to compare against yet). A value that improves on the best by
+more than `min_delta` becomes the new best and resets a
+consecutive-non-improvement counter to `0`; otherwise the counter increments,
+and once it reaches `patience` the loop stops **after that epoch** (the
+epoch that exhausts patience still runs and is recorded) -- e.g.
+`patience=2` stops after the second consecutive non-improving epoch, not the
+third. Every epoch that actually ran is in the returned `TrainingHistory`,
+in order -- `len(history)` never counts an epoch that did not run, and never
+pads out to the requested `epochs`.
+
+**Best-model restoration.** When `restore_best=True` (the default) and at
+least one improvement was recorded, `fit()` restores `self.model`'s
+parameters/buffers, in place, to whatever they were right after the
+best-scoring epoch -- once the loop ends, whether it ended by patience or by
+exhausting `epochs`. This reuses `Module.named_parameters()`/
+`named_buffers()` (the exact traversal `save_model()`/`save_checkpoint()`
+already use) plus each Tensor's own backend `to_numpy()`/`from_array()`
+transfer primitives to hold one in-memory snapshot (replaced, not
+accumulated, on every new best epoch) -- no new serialization format, no
+per-epoch file, no pickle. `restore_best=False` leaves the model exactly as
+the last completed epoch's training left it.
+
+**Optimizer state is not restored.** Only `Module` parameters/buffers are
+snapshotted -- the optimizer's own per-parameter state (e.g. Adam's `m`/`v`)
+keeps whatever it accumulated by the time the loop actually stopped. This
+matches `train()`/`train_and_save()`'s own pre-existing scope: neither
+function has ever produced or consumed a checkpoint (see **What this does
+not add** in `forge/training/api.py`'s module docstring), so there was no
+optimizer/model pairing contract for early stopping to preserve. A caller
+who checkpoints a `Trainer` after an early-stopped `fit()` call gets the
+model's current state (the restored best parameters, when `restore_best=
+True`) paired with the optimizer's state as of the *last* epoch that ran --
+a valid but non-continuous restart if resumed, not a mismatch
+`load_checkpoint()` detects or rejects. This is a documented boundary, not a
+defect; see `forge/training/early_stopping.py`'s own docstring for the full
+reasoning.
+
+**`TrainingHistory`/`TrainingResult` integration.** `TrainingHistory` gained
+four plain attributes -- `stopped_early` (`bool`, default `False`),
+`best_epoch` (`int | None`), `best_monitored_value` (`float | None`), and
+`monitored_quantity` (`str | None`, the `monitor` string that produced
+`best_monitored_value`) -- populated by `fit()` only when `early_stopping`
+was given; unaffected callers see the same defaults as before Milestone 100.
+`TrainingResult`/`TrainAndSaveResult` copy these through as their own fields
+of the same names.
+
+**`train_and_save()` integration.** Because `fit()` restores the best-epoch
+state *in place* before `train()` returns, `model` already holds the
+restored parameters by the time `save_and_verify()` runs -- the artifact
+`train_and_save()` writes and verifies is the restored best model, never a
+later, possibly-worse state, with no extra save/reload logic of its own.
+
+**Checkpoint/resume.** `start_training_session()`/`TrainingSession` never
+call `fit()` themselves (a caller does, via `session.trainer.fit(...)`), so
+`early_stopping=` is available there unmodified, with the same optimizer
+-state caveat above. `TrainingSession`/`Trainer.save_checkpoint()` are
+otherwise untouched by this milestone.
 
 ## Device semantics
 Milestone 6 shipped `Trainer` as CPU-only. **As of Milestone 12, `Trainer`
@@ -1346,12 +1441,15 @@ See `docs/development/m86-unified-artifact-prediction.md` and
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and
 the milestone's own non-goals): distributed training, mixed precision,
-early stopping, learning-rate schedulers, hyperparameter tuning,
-multiprocessing DataLoader workers, a general logging/observability
-platform, experiment tracking, a CLI, and a callbacks system. As of
-Milestone 18, checkpointing/training-resume is also no longer on this list
-(see **Checkpointing and resume** above) -- but `TrainingHistory` itself is
-still not persisted or resumed automatically. `no_grad()` is a single
+learning-rate schedulers, hyperparameter tuning, multiprocessing DataLoader
+workers, a general logging/observability platform, experiment tracking, a
+CLI, and a callbacks system. As of Milestone 18, checkpointing/training-resume
+is also no longer on this list (see **Checkpointing and resume** above) --
+but `TrainingHistory` itself is still not persisted or resumed automatically.
+As of Milestone 100, early stopping is also no longer on this list (see
+**Early stopping** above) -- but learning-rate schedulers and hyperparameter
+tuning remain explicitly out of scope; early stopping's own `EarlyStopping`
+is deliberately not a general callbacks system. `no_grad()` is a single
 global flag, not a general
 context-management system -- no `retain_graph` equivalent, no
 per-tensor/per-thread grad state, no nesting-depth tracking beyond plain
