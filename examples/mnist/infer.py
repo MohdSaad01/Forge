@@ -99,6 +99,9 @@ def run(model_path: str, image_path: str, device: "str | None" = None) -> "Class
 def main(argv=None) -> None:
     args = parse_args(argv)
     result = run(args.model, args.image, device=args.device)
+    print("Forge Prediction")
+    print("-----------------")
+    print(f"Input: {args.image}")
     if isinstance(result, ClassificationPrediction):
         print(f"Prediction: digit {result.label}")
         print(f"Confidence: {result.confidence:.1%}")

@@ -24,6 +24,73 @@ uses a plain `Trainer` + `trainer.resume(checkpoint)`, followed by its own
 concept, matching `train()`), so this script is also the clearest real
 example of when to reach for each API.
 
+## Quickstart -- the canonical Forge workflow (Milestone 103)
+
+This is Forge's flagship, end-to-end demonstration: real data in, a
+trained model out, a portable `.forge` artifact, and a human-readable
+prediction on a brand-new image from a process that never touched
+training.
+
+```text
+Real MNIST digit images (60,000 train / 10,000 test)
+        |
+        v
+MNISTDataset -> DataLoader                    (forge.data)
+        |
+        v
+CNN: Conv2d/ReLU/MaxPool2d x2 -> Linear x2     (forge.nn)
+        |
+        v
+forge.train_and_save()                        (forge.training)
+        |
+        v
+examples/mnist/artifacts/mnist_model.forge     <- portable artifact
+        |                                         (weights + preprocessing + classes)
+        v
+   ...process exits...
+        |
+        v
+   fresh process: python -m examples.mnist.infer
+        |
+        v
+Forge Prediction
+-----------------
+Input: new_digit_query.png
+Prediction: digit 7
+Confidence: 94.8%
+```
+
+Answers to the questions a developer new to this repository would ask:
+
+1. **What is this example?** Forge's flagship image classifier -- a small
+   CNN trained on real handwritten-digit images, saved as one portable
+   `.forge` file, and used from a separate process to classify a brand-new
+   digit photo.
+2. **What dataset does it use?** Real MNIST: 60,000 training / 10,000 test
+   grayscale `28x28` handwritten-digit images.
+3. **How do I obtain the dataset?** Pass `--download` to `train.py` the
+   first time -- see **Obtaining the dataset** below; nothing is bundled
+   with Forge or downloaded implicitly.
+4. **How do I train the model?**
+   `python -m examples.mnist.train --download --epochs 3 --device cpu`
+   (or `--device cuda`) -- see **CPU training**/**CUDA training** below.
+5. **Where does the artifact go?**
+   `examples/mnist/artifacts/mnist_model.forge` (`--output-dir` to change
+   it).
+6. **How do I evaluate it?** `train.py` itself reports per-epoch training
+   and validation loss/accuracy, and a final test-set evaluation -- see
+   **CPU training**'s reference table below.
+7. **How do I run inference?** In a genuinely new process:
+   `python -m examples.mnist.infer --model examples/mnist/artifacts/mnist_model.forge --image path/to/digit.png`
+   -- see **Standalone inference** below.
+8. **What input does prediction expect?** One image file (any common
+   format Pillow can read) of a single handwritten digit.
+9. **What output should I expect?** The `Forge Prediction` block shown
+   above -- the predicted digit and Forge's confidence in it.
+10. **How do I modify the model?** Edit `model.py::build_model()` -- an
+    ordinary `forge.nn.Sequential` of existing layers; nothing in
+    `train.py`/`infer.py` depends on this exact architecture.
+
 ## Files
 
 - `dataset.py` -- `MNISTDataset` (the IDX-format parser + `Dataset`
@@ -221,10 +288,23 @@ process, closing the gap between what earlier milestones' reports described
 as "verified in a separate process" and what the automated test suite
 actually enforced).
 
-Note: unlike `examples/image_folder_classification`, `forge model predict`
-(the CLI command) is **not** usable with an MNIST model -- that command
-always decodes its `--image` argument as 3-channel RGB, but MNIST's CNN
-expects 1 channel. Use `examples.mnist.infer` instead.
+Note: as of Milestone 94, `forge model predict` (the CLI command) also works
+directly against an MNIST model -- it decodes `--image` in whichever channel
+representation the artifact's own first `Conv2d` declares (`1` for MNIST,
+`3` for `image_folder_classification`), the same channel-matching
+`predict_artifact()` uses internally:
+
+```bash
+python -m forge model predict examples/mnist/artifacts/mnist_model.forge \
+    examples/mnist/artifacts/new_digit_query.png
+```
+
+(An earlier version of this note, from before Milestone 94, said the CLI
+always decoded as 3-channel RGB and so could not be used here -- that
+limitation no longer applies.) `examples.mnist.infer` remains the right
+choice when the source image isn't already `28x28` -- see the paragraph
+above for the one piece of MNIST-specific resizing glue only `infer.py`
+performs.
 
 ## CLI inspection
 
