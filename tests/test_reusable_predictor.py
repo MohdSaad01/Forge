@@ -404,6 +404,26 @@ def test_predictor_predict_matches_predict_tabular_classification_artifact_bit_f
         assert u.confidence == pytest.approx(d.confidence, abs=1e-6)
 
 
+def test_predictor_predict_rejects_unbatched_1d_tabular_input_clearly(tmp_path):
+    """Milestone 105: `ArtifactPredictor.predict()`'s tabular_classification
+    branch shares the same fix as `predict_tabular_classification_artifact()`
+    -- see the equivalent test in
+    `tests/test_tabular_classification_artifact_prediction.py` for the full
+    reproduction. A single flat row (no explicit batch dimension) must raise
+    a clear `forge.DataError`, not an internals-revealing error from deep
+    inside `interpret_classification()`."""
+    model_path = _saved_tabular_classification_model(tmp_path)
+    predictor = load_predictor(str(model_path))
+
+    row = np.random.default_rng(8).standard_normal(_N_FEATURES).astype(np.float32)
+    with pytest.raises(DataError, match="requires a batched input"):
+        predictor.predict(row)
+
+    # Correctly-batched single-row input still works.
+    result = predictor.predict(row.reshape(1, -1))
+    assert len(result) == 1
+
+
 def test_predictor_predict_matches_predict_sequence_artifact_with_same_rng(tmp_path):
     model_path = _saved_sequence_model(tmp_path)
     predictor = load_predictor(str(model_path))

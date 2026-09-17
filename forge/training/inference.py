@@ -354,13 +354,34 @@ def _predict_tensor_core(
     input_schema: "Any | None",
     input_data: "Tensor | np.ndarray | Sequence[Any]",
     fn_name: str,
+    *,
+    require_batch: bool = False,
 ) -> Tensor:
     """The artifact-independent body shared by `predict_tensor_artifact()`
     and `predict_tabular_classification_artifact()` (Milestone 102): coerce
     `input_data`, validate it against `input_schema` (Milestone 101,
     unchanged), apply `preprocessing` if present, then `predict()`.
+
+    `require_batch=True` (Milestone 105) rejects an unbatched 1-D input
+    before it ever reaches the model -- needed only by callers that go on to
+    call `interpret_classification()`/`np.argmax(..., axis=1)` on the
+    result, both of which require a genuine `(batch_size, ...)` output and
+    otherwise fail late with an internals-revealing error naming a function
+    the caller never called directly (found against a real artifact: a
+    `predict_tabular_classification_artifact()`-style single flat row raised
+    `interpret_classification() expects a 2-D ... output, got shape (2,)`).
+    `predict_tensor_artifact()`'s plain regression path deliberately keeps
+    the default `False` -- an unbatched 1-D input there has always been a
+    legitimate "single unbatched sample" call, per `_validate_feature_count()`'s
+    own docstring, and returns an unbatched 1-D result correctly.
     """
     prepared = _coerce_numeric_input(input_data, fn_name)
+    if require_batch and prepared.ndim == 1:
+        raise DataError(
+            f"{fn_name}() requires a batched input, shape (batch_size, feature_count) -- "
+            f"received an unbatched 1-D input with {prepared.shape[0]} feature(s). "
+            f"Wrap a single row in an extra list, e.g. [[...]] instead of [...]."
+        )
     expected_features = input_schema.feature_count if input_schema is not None else None
     _validate_feature_count(prepared, expected_features, fn_name)
     if preprocessing is not None:
@@ -998,8 +1019,14 @@ def predict_tabular_classification_artifact(
     artifact()`'s own `input_data` -- a `Tensor`, or a NumPy array / nested
     list or tuple of numbers convertible to one via `Tensor(input_data)`,
     with a leading batch dimension matching what the saved model's
-    `forward()` expects. Anything else raises `forge.DataError` before any
-    file I/O.
+    `forward()` expects: a single row is `[[...]]`, not `[...]`, since
+    (unlike `predict_tensor_artifact()`'s plain regression path) every
+    result here goes through `interpret_classification()`, which requires a
+    genuine `(batch_size, num_classes)` output (Milestone 105 -- an
+    unbatched 1-D input, previously accepted by mistake, now raises
+    `forge.DataError` naming this exact fix instead of failing deep inside
+    `interpret_classification()`). Anything else raises `forge.DataError`
+    before any file I/O.
 
     **Returns one result per row, not one result overall** -- unlike
     `predict_artifact()` (always exactly one image in, one prediction out),
@@ -1062,6 +1089,7 @@ def predict_tabular_classification_artifact(
     model = _load_model(path, device=device.type if isinstance(device, Device) else device)
     output = _predict_tensor_core(
         model, preprocessing, info.input_schema, checked, "predict_tabular_classification_artifact",
+        require_batch=True,
     )
 
     classes = _load_classes(path)
@@ -1432,6 +1460,7 @@ class ArtifactPredictor:
         if self._workflow == "tabular_classification":
             output = _predict_tensor_core(
                 self._model, self._preprocessing, self.input_schema, input_data, "ArtifactPredictor.predict",
+                require_batch=True,
             )
             if self._classes is not None:
                 return interpret_classification(output, self._classes)

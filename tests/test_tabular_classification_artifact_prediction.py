@@ -137,6 +137,36 @@ def test_predict_tabular_classification_artifact_missing_file_raises_persistence
         predict_tabular_classification_artifact(str(tmp_path / "nope.forge"), np.zeros((1, 4), dtype=np.float32))
 
 
+def test_predict_tabular_classification_artifact_rejects_unbatched_1d_input_clearly(tmp_path):
+    """Milestone 105: a genuinely reproduced external-developer blocker --
+    an unbatched 1-D single row (the same shape `predict_tensor_artifact()`'s
+    regression path legitimately accepts, see `_validate_feature_count()`'s
+    own docstring) used to slip past feature-count validation here and fail
+    deep inside `interpret_classification()` with an internals-revealing
+    `TrainerError` naming a function this caller never called directly.
+    Must now raise a clear `forge.DataError` before the model ever runs,
+    naming the exact fix (wrap the row in an extra list)."""
+    forge.random.seed(0)
+    model = _tiny_model()
+    path = tmp_path / "model.forge"
+    save_model(model, str(path), classes=["a", "b", "c"], task="tabular_classification")
+
+    with pytest.raises(DataError, match="requires a batched input"):
+        predict_tabular_classification_artifact(str(path), [0.1, 0.2, 0.3, 0.4])
+
+    # The equivalent artifact with no saved classes (the raw np.argmax(...,
+    # axis=1) fallback) must reject the same shape just as clearly, not with
+    # a raw numpy AxisError.
+    no_classes_path = tmp_path / "model_no_classes.forge"
+    save_model(model, str(no_classes_path), task="tabular_classification")
+    with pytest.raises(DataError, match="requires a batched input"):
+        predict_tabular_classification_artifact(str(no_classes_path), [0.1, 0.2, 0.3, 0.4])
+
+    # A correctly-batched single-row input (the documented contract) still works.
+    results = predict_tabular_classification_artifact(str(path), [[0.1, 0.2, 0.3, 0.4]])
+    assert len(results) == 1
+
+
 # -- end-to-end: real example, fresh process -----------------------------------
 
 

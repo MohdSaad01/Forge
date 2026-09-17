@@ -56,8 +56,8 @@ examples/mnist/artifacts/mnist_model.forge     <- portable artifact
 Forge Prediction
 -----------------
 Input: new_digit_query.png
-Prediction: digit 7
-Confidence: 94.8%
+Prediction: digit 2
+Confidence: 100.0%
 ```
 
 Answers to the questions a developer new to this repository would ask:

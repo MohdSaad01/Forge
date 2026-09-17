@@ -327,16 +327,15 @@ the suite plus a real wheel-build/install smoke test on every push to
 
 ## Project status
 
-Forge is under active, incremental development -- there is no fixed
-release date or version-1.0 target. The framework itself (Tensor/autograd,
-CPU+CUDA backends, `nn`/`optim`/`data`/`training`/`serialization`, CLI) is
-feature-complete for everything the current examples need. The most recent
-engineering milestone made a training run's own return value report what
-happened during training (`TrainingResult`); since then, development has
-been in a documentation/repository-cleanup phase, bringing this README,
-`CLAUDE.md`, and the examples index in line with the current codebase
-before the next engineering milestone begins. See
-[`docs/development/progress.md`](docs/development/progress.md) for the
+Forge is a **1.0 release candidate**: the framework itself
+(Tensor/autograd, CPU+CUDA backends, `nn`/`optim`/`data`/`training`/
+`serialization`, CLI) is feature-complete for everything the current
+examples need, and the most recent engineering milestone (M105) validated
+it end-to-end as an installable product -- a real `python -m build` wheel,
+installed into a clean virtual environment, consumed from a directory
+outside this repository, driving both the image (`examples/mnist`) and
+tabular (`examples/tabular_diabetes`) workflows through to a prediction.
+See [`docs/development/progress.md`](docs/development/progress.md) for the
 full milestone-by-milestone history and
 [`docs/development/roadmap.md`](docs/development/roadmap.md) for how
 future milestones get chosen.
