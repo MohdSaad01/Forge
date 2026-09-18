@@ -61,7 +61,16 @@ Public subpackages:
   three -- it calls `inspect_model()` to determine which of the above
   workflows a `.forge` file's own persisted metadata supports, then
   delegates to that function unchanged, so a caller no longer has to already
-  know which one applies.
+  know which one applies; and `train_image_classifier()` (Milestone 107),
+  the common-case convenience entry point for the "directory of labeled
+  image files -> trained, portable classifier" workflow specifically -- it
+  composes `forge.data.ImageFolder`/`Resize`/`Normalize`/`random_split`/
+  `DataLoader`, a default CNN sized for the discovered classes and image
+  resolution (or a caller-supplied `model=`), and `train_and_save()` into
+  one call, returning an `ImageClassifierResult`. It replaces none of the
+  pieces it composes -- see `forge/training/image_classifier.py`'s own
+  module docstring for the full design rationale and what remains directly
+  accessible for a caller who needs more control than it exposes.
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a
@@ -129,6 +138,7 @@ from .training import (
     ArtifactPredictor,
     ClassificationPrediction,
     EarlyStopping,
+    ImageClassifierResult,
     TrainAndSaveResult,
     TrainingResult,
     generate_sequence,
@@ -144,6 +154,7 @@ from .training import (
     save_and_verify,
     train,
     train_and_save,
+    train_image_classifier,
 )
 
 __version__ = "0.1.0"
@@ -201,4 +212,6 @@ __all__ = [
     "EarlyStopping",
     "ArtifactPredictor",
     "load_predictor",
+    "train_image_classifier",
+    "ImageClassifierResult",
 ]

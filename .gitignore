@@ -102,3 +102,6 @@ examples/tabular_diabetes/artifacts*/
 # keep/reject decisions, is preserved in experiment/README.md, not here.
 experiment/artifacts/
 experiment/results/
+
+# Ignore local testing and scratchpads
+sandbox/

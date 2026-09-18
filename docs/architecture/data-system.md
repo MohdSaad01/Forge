@@ -76,10 +76,10 @@ already-order-independent dataset (e.g. i.i.d.-generated rows); prefer
 by class then filename) and every split needs a representative mix. See
 `docs/development/m74-data-workflow.md`.
 
-### ImageFolder (Milestone 69)
+### ImageFolder (Milestone 69, `on_error=` added Milestone 107)
 `forge.data.ImageFolder(root, transform=None, target_transform=None,
-extensions=IMAGE_EXTENSIONS)` discovers `(image, label)` samples from a
-directory-per-class image tree:
+extensions=IMAGE_EXTENSIONS, on_error="raise")` discovers `(image, label)`
+samples from a directory-per-class image tree:
 ```python
 dataset = ImageFolder("data/cats-dogs", transform=preprocess)
 image, label = dataset[0]        # image: Tensor(3, H, W) float32, [0, 255]
@@ -101,6 +101,18 @@ discarded) -- decoded fresh on every `__getitem__`, no caching/preloading.
 `ImageFolder` does not resize -- every file under `root` must already share
 one `(H, W)`, or `transform=` must normalize that; see `Resize` below
 (Milestone 70), which exists specifically to fill this gap.
+
+`on_error="raise"` (the default, unchanged behavior) scans candidate files
+into `.samples` unread -- an unreadable file surfaces as `DataError` lazily,
+the first time `__getitem__` fetches it. `on_error="skip"` (Milestone 107)
+instead decodes every candidate once at construction time, excludes any
+that raise `DataError`, and records each one in `.skipped_samples`
+(`list[tuple[Path, str]]`, never silent) -- so a subsequently-iterated
+`DataLoader` can never abort mid-epoch on a bad file. Added after Milestone
+107's real ~25,000-image acceptance dataset (`sandbox/petimages`) turned up
+exactly 2 corrupt JPEGs among otherwise-good files, and the only way to
+handle them beforehand was reaching past this class's public surface into
+the underscore-prefixed `_load_image()` directly.
 Full contract: `forge/data/image_folder.py`'s module docstring.
 
 ## DataLoader

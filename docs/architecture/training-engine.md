@@ -1438,6 +1438,91 @@ call, bit-for-bit / index-for-index.
 See `docs/development/m86-unified-artifact-prediction.md` and
 `docs/development/m87-explicit-task-metadata.md`.
 
+## Image-folder classification convenience: `train_image_classifier()` (Milestone 107)
+
+`forge.train()`/`train_and_save()` are the general single-call training
+entry points -- any `Module` on any `Dataset`, with `loss`/`optimizer`
+required and no automatic selection (see **Single-call high-level
+training** above). Milestone 107's real-world acceptance test
+(`sandbox/petimages`, ~25,000 externally-sourced cat/dog images) found that
+for the specific, extremely common "directory-per-class folder of image
+files -> trained classifier" shape, reaching that general entry point still
+required a developer to hand-assemble every stage themselves
+(`sandbox/t1_cat_dog/train.py`): build `Resize`+`Normalize` twice (once for
+`ImageFolder(transform=...)`, again for `train_and_save(preprocessing=...)`,
+nothing keeping the two in sync); compute a train/validation split's exact
+sample counts from a fraction; pick a CNN architecture and hand-derive its
+flattened `Linear` input size for the chosen resolution; and -- the most
+serious gap -- reach past `ImageFolder`'s public surface into the
+underscore-prefixed `_load_image()` and mutate `.samples` directly just to
+skip 2 corrupt JPEGs out of 25,000, since `DataLoader` has no per-sample
+error recovery of its own and one bad file would otherwise abort an entire
+run partway through.
+
+`forge.train_image_classifier(data_dir, *, path, ...)`
+(`forge/training/image_classifier.py`) is the convenience layer that closes
+that gap, composing existing pieces unchanged:
+`ImageFolder`(`on_error=`) -> `Resize`+`Normalize` (built once, reused as
+both `transform=` and the persisted `preprocessing=`) -> `random_split` ->
+`DataLoader` -> a default CNN (or a caller-supplied `model=`) ->
+`CrossEntropyLoss`/`Adam` -> `train_and_save(..., task="classification")`.
+Returns an `ImageClassifierResult` (history, final-epoch metrics, the
+reloaded model, `artifact_path`, discovered `classes`, dataset/split sizes,
+and which files were skipped). The two genuinely new pieces are
+`ImageFolder(on_error="skip")` (`forge/data/image_folder.py`, Milestone
+107) -- a public, documented "report and exclude unreadable files" policy,
+opt-in (`ImageFolder`'s own default stays `"raise"`, unchanged for every
+existing caller) -- and `_default_image_classifier_cnn()`, exactly the
+three-block CNN `sandbox/t1_cat_dog/model.py` hand-wrote and validated on
+the real dataset (not a new, unvalidated architecture), sized generically
+for `image_size` instead of hand-derived per resolution.
+
+**Interfaces considered, and why one Python function was chosen:**
+- *`forge.train(..., task="image_classification")`* -- rejected: `train()`'s
+  whole shape is "you already built `model`/`dataset`, train them"; a
+  `task=` argument that instead takes a directory path and builds its own
+  `Dataset`/model would be a second, incompatible calling convention behind
+  one function name, not a generalization of the first.
+- *A `forge.ImageClassification` workflow/builder object* -- rejected: every
+  other Forge high-level entry point (`train`, `train_and_save`, the five
+  `predict_*_artifact()` functions) is a plain function returning a plain
+  result object, not a stateful builder; introducing the first object-based
+  workflow API for exactly one task would be a new pattern with no other
+  precedent in the codebase, for no behavior a function call doesn't
+  already give.
+- *A CLI command (`forge train image-classification ./data`)* -- rejected
+  for this milestone: Forge's CLI (`forge/cli/`) today only wraps
+  already-trained-artifact operations (`inspect`/`convert`/`predict`); a
+  training command would be a new CLI category needing its own flag surface
+  for `model=`/`epochs=`/`image_size=`/etc. with no existing precedent to
+  follow, and the Python function already serves the target workflow
+  end-to-end (`infer.py`-style consumption was already exactly one call
+  before this milestone -- see **Portable-artifact inference in one call**
+  above). Revisit only if a real workflow specifically needs CLI-only
+  training.
+- *A fully generic `forge.train_classifier(dataset, ...)` over any
+  `Dataset`* -- rejected: the actual friction was image-folder-specific
+  (`Resize`/`ImageFolder`/corrupt-file handling/CNN sizing); a dataset-
+  agnostic version would still leave every one of those problems unsolved
+  for the one real workload that exposed them, while adding an API that
+  looks more general than it actually is.
+
+**What stays exposed, deliberately:** `model=` replaces the default
+architecture entirely; `epochs`/`batch_size`/`learning_rate`/`val_fraction`/
+`image_size`/`device`/`seed`/`on_error`/`path` are plain keyword arguments.
+**What is not exposed:** optimizer/loss choice (always `Adam`/
+`CrossEntropyLoss` -- unlike `train()`'s general case, image-folder
+classification has one obvious loss), and the default architecture's
+internal widths. A caller needing either builds the pipeline directly from
+`ImageFolder`/`train_and_save()`, exactly as `sandbox/t1_cat_dog/train.py`
+still does -- `train_image_classifier()` does not replace that path and does
+not make it harder to reach.
+
+See `forge/training/image_classifier.py`'s own module docstring for the
+full contract and `docs/development/progress.md`'s Milestone 107 entry for
+the real `petimages` acceptance-test results and the before/after
+comparison.
+
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and
 the milestone's own non-goals): distributed training, mixed precision,

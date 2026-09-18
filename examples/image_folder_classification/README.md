@@ -49,6 +49,38 @@ Every step uses only public Forge APIs (`forge`, `forge.data`, `forge.nn`,
 example only generates a small synthetic image dataset and assembles a
 small CNN from existing `forge.nn` layers.
 
+## High-level alternative: `forge.train_image_classifier()` (Milestone 107)
+
+This script spells out every stage by hand -- `ImageFolder`, the
+`Resize`+`Normalize` transform, `random_split`, `DataLoader`,
+`build_model()`, `Adam`/`CrossEntropyLoss` -- on purpose, as a worked
+example of what `forge.train()`/`train_and_save()` build on top of. For the
+common case (train a classifier on a directory-per-class image folder, no
+custom architecture/optimizer needed), Milestone 107 added
+`forge.train_image_classifier()`, which performs that same composition in
+one call:
+
+```python
+import forge
+
+result = forge.train_image_classifier(
+    "examples/image_folder_classification/data", path="model.forge", epochs=25,
+)
+```
+
+is equivalent to most of what `train.py`'s fresh (non-`--resume`) path does
+-- discovers classes, builds and reuses one `Resize`+`Normalize` transform
+for both training and the persisted artifact, splits 80/20, and trains a
+default CNN sized for the discovered resolution/class count (or a
+caller-supplied `model=`) via `train_and_save(..., task="classification")`.
+It does not cover `--resume`/checkpointing (a separate concern -- see
+`start_training_session()` below) or this script's own class-balance
+reporting/generated-image demos. See `forge/training/image_classifier.py`'s
+module docstring and `docs/architecture/training-engine.md`'s **Image-folder
+classification convenience** section for the full contract, and
+`sandbox/t1_cat_dog/` for this call validated against a real ~25,000-image
+dataset rather than this example's synthetic one.
+
 ## Files
 
 - `generate_dataset.py` -- writes a synthetic `circle`/`square`/`triangle`

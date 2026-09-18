@@ -9,6 +9,7 @@ logic of its own. See `docs/architecture/training-engine.md`.
 
 from .api import TrainAndSaveResult, TrainingResult, train, train_and_save
 from .early_stopping import EarlyStopping
+from .image_classifier import ImageClassifierResult, train_image_classifier
 from .inference import (
     ArtifactPredictor,
     ClassificationPrediction,
@@ -57,4 +58,6 @@ __all__ = [
     "EarlyStopping",
     "ArtifactPredictor",
     "load_predictor",
+    "train_image_classifier",
+    "ImageClassifierResult",
 ]

@@ -39,7 +39,9 @@ representation a custom `Dataset` documents for itself.
   independently. See `docs/development/m74-data-workflow.md`.
 - Directory-based image classification: `forge.data.ImageFolder` (M69) --
   discovers `(image, label)` samples from a `root/class_x/*.jpg` directory
-  tree. See `docs/development/m69-image-folder.md` and
+  tree; `on_error="skip"` (M107) reports and excludes files that fail to
+  decode instead of the default `"raise"`. See
+  `docs/development/m69-image-folder.md` and
   `forge/data/image_folder.py`'s module docstring for the full contract.
 - Practical file-backed datasets (beyond `ImageFolder`): not yet implemented.
 - Tabular data conveniences: not yet implemented.

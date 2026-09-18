@@ -80,6 +80,44 @@ share the same `(H, W)`, or `transform=` must normalize that (Forge has no
 consistent with "measure before optimizing" (`docs/architecture/
 data-pipeline.md`'s scope); revisit only if a real workload measures this as
 a bottleneck.
+
+## Unreadable files (`on_error=`, Milestone 107)
+
+A real, externally-sourced image folder can contain a handful of corrupt or
+truncated files among many thousands of good ones -- Milestone 107's real
+~25,000-image `sandbox/petimages` cat/dog dataset had exactly 2. Before this
+milestone, `ImageFolder` had no built-in way to handle that: every caller
+who wanted to train on such a folder had to reach past the public API,
+pre-scan `.samples` by hand, and call the underscore-prefixed
+`ImageFolder._load_image()` directly to find and drop the bad ones --
+exactly what `sandbox/t1_cat_dog/train.py`'s `_filter_unreadable_samples()`
+did. `on_error` makes that a one-argument, public, documented policy
+instead:
+
+- `on_error="raise"` (the default, and the *only* behavior before this
+  milestone) -- unchanged: every candidate file matching `extensions` is
+  scanned into `.samples` at construction time, unread; decoding happens
+  lazily in `__getitem__`, and an unreadable file surfaces there as a
+  `DataError` the first time (and every time) it is fetched. No decode work
+  happens at construction time.
+- `on_error="skip"` -- every candidate file is decoded once at construction
+  time (the same `_load_image()` call `__getitem__` would make) specifically
+  to validate it opens; a file that raises `DataError` is left out of
+  `.samples` entirely rather than surfacing later inside `DataLoader`
+  iteration (which has no per-sample error recovery of its own -- one bad
+  file would otherwise abort an entire training run partway through, at an
+  arbitrary epoch). Every skip is recorded, never silent: `.skipped_samples`
+  (a `list[tuple[Path, str]]` of `(path, error message)`, empty by default)
+  holds exactly what was excluded and why. This trades one extra full-dataset
+  decode pass at construction time (measured: ~1 extra full-dataset decode,
+  same cost `sandbox/t1_cat_dog/train.py`'s hand-written pre-scan already
+  paid) for the guarantee that a subsequently-iterated `DataLoader` never
+  raises mid-epoch.
+
+Any other value raises `DataError` naming the two supported values. Class
+discovery (`classes`/`class_to_idx`) is entirely unaffected by `on_error` --
+it is established from directory structure alone, before any decoding is
+attempted, exactly as already documented above.
 """
 
 from __future__ import annotations
@@ -121,7 +159,11 @@ class ImageFolder(Dataset):
         transform: "Any | None" = None,
         target_transform: "Any | None" = None,
         extensions: "tuple[str, ...]" = IMAGE_EXTENSIONS,
+        on_error: str = "raise",
     ):
+        if on_error not in ("raise", "skip"):
+            raise DataError(f"ImageFolder on_error must be 'raise' or 'skip', got {on_error!r}.")
+
         self.root = Path(root)
         if not self.root.is_dir():
             raise DataError(
@@ -131,6 +173,8 @@ class ImageFolder(Dataset):
         self.transform = transform
         self.target_transform = target_transform
         self.extensions = tuple(e.lower() for e in extensions)
+        self.on_error = on_error
+        self.skipped_samples: "list[tuple[Path, str]]" = []
 
         class_dirs = sorted(
             (p for p in self.root.iterdir() if p.is_dir()),
@@ -164,6 +208,23 @@ class ImageFolder(Dataset):
                 f"ImageFolder root '{self.root}' contains no images with a supported "
                 f"extension {self.extensions} under any class subdirectory."
             )
+
+        if on_error == "skip":
+            readable = []
+            for path, class_idx in samples:
+                try:
+                    self._load_image(path)
+                except DataError as exc:
+                    self.skipped_samples.append((path, str(exc)))
+                    continue
+                readable.append((path, class_idx))
+            if not readable:
+                raise DataError(
+                    f"ImageFolder root '{self.root}' has no readable images: all "
+                    f"{len(samples)} candidate file(s) failed to decode "
+                    f"(on_error='skip'). See .skipped_samples for the reasons."
+                )
+            samples = readable
 
         self.samples = samples
 

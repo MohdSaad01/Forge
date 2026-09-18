@@ -55,7 +55,8 @@ See `docs/architecture/architecture.md` for the full design rules and
   `Flatten`, `ReLU`, `Tanh`; losses `MSELoss`, `CrossEntropyLoss`.
 - **`forge.optim`** -- `SGD`, `Adam`.
 - **`forge.data`** -- `Dataset`/`TensorDataset`/`Subset`, `ImageFolder`
-  (directory-per-class image classification, via Pillow decoding),
+  (directory-per-class image classification, via Pillow decoding, with an
+  opt-in `on_error="skip"` policy for unreadable files -- Milestone 107),
   transforms (`Normalize`, `ReplaceValue`, `Compose`, `Reshape`, `Resize`,
   ...), `DataLoader` (batching, shuffling, `random_split`/
   `sequential_split`), `save_image()`, and `CUDAPrefetchLoader` for
@@ -79,8 +80,13 @@ See `docs/architecture/architecture.md` for the full design rules and
   classification) turn a saved `.forge` file into a prediction with no
   manual preprocessing/class-vocabulary reconstruction, and
   `predict_model()` picks the right one automatically from the artifact's
-  own `task` metadata. See [Training, checkpointing, and
-  persistence](#training-checkpointing-and-persistence) below.
+  own `task` metadata. For the specific "directory of labeled image files"
+  case, `train_image_classifier(data_dir, path=...)` composes
+  `ImageFolder`/`Resize`/`Normalize`/`random_split`/a default CNN/
+  `train_and_save()` into one call -- see [Image classification, the short
+  way](#image-classification-the-short-way) below. See [Training,
+  checkpointing, and persistence](#training-checkpointing-and-persistence)
+  below for the general path.
 - **`forge.serialization`** -- `save_model`/`load_model` (architecture +
   parameters, via an explicit module registry -- never arbitrary code
   execution) and `save_checkpoint`/`load_checkpoint` (adds optimizer state,
@@ -231,6 +237,46 @@ alongside it); run the full script directly:
 ```bash
 python examples/trainer_demo.py
 ```
+
+## Image classification, the short way
+
+The general path above (`train()`, `Dataset`/`DataLoader`, a hand-picked
+loss/optimizer) is Forge's common entry point for any model on any dataset.
+For the specific, very common case of an ordinary directory-per-class
+folder of image files, `train_image_classifier()` (Milestone 107) composes
+the pieces a developer would otherwise assemble by hand -- `ImageFolder`,
+`Resize`+`Normalize`, a train/validation split, a `DataLoader`, a CNN sized
+for the discovered classes and image resolution, `CrossEntropyLoss`/`Adam`,
+and `train_and_save()` -- into one call:
+
+```python
+import forge
+
+result = forge.train_image_classifier(
+    "path/to/data",   # data/cat/*.jpg, data/dog/*.jpg, ...
+    path="classifier.forge",
+    epochs=5,
+)
+print(result.val_metrics["accuracy"])
+```
+
+```python
+prediction = forge.predict_artifact("classifier.forge", "new_photo.jpg")
+print(prediction.label, prediction.confidence)
+```
+
+Unreadable files (a real, externally-sourced folder can contain a few) are
+reported and skipped by default (`on_error="skip"`); pass `on_error="raise"`
+to fail loudly instead. `model=`/`epochs=`/`batch_size=`/`learning_rate=`/
+`image_size=`/`val_fraction=`/`device=`/`seed=` are all overridable keyword
+arguments -- this does not replace `ImageFolder`/`train_and_save()`, and a
+caller needing more control (a custom architecture, optimizer, or loss)
+still uses those directly, exactly as `examples/image_folder_classification/
+train.py` does. See `forge/training/image_classifier.py`'s module docstring
+for the full contract and design rationale, and
+`docs/architecture/training-engine.md`'s **Image-folder classification
+convenience** section for the alternatives considered before choosing this
+interface.
 
 ## Examples
 
