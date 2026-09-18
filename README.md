@@ -373,20 +373,24 @@ the suite plus a real wheel-build/install smoke test on every push to
 
 ## Project status
 
-**Forge 1.0.** The framework itself (Tensor/autograd, CPU+CUDA backends,
-`nn`/`optim`/`data`/`training`/`serialization`, CLI) is feature-complete for
-everything the current examples need. M105 validated it end-to-end as an
-installable product, and M106 re-verified that same product surface against
-the repository as it actually stands -- both flagship workflows
-(`examples/mnist`, `examples/tabular_diabetes`) trained, evaluated, saved,
-and predicted from freshly-built `wheel` and `sdist` distributions, in a
-clean virtual environment, from a directory outside this repository, on
-both CPU and (hardware-verified) CUDA -- and found no remaining
-external-developer blocker. See
-[`docs/development/progress.md`](docs/development/progress.md) for the
+**Forge 1.x -- maintenance mode.** The framework itself (Tensor/autograd,
+CPU+CUDA backends, `nn`/`optim`/`data`/`training`/`serialization`, CLI) is
+feature-complete for everything the current examples need. M105 validated
+it end-to-end as an installable product, M106 re-verified that same product
+surface against the repository as it actually stands -- both flagship
+workflows (`examples/mnist`, `examples/tabular_diabetes`) trained,
+evaluated, saved, and predicted from freshly-built `wheel` and `sdist`
+distributions, in a clean virtual environment, from a directory outside
+this repository, on both CPU and (hardware-verified) CUDA, with no
+remaining external-developer blocker -- and M110 closed the milestone-driven
+feature-accumulation model in favor of an issue-driven maintenance
+workflow: see [`docs/development/maintenance.md`](docs/development/maintenance.md)
+for the supported-surface boundary, regression/real-world-smoke-test
+baseline, bug classification, and release policy that now govern changes.
+See [`docs/development/progress.md`](docs/development/progress.md) for the
 full milestone-by-milestone history and
-[`docs/development/roadmap.md`](docs/development/roadmap.md) for how
-future milestones get chosen.
+[`docs/development/roadmap.md`](docs/development/roadmap.md) for how the
+pre-1.0 milestones were chosen.
 
 ## Where things live
 
