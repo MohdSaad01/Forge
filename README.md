@@ -3,195 +3,155 @@
 [![CI](https://github.com/MohdSaad01/Forge/actions/workflows/ci.yml/badge.svg)](https://github.com/MohdSaad01/Forge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Forge** is a deep-learning framework built from scratch in Python: its own
-`Tensor`/autograd engine, CPU and CUDA execution backends, neural-network
-modules, optimizers, data pipeline, training loop, and model/checkpoint
-persistence. It uses NumPy for CPU array math and a hand-written CUDA
-backend for GPU execution, but wraps no existing deep-learning framework --
-every layer, gradient, and training step is Forge's own code.
+**Forge is a deep learning framework for building, training, evaluating,
+persisting, and using machine-learning models in Python.** It provides its
+own tensors, automatic differentiation, neural-network modules, optimizers,
+data loading, training workflows, and model artifacts, with CPU and CUDA
+execution.
 
-Forge is a solo-developer, pre-release project. It is not a production
-framework, is not API-stable, and is not a PyTorch/TensorFlow replacement.
-It is, however, real and working: twelve example workloads spanning five
-task types -- image classification, dense image segmentation, sequence
-generation, tabular classification, and regression (see
-[Examples](#examples) below) -- train, evaluate, checkpoint, persist, and
-reload end-to-end today, each with hardware-verified CPU/CUDA parity.
+## What is Forge?
 
-## Architecture
+Forge is written from scratch. It uses NumPy for CPU array math, Pillow for
+image decoding, and a hand-written CUDA backend for GPU execution, but it does
+not wrap PyTorch, TensorFlow, or any other deep learning framework. Tensors,
+gradients, layers, optimizers, the training loop, and the model file format are
+all Forge's own code.
+
+The goal is to cover the whole life of a model, not just the training step:
 
 ```text
-Public API / CLI
-       |
-Training & Evaluation      (forge.training)
-       |
-Modules / Losses / Optimizers   (forge.nn, forge.optim)
-       |
-Tensor + Autograd          (forge.tensor, forge.autograd)
-       |
-Device / Backend Abstraction
-       +-- CPU  (NumPy)
-       +-- CUDA (hand-written kernels, forge/backend/cuda/kernels.cu)
-
-Data subsystem feeds Training:  forge.data: Dataset -> Transforms -> DataLoader -> Batches
-Persistence crosses the model/parameter boundary: forge.serialization
+Build a model → Train it → Evaluate it → Save it → Load it later → Use it for inference
 ```
 
-See `docs/architecture/architecture.md` for the full design rules and
-`docs/architecture/` generally for each layer's own document.
+Forge offers two levels of API. **Low-level building blocks** (tensors,
+modules, losses, optimizers, data loaders, a `Trainer`) give you control over
+every part of a model and its training. **Higher-level workflows** wrap common
+combinations of those pieces so that routine tasks take a few lines. Not every
+kind of model has a high-level workflow yet; where one exists, it is built on
+the same public building blocks you can use directly.
 
-## What's currently in Forge
+## What can you build with Forge?
 
-- **Tensor / autograd** (`forge.Tensor`) -- reverse-mode automatic
-  differentiation over elementwise ops, `matmul`, `sum`/`reshape`,
-  `relu`/`tanh`/`sigmoid`/`exp`/`log`/`sqrt`, `conv2d`/`max_pool2d`/
-  `upsample_nearest2d`, `cross_entropy`, `embedding_lookup`, `batch_norm2d`,
-  and a vanilla-RNN recurrence step (`rnn_cell`) -- all differentiable and
-  CPU/CUDA dispatched identically. `no_grad()` suspends graph construction
-  for inference/evaluation.
-- **`forge.nn`** -- `Module`/`Parameter` composition; layers `Linear`,
-  `Conv2d`, `MaxPool2d`, `Conv1d`, `MaxPool1d`, `UpsampleNearest2d`,
-  `BatchNorm2d`, `RNNCell`, `LSTMCell`, `Embedding`, `Dropout`, `Sequential`,
-  `Flatten`, `ReLU`, `Tanh`; losses `MSELoss`, `CrossEntropyLoss`.
-- **`forge.optim`** -- `SGD`, `Adam`.
-- **`forge.data`** -- `Dataset`/`TensorDataset`/`Subset`, `ImageFolder`
-  (directory-per-class image classification, via Pillow decoding, with an
-  opt-in `on_error="skip"` policy for unreadable files -- Milestone 107),
-  transforms (`Normalize`, `ReplaceValue`, `Compose`, `Reshape`, `Resize`,
-  ...), `DataLoader` (batching, shuffling, `random_split`/
-  `sequential_split`), `save_image()`, and `CUDAPrefetchLoader` for
-  overlapped host-to-device transfer.
-- **`forge.training`** -- a single-call high-level path from a `Dataset` to
-  a portable, verified model: `train()` builds its own `DataLoader`(s) and
-  drives `Trainer.fit()` underneath, returning a `TrainingResult`
-  (history plus the trained model and final-epoch loss/metrics); `predict()`
-  is standalone post-training inference with no `Loss`/`Optimizer` required;
-  `train_and_save()` composes `train()` with `save_and_verify()` (which
-  saves a model and immediately proves the file is portable by reloading it
-  fresh and comparing a prediction) into one call returning
-  `TrainAndSaveResult`. Lower-level pieces -- `Trainer` (`fit`/`evaluate`/
-  checkpoint resume), metrics (`Accuracy`, `MeanAbsoluteError`, ...), and
-  `start_training_session()` (fresh-or-resumed `Trainer` in one call,
-  including exact `DataLoader`-shuffle resume equivalence) -- remain
-  available directly for cases `train()` doesn't cover, such as
-  checkpoint/resume. On the consuming side, five task-specific
-  `predict_*_artifact()` functions (image classification, plain numeric
-  regression, image-to-image segmentation, sequence generation, tabular
-  classification) turn a saved `.forge` file into a prediction with no
-  manual preprocessing/class-vocabulary reconstruction, and
-  `predict_model()` picks the right one automatically from the artifact's
-  own `task` metadata. For the specific "directory of labeled image files"
-  case, `train_image_classifier(data_dir, path=...)` composes
-  `ImageFolder`/`Resize`/`Normalize`/`random_split`/a default CNN/
-  `train_and_save()` into one call -- see [Image classification, the short
-  way](#image-classification-the-short-way) below. See [Training,
-  checkpointing, and persistence](#training-checkpointing-and-persistence)
-  below for the general path.
-- **`forge.serialization`** -- `save_model`/`load_model` (architecture +
-  parameters, via an explicit module registry -- never arbitrary code
-  execution) and `save_checkpoint`/`load_checkpoint` (adds optimizer state,
-  epoch/step, and RNG state, for exact training resume). `save_model(...,
-  preprocessing=...)`/`load_preprocessing()` optionally save and reconstruct
-  a model's required input-preprocessing `Transform` alongside it, via the
-  same explicit-registry principle. `save_model(..., task=...)` optionally
-  declares which of `"classification"`/`"regression"`/`"segmentation"`/
-  `"sequence"`/`"tabular_classification"` the artifact represents -- the
-  authoritative signal `forge.predict_model()` uses to dispatch reliably.
-  `inspect_model()` reads an artifact's architecture/preprocessing/classes/
-  task without reconstructing a live model or requiring CUDA. See
-  `docs/architecture/persistence.md`.
-- **CUDA backend** (`forge.backend.cuda`, `forge.cuda`) -- a real,
-  hardware-tested backend (not simulated): device tensor storage, a caching
-  memory allocator, explicit streams, pinned-memory async transfer, and
-  kernels for every op above. `forge.cuda.is_cuda_available()` tells you
-  whether a working CUDA device is present; every CUDA-specific example
-  argument (`--device cuda`) and API (`Tensor(..., device="cuda")`,
-  `Trainer(device="cuda")`) is opt-in and raises `forge.CUDAError` cleanly
-  when it isn't.
-- **CLI** (`forge ...` / `python -m forge ...`) -- `model inspect`/`convert`
-  and `checkpoint inspect`/`convert` over the persistence format above, and
-  `model predict` (task-aware over all five task types above, driven by
-  each artifact's own persisted `task` metadata), plus `forge benchmark`.
-  See `docs/development/cli.md`.
+Forge is a general framework. The repository contains runnable, tested
+workloads in these areas:
 
-Not in Forge (by design, not oversight): attention/Transformer layers,
-convolution beyond 2D, distributed/multi-GPU training, mixed-precision
-training, ONNX or any other framework's model-file interop. These are not
-planned unless a real workload needs them -- see the **Project scope and
-philosophy** section below.
+- **Image models:** classification with CNNs (MNIST, a small ResNet-style
+  network, classifying image files from a folder), per-pixel segmentation, and
+  convolutional autoencoders.
+- **Tabular models:** regression and classification with multilayer
+  perceptrons, including one on a real external dataset.
+- **Sequence and signal models:** character- and word-level language modeling
+  with RNNs, an RNN-vs-LSTM comparison on a long-range recall task, and 1D
+  convolutional classification of waveforms.
 
-## Installation
+Image classification is the workflow with the most convenient high-level API
+today (see below). It is one demonstrated workflow, not the scope of the
+project.
 
-Requires Python >= 3.11 (NumPy and Pillow are installed automatically as
-declared runtime dependencies). Forge is not yet published to PyPI, so
-install directly from the source repository -- either as a real,
-non-editable package (normal consumption) or as an editable checkout
-(developing Forge itself).
+## A simple Forge workflow
 
-### Normal installation (consuming Forge)
-
-Install directly from the repository:
-
-```bash
-pip install "git+https://github.com/MohdSaad01/Forge.git"
+```text
+Dataset
+   ↓
+Data pipeline (transforms, batching)
+   ↓
+Model
+   ↓
+Training
+   ↓
+Evaluation
+   ↓
+Forge artifact (.forge file)
+   ↓
+Inference
 ```
 
-or build and install the actual distribution from a local clone, rather
-than pointing `pip` at the source tree:
+A Forge artifact stores the model's architecture and weights, and can also
+carry the preprocessing the model needs, its class names, and the kind of task
+it performs. Loading an artifact later, in a different process or on a
+different day, is enough to run predictions.
 
-```bash
-git clone https://github.com/MohdSaad01/Forge.git
-cd Forge
-pip install build
-python -m build              # -> dist/forge-*.whl, dist/forge-*.tar.gz
-pip install dist/forge-*.whl
+## Train and use a model
+
+### Train an image classifier
+
+For the common case of a folder of images with one subfolder per class,
+`forge.train_image_classifier()` does the whole job in one call:
+
+```python
+import forge
+
+result = forge.train_image_classifier(
+    "path/to/dataset",   # dataset/cat/*.jpg, dataset/dog/*.jpg, ...
+    path="model.forge",
+    epochs=5,
+)
+print(result.val_metrics["accuracy"])
 ```
 
-Verify the install from a directory *outside* the cloned repository (so
-`import forge` can only resolve to the installed package, not a same-named
-local `forge/` directory -- see [Examples](#examples) below for why this
-distinction matters when running example scripts):
+It loads the images with `ImageFolder`, resizes and normalizes them, splits off
+a validation set, builds a CNN sized for your classes and image size (or uses a
+model you pass in), trains it with cross-entropy loss and Adam, and saves and
+verifies a portable artifact. Unreadable image files are reported and skipped
+by default. Epochs, batch size, learning rate, image size, validation
+fraction, device, and seed are all keyword arguments.
 
-```bash
-python -c "import forge; print(forge.__version__)"
-forge --version
+### Use a saved model
+
+Any saved artifact can be loaded once and used for predictions. The
+preprocessing and class names come from the file, so nothing needs to be
+reconstructed by hand:
+
+```python
+predictor = forge.load_predictor("model.forge")
+prediction = predictor.predict("new_photo.jpg")
+print(prediction.label, prediction.confidence)
 ```
 
-### Development from source
+The repository includes a trained model you can use straight away:
 
-Working on Forge itself needs an editable install, so local edits take
-effect without reinstalling:
-
-```bash
-git clone https://github.com/MohdSaad01/Forge.git
-cd Forge
-pip install -e .
+```text
+models/
+└── image_classifier/
+    ├── image_model.forge    # trained cat/dog classifier (a Forge artifact)
+    └── predict.py           # loads the artifact and classifies one image
 ```
 
-Optional (running the test suite / example demos that use matplotlib):
-
-```bash
-pip install -e ".[dev]"
+```powershell
+python models/image_classifier/predict.py path/to/image.jpg
 ```
 
-### CPU vs. CUDA
+```text
+Forge Image Classifier
+──────────────────────
+Image: path/to/image.jpg
+Prediction: cat
+Confidence: 96.0%
+```
 
-CPU execution requires nothing beyond the steps above and works on any
-platform. CUDA execution additionally requires an NVIDIA GPU, the CUDA
-Toolkit (`nvcc` on `PATH`), and on Windows, MSVC (from Visual Studio) --
-Forge compiles its own small CUDA kernel library the first time a CUDA
-device is actually requested (see `forge/backend/cuda/build.py`); a
-CPU-only environment never needs `nvcc` and never pays this cost. Check
-`forge.cuda.is_cuda_available()` before relying on CUDA in your own code.
-This repository's CUDA path is hardware-verified on one specific
-machine/GPU (see `docs/development/development-environment.md`); it is
-expected to work on other CUDA-capable NVIDIA GPUs but has not been tested
-on hardware this project does not own.
+(The output above is illustrative; the label and confidence depend on the
+image.)
 
-## First model
+This model is a small example of a trained Forge model being consumed outside
+the training process. It is not a benchmark or a general-purpose pretrained
+model: it was trained only to tell cats from dogs, so it will answer "cat" or
+"dog" for any image you give it.
 
-The smallest complete Forge program -- construct a model, train it, use it
--- using only public APIs:
+The artifact was saved from a CUDA run, and Forge does not silently move a
+CUDA-saved model onto the CPU. `predict.py` loads the model on the device
+recorded in the file, so it currently expects a working CUDA setup. From Python
+you can load the same file on any machine by choosing the device:
+
+```python
+predictor = forge.load_predictor("models/image_classifier/image_model.forge", device="cpu")
+```
+
+### Lower-level control
+
+`forge.train_image_classifier()` is built from public pieces, and the general
+training entry point, `forge.train()`, works for any model and dataset. Here is
+a small regression model trained and queried with the building blocks
+directly:
 
 ```python
 import numpy as np
@@ -206,230 +166,167 @@ from forge.optim import SGD
 forge.random.seed(0)
 rng = np.random.default_rng(0)
 
-# 1-2. Data: y = 3*x1 - 2*x2 + 1, as a Dataset (forge.train() batches it).
 X = rng.uniform(-1, 1, size=(200, 2))
 y = (3 * X[:, 0] - 2 * X[:, 1] + 1).reshape(-1, 1)
 dataset = TensorDataset(Tensor(X), Tensor(y))
 
-# 3-5. Model, loss, optimizer.
 model = Linear(2, 1)
 optimizer = SGD(model.parameters(), lr=0.1)
 
-# 6. Train.
 forge.train(model, dataset, loss=MSELoss(), optimizer=optimizer, epochs=15, batch_size=16)
-
-# 7. Predict.
-prediction = forge.predict(model, Tensor(X[:1]))
-print(prediction.numpy())
+print(forge.predict(model, Tensor(X[:1])).numpy())
 ```
 
-`forge.train()` is Forge's high-level entry point -- it builds the
-`DataLoader` and drives `Trainer.fit()` underneath; construct a `DataLoader`
-and a `Trainer` directly when you need more control (validation, metrics,
-prefetch, checkpoint/resume) -- see [Training, checkpointing, and
-persistence](#training-checkpointing-and-persistence) below.
-`examples/trainer_demo.py`'s `regression_demo()` solves this exact same
-problem the other way, spelling out the `DataLoader`/`Trainer` construction
-`forge.train()` does on your behalf above -- read it alongside this section
-to see what's happening underneath (with a second classification example
-alongside it); run the full script directly:
+When you need more than `forge.train()` offers (validation and metrics,
+CUDA prefetching, checkpoint and resume), build the `DataLoader` and `Trainer`
+yourself. `forge.train_and_save()` extends `forge.train()` by saving and
+verifying an artifact, and `forge.predict_model()` runs predictions from an
+artifact of any supported task type.
+
+## Current capabilities
+
+- **Tensors and autograd:** reverse-mode automatic differentiation over
+  elementwise operations, matrix multiplication, reductions, activations,
+  1D/2D convolution and pooling, batch normalization, embeddings, and
+  recurrent steps. `no_grad()` disables graph construction for inference.
+- **Neural-network modules:** `Linear`, `Conv1d`, `Conv2d`, `MaxPool1d`,
+  `MaxPool2d`, `UpsampleNearest2d`, `BatchNorm2d`, `RNNCell`, `LSTMCell`,
+  `Embedding`, `Dropout`, `Flatten`, `ReLU`, `Tanh`, and `Sequential`, plus
+  `MSELoss` and `CrossEntropyLoss`.
+- **Optimizers:** `SGD` and `Adam`.
+- **Data:** `Dataset` and `TensorDataset`, `ImageFolder` for
+  directory-per-class image datasets, composable transforms (`Resize`,
+  `Normalize`, `Compose`, and others), `DataLoader` with batching and
+  shuffling, train/validation splitting, and a CUDA prefetching loader.
+- **Training and evaluation:** `forge.train()`, `Trainer` with validation,
+  metrics, and early stopping, and checkpointing with exact resume.
+- **Persistence:** `.forge` model artifacts and training checkpoints. Loading
+  reconstructs models only from a registry of known Forge classes and never
+  executes code from the file. `forge.inspect_model()` reports what an artifact
+  contains without building the model.
+- **Inference:** `forge.predict()`, `forge.load_predictor()`,
+  `forge.predict_model()`, and per-task prediction functions for image
+  classification, numeric regression, image-to-image segmentation, sequence
+  generation, and tabular classification.
+- **Command line:** `forge model inspect|convert|predict` and
+  `forge checkpoint inspect|convert`.
+- **Backends:** a NumPy CPU backend that works on any platform, and a CUDA
+  backend with hand-written kernels, a caching memory allocator, streams, and
+  pinned-memory transfers.
+
+Not currently supported: attention and Transformer layers, 3D convolution,
+distributed or multi-GPU training, mixed-precision training, and import or
+export of other frameworks' model formats.
+
+## Installation
+
+Forge requires Python 3.11 or newer. It is not published on PyPI, so you
+install it from a clone of this repository. NumPy and Pillow are installed
+automatically.
 
 ```bash
+git clone https://github.com/MohdSaad01/Forge.git
+cd Forge
+python -m venv .venv
+# Windows: .venv\Scripts\activate    Linux/macOS: source .venv/bin/activate
+pip install -e .
+```
+
+Check the install and run a first example:
+
+```bash
+python -c "import forge; print(forge.__version__)"
 python examples/trainer_demo.py
 ```
 
-## Image classification, the short way
+To run the test suite or the examples that use matplotlib, install the
+development extras with `pip install -e ".[dev]"`.
 
-The general path above (`train()`, `Dataset`/`DataLoader`, a hand-picked
-loss/optimizer) is Forge's common entry point for any model on any dataset.
-For the specific, very common case of an ordinary directory-per-class
-folder of image files, `train_image_classifier()` (Milestone 107) composes
-the pieces a developer would otherwise assemble by hand -- `ImageFolder`,
-`Resize`+`Normalize`, a train/validation split, a `DataLoader`, a CNN sized
-for the discovered classes and image resolution, `CrossEntropyLoss`/`Adam`,
-and `train_and_save()` -- into one call:
+The bundled model and the examples live in the repository and are not part of
+the installed package, so run them from a clone. To use Forge only as a
+library, `pip install "git+https://github.com/MohdSaad01/Forge.git"` installs
+the package without them.
 
-```python
-import forge
-
-result = forge.train_image_classifier(
-    "path/to/data",   # data/cat/*.jpg, data/dog/*.jpg, ...
-    path="classifier.forge",
-    epochs=5,
-)
-print(result.val_metrics["accuracy"])
-```
-
-```python
-prediction = forge.predict_artifact("classifier.forge", "new_photo.jpg")
-print(prediction.label, prediction.confidence)
-```
-
-Unreadable files (a real, externally-sourced folder can contain a few) are
-reported and skipped by default (`on_error="skip"`); pass `on_error="raise"`
-to fail loudly instead. `model=`/`epochs=`/`batch_size=`/`learning_rate=`/
-`image_size=`/`val_fraction=`/`device=`/`seed=` are all overridable keyword
-arguments -- this does not replace `ImageFolder`/`train_and_save()`, and a
-caller needing more control (a custom architecture, optimizer, or loss)
-still uses those directly, exactly as `examples/image_folder_classification/
-train.py` does. See `forge/training/image_classifier.py`'s module docstring
-for the full contract and design rationale, and
-`docs/architecture/training-engine.md`'s **Image-folder classification
-convenience** section for the alternatives considered before choosing this
-interface.
+**CUDA is optional.** CPU execution needs nothing beyond the steps above. GPU
+execution needs an NVIDIA GPU, the CUDA Toolkit (`nvcc` on `PATH`), and on
+Windows the MSVC compiler. Forge compiles its kernel library the first time a
+CUDA device is requested. Use `forge.cuda.is_cuda_available()` to check. The
+CUDA backend has been verified on one GPU (an NVIDIA GeForce 940MX, CUDA 12.6);
+other CUDA-capable GPUs are expected to work but have not been tested.
 
 ## Examples
 
-Forge has 12 example workloads under `examples/`, each with its own
-README (exact commands, expected numbers, CUDA verification), plus three
-small standalone demo scripts. A representative sample:
+Twelve runnable workloads live under [`examples/`](examples/README.md). Each
+has its own README with exact commands and expected results.
 
-| Example | What it shows |
+| Area | Examples |
 |---|---|
-| `examples/trainer_demo.py` | The first-model path above, runnable directly. |
-| `examples/mnist/` | Image classification (CNN), a real external dataset. |
-| `examples/char_rnn/`, `examples/word_rnn/` | Character- and word-level language modeling (`RNNCell`/`Embedding`). |
-| `examples/regression/`, `examples/tabular_diabetes/` | Tabular regression and classification (MLP), the latter on a real external dataset. |
-| `examples/segmentation/` | Dense per-pixel prediction (encoder/decoder CNN). |
-| `examples/image_folder_classification/` | Classifying image files on disk via a directory-per-class layout. |
+| Image classification | `mnist`, `resnet`, `image_folder_classification` |
+| Dense prediction and reconstruction | `segmentation`, `autoencoder` |
+| Tabular | `regression`, `tabular_classification`, `tabular_diabetes` (real dataset) |
+| Sequences and signals | `char_rnn`, `word_rnn`, `long_range_recall`, `waveform_classification` |
 
-Every example above is production-quality and hardware-verified on both
-CPU and CUDA (trains, evaluates, checkpoints/resumes, and saves/reloads a
-model). See [`examples/README.md`](examples/README.md) for the full index
--- all 12 workloads, what each demonstrates, and which Forge APIs it
-exercises. Quick start:
+Most of these train, evaluate, checkpoint, save, and reload a model, and
+have been run on both CPU and CUDA. Only image-folder classification currently
+has a one-call convenience API; the others use `forge.train()`,
+`forge.train_and_save()`, or the `Trainer` directly, which is what makes them
+useful as starting points to copy and adapt.
 
 ```bash
 python -m examples.regression.train --epochs 40 --device cpu
 python -m examples.mnist.train --download --epochs 3 --device cpu
 python -m examples.char_rnn.train --epochs 30 --device cpu
-python -m examples.word_rnn.train --epochs 10 --device cpu
-python -m examples.waveform_classification.train --epochs 15 --device cpu
 ```
 
-Pass `--device cuda` in place of `--device cpu` on a machine where
-`forge.cuda.is_cuda_available()` is `True`.
-
-## Training, checkpointing, and persistence
-
-`forge.train(model, dataset, loss=..., optimizer=..., epochs=...)` is the
-high-level entry point for the common case: it builds a `DataLoader` from
-`dataset` (or accepts one directly), moves `model` to `device=` if given,
-and runs `Trainer.fit()` underneath, returning a `TrainingResult` -- a
-`TrainingHistory` (so `len()`/indexing/iteration all still work exactly as
-before) plus the trained `model` and final-epoch convenience accessors
-(`final_train_loss`, `final_val_metrics`, ...). `Trainer.fit()` itself runs
-the standard loop (forward -> loss -> backward
--> optimizer step, with optional validation) for callers who construct the
-`DataLoader`/`Trainer` themselves -- needed for anything `train()` doesn't
-expose: CUDA prefetch, a custom `DataLoader` generator, or checkpoint/resume.
-`forge.save_checkpoint()`/`load_checkpoint()` capture model + optimizer
-state + epoch/step + RNG state so a run can resume exactly where it left
-off (`Trainer.resume()`, or `forge.training.start_training_session()` for a
-fresh-or-resumed `Trainer` in one call); `forge.save_model()`/`load_model()`
-save just the trained architecture and parameters for later inference,
-independent of how it was trained -- `forge.save_and_verify(model, path,
-sample, preprocessing=..., classes=...)` does that save and immediately
-proves the file round-trips by reloading it fresh and comparing a
-prediction, and `forge.train_and_save(model, dataset, loss=..., optimizer=
-..., epochs=..., path=..., sample=..., preprocessing=..., classes=...,
-task=...)` composes `train()` + `save_and_verify()` into the one call every
-Trainer-based example's `train.py` ends with. `forge.inspect_model(path)`
-answers "what is this artifact?" -- model architecture summary,
-preprocessing, classes, task, format/device -- without reconstructing a live
-model or requiring CUDA.
-
-On the consuming side, five task-specific functions turn a saved `.forge`
-file into a prediction with no manual reconstruction of training-time
-preprocessing/interpretation: `predict_artifact()` (image classification),
-`predict_tensor_artifact()` (plain numeric input, e.g. `examples/regression`),
-`predict_image_artifact()` (image-to-image dense prediction, e.g.
-`examples/segmentation`, returning a mask `Tensor` ready for
-`forge.data.save_image()`), `predict_sequence_artifact()` (autoregressive
-generation from a stepwise-recurrence model, e.g. `examples/char_rnn`), and
-`predict_tabular_classification_artifact()` (numeric input, classification
-output, e.g. `examples/tabular_diabetes`). `forge.predict_model(path,
-input_data)` picks the right one automatically from the artifact's own
-`task=` metadata (falling back to an architecture heuristic only for legacy
-artifacts saved without it). See `docs/architecture/persistence.md` for the
-file format and trust model (no arbitrary code execution on load) and
-`docs/architecture/training-engine.md` for every function's full contract
-and the `Trainer`/`TrainingSession` boundary.
-
-## Testing
-
-```bash
-python -m pytest tests/                # full suite
-python -m pytest tests/test_smoke.py   # fast import + minimal-model smoke check
-```
-
-CUDA-specific tests (`tests/test_cuda_*.py` and the `*_cuda_integration.py`
-example tests) skip cleanly (`pytest.mark.skipif`) on a machine without a
-working CUDA backend; they are hardware-verified on this project's own
-reference GPU rather than assumed to pass elsewhere. CPU tests never
-require CUDA. CI (`.github/workflows/ci.yml`) runs the CPU-visible half of
-the suite plus a real wheel-build/install smoke test on every push to
-`main`.
+Use `--device cuda` on a machine where CUDA is available.
 
 ## Project status
 
-**Forge 1.x -- maintenance mode.** The framework itself (Tensor/autograd,
-CPU+CUDA backends, `nn`/`optim`/`data`/`training`/`serialization`, CLI) is
-feature-complete for everything the current examples need. M105 validated
-it end-to-end as an installable product, M106 re-verified that same product
-surface against the repository as it actually stands -- both flagship
-workflows (`examples/mnist`, `examples/tabular_diabetes`) trained,
-evaluated, saved, and predicted from freshly-built `wheel` and `sdist`
-distributions, in a clean virtual environment, from a directory outside
-this repository, on both CPU and (hardware-verified) CUDA, with no
-remaining external-developer blocker -- and M110 closed the milestone-driven
-feature-accumulation model in favor of an issue-driven maintenance
-workflow: see [`docs/development/maintenance.md`](docs/development/maintenance.md)
-for the supported-surface boundary, regression/real-world-smoke-test
-baseline, bug classification, and release policy that now govern changes.
-See [`docs/development/progress.md`](docs/development/progress.md) for the
-full milestone-by-milestone history and
-[`docs/development/roadmap.md`](docs/development/roadmap.md) for how the
-pre-1.0 milestones were chosen.
+Forge has a substantial implemented framework surface and is usable for real
+workflows: models can be built, trained, evaluated, saved, loaded, and used for
+inference on CPU and CUDA, including against real external datasets. It is
+developed by a single maintainer and is not a replacement for PyTorch or
+TensorFlow.
 
-## Where things live
+Development has moved from building out the framework milestone by milestone to
+maintaining it and validating it against real use. The test suite, a
+wheel-build smoke test, and a real-dataset smoke test guard against
+regressions, and new features are added in response to demonstrated needs, bugs,
+and missing capabilities rather than to fill a backlog. See
+[`docs/development/maintenance.md`](docs/development/maintenance.md) for how
+this works in practice.
 
-- `forge/` -- the framework itself (public surface documented in
-  `forge/__init__.py`'s module docstring).
-- `examples/` -- runnable workloads; see `examples/README.md`.
-- `experiment/` -- an application built entirely on Forge's public API for
-  repeatably comparing trained models against the same held-out data; see
-  `experiment/README.md`.
-- `tests/` -- the test suite (one file per unit under test, mirroring
-  `forge/`'s layout).
-- `docs/architecture/` -- per-layer design documents (Tensor, autograd,
-  modules, data, CUDA backend/allocator/streams, persistence, CLI).
-- `docs/development/` -- the project's milestone-by-milestone history and
-  the current roadmap/workflow.
-- `benchmarks/` -- performance measurement scripts (`python -m benchmarks
-  --help`), separate from the test suite.
+## What's next
 
-## Project scope and philosophy
+More high-level workflow APIs are planned as Forge matures. The image
+classification workflow above is a first step toward making common tasks
+progressively easier without removing the lower-level building blocks
+underneath. What comes next depends on the workloads and problems that turn up
+as Forge is used.
 
-Forge is built incrementally through small, working vertical slices, driven
-by real workload evidence rather than speculative feature addition -- a new
-`Tensor` primitive, layer, or optimizer is added only when a concrete
-example genuinely needs it (see `docs/development/roadmap.md` and
-`docs/development/workflow.md`). It intentionally avoids cloud services and
-paid dependencies, and CUDA support is only ever claimed where it has
-actually been run on real hardware -- never simulated.
+## Documentation
 
-## Contributing / extending Forge
+- [`examples/README.md`](examples/README.md): index of the example workloads
+  and the APIs each one exercises.
+- [`docs/architecture/`](docs/architecture/): design documents for each layer
+  (tensors, autograd, modules, data, training, persistence, CUDA backend).
+  Start with [`architecture.md`](docs/architecture/architecture.md).
+- [`docs/architecture/persistence.md`](docs/architecture/persistence.md): the
+  `.forge` artifact format and how loading stays safe.
+- [`docs/architecture/training-engine.md`](docs/architecture/training-engine.md):
+  training and inference APIs in detail.
+- [`docs/development/cli.md`](docs/development/cli.md): the command-line
+  interface.
+- [`docs/development/development-environment.md`](docs/development/development-environment.md):
+  the hardware and CUDA setup Forge is verified on.
+- [`docs/product/`](docs/product/): vision and scope.
+- [`docs/development/progress.md`](docs/development/progress.md): the
+  historical record of how Forge was built.
 
-This is currently a solo-developer project; read `CLAUDE.md` and the
-relevant `docs/architecture/*.md` file for the layer you're touching before
-changing public APIs. Every behavioral change needs a test under `tests/`
-(CPU tests must not require CUDA; CUDA tests must skip cleanly without it).
-To add a new example workload, follow `examples/regression/`'s structure
-(`dataset.py`/`model.py`/`train.py`/`README.md`) as the most recent
-precedent.
+To contribute, read [`CLAUDE.md`](CLAUDE.md) and the architecture document for
+the layer you are changing. Behavior changes need tests under `tests/`; CPU
+tests must not require CUDA, and CUDA tests must skip cleanly without it.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for
-details.
+Forge is licensed under the MIT License. See [LICENSE](LICENSE) for details.
