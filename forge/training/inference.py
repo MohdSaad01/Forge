@@ -143,6 +143,14 @@ own docstring for the full contract. `predict_model()` and the five
 task-specific functions are unchanged and remain the right choice for a
 single prediction; `load_predictor()` is the natural next step for "load
 once, predict many times."
+
+**Evaluation (Milestone 113).** `ArtifactPredictor.evaluate(X, y)` scores the
+loaded artifact on held-out labeled data through that same path -- raw input,
+the artifact's persisted preprocessing, the model, then metrics
+(`forge/training/evaluation.py`) -- so a saved artifact never needs its
+training pipeline rebuilt to be measured. It adds no prediction machinery: each
+batch goes through `_predict_tensor_core()` (or, for image classifiers, the same
+decode-and-preprocess step `_classify_image_core()` uses).
 """
 
 from __future__ import annotations
@@ -157,9 +165,19 @@ import numpy as np
 from .. import random as forge_random
 from ..autograd import no_grad
 from ..backend.device import Device
-from ..exceptions import DataError, PersistenceError, TrainerError
+from ..exceptions import DataError, PersistenceError, ShapeMismatchError, TrainerError
 from ..nn.module import Module
 from ..tensor.tensor import Tensor
+from .evaluation import (
+    ClassificationEvaluationResult,
+    RegressionEvaluationResult,
+    build_classification_result,
+    build_regression_result,
+    encode_class_labels,
+    encode_regression_targets,
+    require_evaluation_classes,
+    require_finite_output,
+)
 
 
 def _resolve_device(model: Module, device: "str | Device | None") -> Device:
@@ -1388,7 +1406,7 @@ class ArtifactPredictor:
 
     **Immutability of the artifact.** `predict()` never writes to `path` --
     loading happens once, in `load_predictor()`, and nothing afterward
-    reopens the archive.
+    reopens the archive. `evaluate()` (Milestone 113) is equally read-only.
     """
 
     def __init__(
@@ -1496,6 +1514,207 @@ class ArtifactPredictor:
         return _generate_sequence_core(
             self._model, self._classes, input_data, length, rng, "ArtifactPredictor.predict",
         )
+
+    def evaluate(
+        self,
+        X: Any,
+        y: Any = None,
+        *,
+        batch_size: int = 256,
+    ) -> "ClassificationEvaluationResult | RegressionEvaluationResult":
+        """Score this artifact on held-out labeled data, using its own persisted preprocessing (Milestone 113).
+
+        ```python
+        predictor = forge.load_predictor("model.forge")
+        result = predictor.evaluate(X_test, y_test)
+        result.accuracy, result.confusion_matrix      # classification
+        result.mse, result.mae                        # regression
+        ```
+
+        The evaluation path is exactly the prediction path: raw `X` ->
+        `InputSchema` check -> the artifact's persisted `preprocessing` ->
+        the loaded model -> metrics. The caller never re-creates
+        `Normalize`/`ReplaceValue`/`Resize` outside the artifact, which is the
+        whole point: `Trainer.evaluate()` runs whatever it is handed straight
+        through the model and, on raw rows, silently returned 37.0% for an
+        artifact that actually scores 72.1% (Milestone 97). Nothing here loads
+        the artifact again, rebuilds the model, or writes anything: it is the
+        already-loaded predictor, run in batches of `batch_size`.
+
+        **Supported tasks** (anything else raises `forge.DataError`):
+
+        - `"tabular_classification"` -- `X` is `(n, ...)` numeric features
+          (`Tensor`/NumPy array/nested list, as for `predict()`); `y` is `n`
+          class **names** (each must be in `predictor.classes`) or integer class
+          **indices** in `[0, len(classes))`. Returns
+          `ClassificationEvaluationResult`.
+        - `"regression"` -- same `X`; `y` is `(n,)`, `(n, 1)` or `(n, outputs)`
+          matching the model's output. Returns `RegressionEvaluationResult`.
+        - `"classification"` (image) -- `X` is a directory in the
+          `forge.data.ImageFolder` layout (`root/class_a/*.jpg`,
+          `root/class_b/*.jpg`, ...) and `y` must be omitted: the labels are the
+          directory names, matched **by name** against `predictor.classes` (never
+          by discovery order); a directory naming a class the artifact does not
+          have is a `DataError` naming both vocabularies. An unreadable image
+          raises rather than being skipped, because skipping would silently
+          change what is being measured. Returns
+          `ClassificationEvaluationResult`.
+        - `"segmentation"` and `"sequence"` have no evaluation semantics yet.
+
+        Classification artifacts must carry a persisted class list
+        (`PersistenceError` otherwise): the confusion matrix is indexed by the
+        artifact's class order, never by an order inferred from `y`.
+
+        `batch_size` only bounds memory; results are the same up to float32
+        rounding in `loss` (batched matrix products round differently).
+        Read-only: the artifact file, the model's parameters, the preprocessing
+        and the model's train/eval mode are untouched, and no RNG is consumed,
+        so repeated calls on the same inputs return identical results. Runs on
+        whatever device the predictor was loaded onto
+        (`forge.load_predictor(path, device=...)`).
+
+        Raises `forge.DataError` for an unsupported task, a missing/mismatched/
+        unknown `y`, a `y` of the wrong shape or dtype, an `X` with the wrong
+        feature count or rank, non-finite values in `X` (after preprocessing) or
+        `y`, and a model output that is non-finite.
+        """
+        fn_name = "ArtifactPredictor.evaluate"
+        if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0:
+            raise DataError(f"{fn_name}() batch_size must be a positive int, got {batch_size!r}.")
+
+        if self._workflow == "classification":
+            return self._evaluate_image_folder(X, y, batch_size, fn_name)
+        if self._workflow == "tabular_classification":
+            classes = require_evaluation_classes(self._path, self._classes)
+            features = self._evaluation_features(X, fn_name)
+            labels = self._evaluation_labels(y, features.shape[0], classes, fn_name)
+            output = self._evaluate_features(features, batch_size, fn_name)
+            return build_classification_result(self._workflow, output, labels, classes, self._path)
+        if self._workflow == "regression":
+            features = self._evaluation_features(X, fn_name)
+            if y is None:
+                raise DataError(f"{fn_name}() requires y (the regression targets) for a regression artifact.")
+            targets = encode_regression_targets(y, fn_name)
+            if targets.shape[0] != features.shape[0]:
+                raise DataError(
+                    f"{fn_name}() X has {features.shape[0]} sample(s) but y has {targets.shape[0]}."
+                )
+            output = self._evaluate_features(features, batch_size, fn_name)
+            return build_regression_result(self._workflow, output, targets, fn_name)
+
+        raise DataError(
+            f"{fn_name}() does not support task '{self._workflow}' -- evaluation is defined only for "
+            "'classification' (image folders), 'tabular_classification' and 'regression' artifacts. "
+            "Use predict() for this artifact."
+        )
+
+    @staticmethod
+    def _evaluation_features(X: Any, fn_name: str) -> np.ndarray:
+        """`X` as one host array with a leading sample axis, or `DataError` (`_coerce_numeric_input()`'s own rules)."""
+        try:
+            features = _coerce_numeric_input(X, fn_name).to("cpu").numpy()
+        except ValueError as exc:  # e.g. ragged nested lists, which Tensor() rejects with a raw NumPy error
+            raise DataError(f"{fn_name}() could not interpret X as a numeric array: {exc}") from exc
+        if features.ndim < 2:
+            raise DataError(
+                f"{fn_name}() requires a batched X, shape (n_samples, ...), got shape {features.shape}. "
+                "Wrap a single row in an extra list, e.g. [[...]]."
+            )
+        if features.shape[0] == 0:
+            raise DataError(f"{fn_name}() received no samples.")
+        return features
+
+    @staticmethod
+    def _evaluation_labels(y: Any, n_samples: int, classes: "list[str]", fn_name: str) -> np.ndarray:
+        if y is None:
+            raise DataError(
+                f"{fn_name}() requires y (one class name or class index per sample) for a "
+                "classification artifact."
+            )
+        labels = encode_class_labels(y, classes, fn_name)
+        if labels.shape[0] != n_samples:
+            raise DataError(f"{fn_name}() X has {n_samples} sample(s) but y has {labels.shape[0]}.")
+        return labels
+
+    def _evaluate_in_batches(
+        self, n_samples: int, batch_size: int, fn_name: str, run_batch: "Callable[[int, int], Tensor]",
+    ) -> Tensor:
+        """Call `run_batch(start, stop)` over `n_samples` in chunks; return all outputs as one CPU `Tensor`.
+
+        Metrics are computed once on the concatenated outputs, not averaged per
+        batch, so a result never depends on `batch_size`. A raw
+        `ShapeMismatchError` (the model or a transform rejecting the input's
+        shape) becomes a `DataError`, as the `InputSchema` check already does
+        for artifacts that have one.
+        """
+        chunks: "list[np.ndarray]" = []
+        dtype = None
+        for start in range(0, n_samples, batch_size):
+            try:
+                output = run_batch(start, min(start + batch_size, n_samples))
+            except ShapeMismatchError as exc:
+                raise DataError(
+                    f"{fn_name}() X is not compatible with this artifact's model/preprocessing: {exc}"
+                ) from exc
+            dtype = output.dtype
+            chunks.append(output.numpy())
+        combined = np.concatenate(chunks, axis=0)
+        require_finite_output(combined, fn_name)
+        return Tensor(combined, dtype=dtype, device="cpu")
+
+    def _evaluate_features(self, features: np.ndarray, batch_size: int, fn_name: str) -> Tensor:
+        """Numeric `evaluate()`: each chunk goes through `_predict_tensor_core()` unchanged (schema check ->
+        persisted preprocessing -> non-finite check -> `predict()`), so evaluation and prediction cannot
+        disagree about how a row is prepared.
+        """
+        return self._evaluate_in_batches(
+            features.shape[0], batch_size, fn_name,
+            lambda start, stop: _predict_tensor_core(
+                self._model, self._preprocessing, self.input_schema, features[start:stop], fn_name,
+                require_batch=True,
+            ),
+        )
+
+    def _evaluate_image_folder(
+        self, root: Any, y: Any, batch_size: int, fn_name: str,
+    ) -> ClassificationEvaluationResult:
+        """`evaluate()` for a `task="classification"` artifact: `root` is an `ImageFolder`-layout directory."""
+        from ..data.image_folder import ImageFolder
+
+        classes = require_evaluation_classes(self._path, self._classes)
+        if y is not None:
+            raise DataError(
+                f"{fn_name}() does not take y for an image-classification artifact: the labels are the "
+                "directory names under X (root/<class_name>/<image>)."
+            )
+        if not isinstance(root, (str, os.PathLike)):
+            raise DataError(
+                f"{fn_name}() requires X to be a directory path (str or os.PathLike) laid out as "
+                f"root/<class_name>/<image files> for an image-classification artifact, got "
+                f"{type(root).__name__}."
+            )
+
+        dataset = ImageFolder(root)
+        index_of = {name: i for i, name in enumerate(classes)}
+        unknown = sorted({dataset.classes[idx] for _, idx in dataset.samples if dataset.classes[idx] not in index_of})
+        if unknown:
+            raise DataError(
+                f"{fn_name}() directory '{root}' has class folder(s) {unknown!r} that are not among "
+                f"this artifact's classes {classes!r}. Folder names are matched to the artifact's "
+                "classes by name."
+            )
+        paths = [path for path, _ in dataset.samples]
+        labels = np.array([index_of[dataset.classes[idx]] for _, idx in dataset.samples], dtype=np.int64)
+
+        def run_batch(start: int, stop: int) -> Tensor:
+            prepared = [
+                self._preprocessing(_decode_image_for_model(self._model, path)).to("cpu").numpy()
+                for path in paths[start:stop]
+            ]
+            return predict(self._model, Tensor(np.stack(prepared)))
+
+        output = self._evaluate_in_batches(len(paths), batch_size, fn_name, run_batch)
+        return build_classification_result(self._workflow, output, labels, classes, self._path)
 
     def __repr__(self) -> str:
         return f"ArtifactPredictor(path={self._path!r}, task={self._workflow!r})"

@@ -246,6 +246,31 @@ is `dataset.make_datasets(seed=0)`'s own `test_ds` split, exported once to a
 plain CSV so it is reachable without importing any producer code -- see
 `evaluate.py`'s own module docstring for exact reproduction.
 
+### The library equivalent (Milestone 113)
+
+`forge.load_predictor(path).evaluate(X, y)` is the first-class version of what
+`evaluate.py` composes by hand: it applies the artifact's persisted
+`ReplaceValue`/`Normalize` and returns accuracy, baseline, loss, a confusion
+matrix, and per-class precision/recall in one call.
+
+```python
+predictor = forge.load_predictor("examples/tabular_diabetes/artifacts/tabular_diabetes_model.forge")
+result = predictor.evaluate(X, y)      # X: raw (n, 8) rows, y: 0/1 or "no_diabetes"/"diabetes"
+```
+
+```text
+samples 154 | accuracy 72.1% | baseline 62.3% | loss 0.586
+                 precision  recall  support
+no_diabetes         0.757    0.812       96
+diabetes            0.647    0.569       58
+confusion matrix (rows = true):  [[78 18]
+                                  [25 33]]
+```
+
+`evaluate.py` is deliberately left as it is: an independent implementation
+that `tests/test_artifact_evaluation.py` uses as the numeric oracle, so the
+library API is checked against something that does not share its code.
+
 ## Early stopping (Milestone 100)
 
 Milestone 98's own experiment comparison found this workload's validation

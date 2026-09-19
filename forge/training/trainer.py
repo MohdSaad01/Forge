@@ -503,12 +503,12 @@ class Trainer:
         warning) instead of the artifact's real 72.1%, because the
         sentinel-zero missing-value encoding that dataset's `ReplaceValue`
         step corrects is never applied. For artifact-level evaluation,
-        compose `load_model()` + `load_preprocessing()` + `forge.predict()`
-        + a `forge.training.Metric` directly instead -- see `examples/
-        tabular_diabetes/evaluate.py` for the full pattern -- so
-        preprocessing is applied exactly once, the same way
-        `predict_tensor_artifact()`/`predict_tabular_classification_
-        artifact()` already do. This method remains the right tool for
+        use `forge.load_predictor(path).evaluate(X, y)` (Milestone 113)
+        instead -- it applies the artifact's persisted preprocessing exactly
+        once, the same way `predict_tensor_artifact()`/
+        `predict_tabular_classification_artifact()` do. (`examples/
+        tabular_diabetes/evaluate.py` is the hand-composed equivalent, kept
+        as an independent oracle.) This method remains the right tool for
         validation/test evaluation *during* training, when `loader` already
         yields correctly-preprocessed batches (e.g. a `Dataset` constructed
         with `transform=` directly, as every example's own `train.py` does).

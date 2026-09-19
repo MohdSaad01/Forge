@@ -108,6 +108,34 @@ prediction = predictor.predict("new_photo.jpg")
 print(prediction.label, prediction.confidence)
 ```
 
+### Evaluate a saved model
+
+The same loaded artifact can be scored on held-out labeled data. The
+artifact's own preprocessing is applied automatically, so raw rows go in
+exactly as they would for `predict()`:
+
+```python
+predictor = forge.load_predictor("examples/tabular_diabetes/artifacts/tabular_diabetes_model.forge")
+result = predictor.evaluate(X_holdout, y_holdout)
+
+print(f"{result.accuracy:.1%} vs {result.baseline_accuracy:.1%} majority baseline")
+print(result.classes)             # ('no_diabetes', 'diabetes')
+print(result.confusion_matrix)    # rows = true class, columns = predicted class
+print(result.precision, result.recall)
+```
+
+```text
+72.1% vs 62.3% majority baseline
+('no_diabetes', 'diabetes')
+[[78 18]
+ [25 33]]
+```
+
+Classification artifacts report accuracy, loss, a confusion matrix, and
+per-class precision/recall; regression artifacts report `mse`, `mae`, and
+`loss`. Image classifiers are evaluated from a directory of
+`class_name/image.jpg` files: `predictor.evaluate("held_out_dir")`.
+
 The repository includes a trained model you can use straight away:
 
 ```text

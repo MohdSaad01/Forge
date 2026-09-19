@@ -1191,6 +1191,69 @@ to share their core logic with `ArtifactPredictor.predict()` -- see
 `forge/training/inference.py`'s own Milestone 102 module docstring
 paragraph) and remain fully supported.
 
+## Evaluating a saved artifact: `ArtifactPredictor.evaluate()` (Milestone 113)
+
+```python
+predictor = forge.load_predictor("model.forge")
+result = predictor.evaluate(X_test, y_test)      # raw held-out rows, labels
+result.accuracy, result.baseline_accuracy, result.confusion_matrix
+```
+
+`evaluate()` scores a loaded artifact on held-out labeled data. The evaluation
+path *is* the prediction path -- raw `X` -> `InputSchema` check -> the
+artifact's persisted `preprocessing` -> the model -> metrics -- so the caller
+never re-creates `Normalize`/`ReplaceValue`/`Resize` outside the artifact.
+That is the point: `Trainer.evaluate()` has no hook for persisted
+preprocessing and silently returned 37.0% on raw Pima rows for an artifact
+that scores 72.1% (Milestone 97). Each batch runs through the same
+`_predict_tensor_core()` that `predict()` uses; the loaded model,
+preprocessing, and classes are reused, never reloaded.
+
+| Task | `X` | `y` | Result |
+|---|---|---|---|
+| `tabular_classification` | `(n, ...)` numeric array/list/`Tensor` | class **names** (in `predictor.classes`) or integer indices | `ClassificationEvaluationResult` |
+| `regression` | same | `(n,)`, `(n, 1)` or `(n, outputs)` | `RegressionEvaluationResult` |
+| `classification` (image) | a directory in `ImageFolder` layout | omitted -- labels are the folder names, matched to `predictor.classes` **by name** | `ClassificationEvaluationResult` |
+| `segmentation`, `sequence` | -- | -- | `DataError`: no evaluation semantics yet |
+
+Both result types are frozen dataclasses exported from `forge.training`.
+`ClassificationEvaluationResult`: `task`, `samples`, `loss` (mean
+`CrossEntropyLoss`), `accuracy`, `baseline_accuracy`, `classes`,
+`confusion_matrix` (read-only `(k, k)`, **rows = true class, columns =
+predicted class**, indexed by the artifact's persisted class order), and the
+parallel tuples `precision`, `recall`, `support`. A class the model never
+predicted has `precision == 0.0`; a class with no true samples has
+`recall == 0.0` (scikit-learn's `zero_division=0` convention) -- never NaN.
+`RegressionEvaluationResult`: `task`, `samples`, `loss` (`MSELoss`), `mse`,
+`mae`, `baseline_mse`. Each also has a `metrics` dict using the
+`accuracy`/`mse`/`mae` keys `TrainingResult.val_metrics` uses. Metric
+definitions live in `forge/training/evaluation.py`'s module docstring; there
+is no new `Metric` class or registry.
+
+**Baselines are computed on the evaluated data**, not read from the artifact
+(which does not record its training distribution): `baseline_accuracy` is the
+share of the evaluated data's majority class, `baseline_mse` the MSE of always
+predicting the evaluated targets' mean. They are floors to beat, not claims
+about the training set. (Pima holdout: 72.1% against a 62.3% baseline -- not
+the 65.1% full-dataset majority share.)
+
+**Errors.** Invalid input raises `DataError` naming the problem -- missing or
+mismatched `y`, an unknown class name or out-of-range index, wrong feature
+count, wrong rank, non-finite values in `X` (after preprocessing) or `y`, an
+input the model itself rejects (surfaced from `ShapeMismatchError`), a
+non-finite model output, a bad `batch_size`. A classification artifact saved
+without `classes=`, or whose class count disagrees with its model's output
+width, raises `PersistenceError`: the confusion matrix is indexed by the
+persisted order and never by one inferred from `y`.
+
+**Read-only.** Nothing is written; the model's parameters, its train/eval
+mode (restored by `predict()`), the preprocessing, and the class/task
+metadata are untouched, no RNG is consumed, and repeated calls return
+identical results. `batch_size` (default 256) bounds memory only: metrics are
+computed once over the concatenated outputs. It runs on whichever device the
+predictor was loaded onto. No `FORMAT_VERSION` change and no new bytes are
+written by `save_model()`.
+
 ## Custom-module limitations
 See **Custom/composite modules** above: only module types registered via
 `forge.serialization.register_module()` in the *loading* process can be
