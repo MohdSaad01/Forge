@@ -200,7 +200,13 @@ alone.
   `sample` is a single unbatched `(F,)` row or an already-batched `(N, F)`
   array. Added for real tabular data that encodes a missing reading as an
   in-range sentinel (e.g. `0`) rather than leaving the field blank --
-  see `docs/development/m92-real-dataset-ingestion.md`.
+  see `docs/development/m92-real-dataset-ingestion.md`. NaN is rejected as
+  a `sentinel` (`DataError`): matching uses `==` and NaN never equals
+  anything, so it used to be accepted and silently replace nothing. NaN as
+  a missing-value marker is deliberately unsupported -- `Trainer` and the
+  numeric `predict_*_artifact()` functions reject NaN/Inf data (Issue I1),
+  so fill NaN in the raw array (e.g. `np.where(np.isnan(X), fill, X)`)
+  before building the dataset.
 - `Lambda(fn)`: wraps an arbitrary callable as a `Transform`.
 
 Deliberately not a computer-vision transform library -- `Resize` is the one

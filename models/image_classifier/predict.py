@@ -19,7 +19,10 @@ def main():
         print(f"Error: Image not found: {image_path}")
         sys.exit(1)
 
-    predictor = forge.load_predictor(MODEL_PATH)
+    # The artifact was saved from a CUDA run; Forge never moves a CUDA-saved
+    # model to the CPU implicitly, so choose the device here. One image on a
+    # small CNN is fast on the CPU, and this runs on any machine.
+    predictor = forge.load_predictor(MODEL_PATH, device="cpu")
 
     try:
         result = predictor.predict(image_path)
@@ -28,7 +31,7 @@ def main():
         sys.exit(1)
 
     print("Forge Image Classifier")
-    print("──────────────────────")
+    print("----------------------")
     print(f"Image: {image_path}")
     print(f"Prediction: {result.label}")
     print(f"Confidence: {result.confidence:.1%}")

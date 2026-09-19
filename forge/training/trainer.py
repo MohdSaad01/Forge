@@ -41,10 +41,13 @@ See `docs/architecture/async-dataloader.md`'s **Trainer Integration** and
 
 from __future__ import annotations
 
+import math
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterable, Iterator
+
+import numpy as np
 
 from ..autograd import no_grad
 from ..backend import get_backend
@@ -354,6 +357,50 @@ class Trainer:
         with _cuda.stream(self._compute_stream):
             yield
 
+    def _require_finite_loss(
+        self, loss_value: float, phase: str, batch_number: int, x: Tensor, y: Any
+    ) -> None:
+        """Raise `TrainerError` if a batch's loss is NaN/Inf (Issue I1).
+
+        Called with the loss value `_run_training_epoch()`/`evaluate()`
+        already bring to the host for every batch, so the happy path costs
+        one `math.isfinite()`. Only when the check fails does it look at
+        the batch itself, so the error can say whether the *data* carries
+        NaN/Inf (the caller's fix is in the dataset) or the data is finite
+        and the computation went non-finite (the fix is in the model/
+        learning rate).
+        """
+        if math.isfinite(loss_value):
+            return
+
+        bad = []
+        for name, tensor in (("features", x), ("targets", y)):
+            if not isinstance(tensor, Tensor):
+                continue
+            values = tensor.to("cpu").numpy()
+            if np.issubdtype(values.dtype, np.floating):
+                count = int((~np.isfinite(values)).sum())
+                if count:
+                    bad.append(f"{count} non-finite value(s) in the {name}")
+
+        if bad:
+            cause = (
+                f"the batch contains {' and '.join(bad)} (NaN/Inf). Forge does not train or "
+                "evaluate on NaN/Inf data: remove those rows or fill them with a real value "
+                "(e.g. a per-column median) before building the dataset"
+            )
+            note = " No parameter update was applied for this batch." if phase == "training" else ""
+        else:
+            cause = (
+                "the batch's features and targets are finite, so the computation itself "
+                "produced it -- typically a diverging run (try a lower learning rate) or "
+                "an unstable loss/model"
+            )
+            note = " The model's parameters are likely no longer usable." if phase == "training" else ""
+        raise TrainerError(
+            f"Non-finite loss ({loss_value}) in {phase} batch {batch_number}: {cause}.{note}"
+        )
+
     def _check_model_device(self) -> None:
         """Validate (never move) that the model already sits on `self.device` (Milestone 12).
 
@@ -403,6 +450,7 @@ class Trainer:
 
         total_loss = 0.0
         total_samples = 0
+        batches_seen = 0
         with self._compute_stream_scope():
             for batch in loader:
                 x, y = self._to_device_batch(batch)
@@ -411,11 +459,14 @@ class Trainer:
                 self.optimizer.zero_grad()
                 prediction = self.model(x)
                 loss = self.loss_fn(prediction, y)
+                loss_value = float(loss.to("cpu").numpy())
+                self._require_finite_loss(loss_value, "training", batches_seen + 1, x, y)
                 loss.backward()
                 self.optimizer.step()
                 self.global_step += 1
 
-                total_loss += float(loss.to("cpu").numpy()) * batch_size
+                batches_seen += 1
+                total_loss += loss_value * batch_size
                 total_samples += batch_size
                 for m in self.metrics.values():
                     m.update(prediction, y)
@@ -474,6 +525,7 @@ class Trainer:
         start = time.perf_counter()
         total_loss = 0.0
         total_samples = 0
+        batches_seen = 0
         try:
             with self._compute_stream_scope(), no_grad():
                 for batch in loader:
@@ -482,8 +534,11 @@ class Trainer:
 
                     prediction = self.model(x)
                     loss = self.loss_fn(prediction, y)
+                    loss_value = float(loss.to("cpu").numpy())
+                    self._require_finite_loss(loss_value, "evaluation", batches_seen + 1, x, y)
 
-                    total_loss += float(loss.to("cpu").numpy()) * batch_size
+                    batches_seen += 1
+                    total_loss += loss_value * batch_size
                     total_samples += batch_size
                     for m in self.metrics.values():
                         m.update(prediction, y)

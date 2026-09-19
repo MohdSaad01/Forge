@@ -139,6 +139,33 @@ still in train mode) returns the model to train mode for the next epoch;
 calling it standalone (e.g. after training completes, with the model however
 the caller left it) preserves that mode exactly.
 
+### Non-finite loss (Issue I1)
+
+`fit()` and `evaluate()` check every batch's loss with `math.isfinite()`,
+on the value they already bring to the host for reporting -- no extra
+device synchronization. A NaN/Inf loss raises `TrainerError`:
+
+- In training the check runs *before* `loss.backward()`/`optimizer.step()`,
+  so a bad batch never updates a parameter (or the optimizer's state) and
+  `global_step` does not advance.
+- Only when the check fails does the error inspect the batch. It reports
+  whether the *features/targets* contain NaN/Inf (fix the data: remove those
+  rows or fill them before building the dataset) or are finite (the run
+  itself diverged or the loss is unstable: lower the learning rate).
+- `evaluate()` (and so `fit()`'s validation pass) raises the same way: a NaN
+  validation loss is never a meaningful result, and would otherwise feed
+  early stopping and the saved history silently.
+
+Before I1, a NaN feature trained to `loss: nan` for every epoch;
+`train_and_save()` then failed only after training, in `save_and_verify()`,
+with a misleading "reloaded model differs" error. The guard lives in the
+`Trainer` rather than `Tensor`/`TensorDataset` because NaN is legitimate in
+tensor math and a dataset cannot know whether a later transform removes it;
+the loss is the one place every dataset type, transform chain and backend
+converge. NaN-as-missing-value is not supported: `ReplaceValue` cannot
+express it (see `docs/architecture/data-system.md`), so fill NaN in the raw
+array before building the dataset.
+
 ### `no_grad`
 Forge had no context for suspending autograd graph construction before this
 milestone. `forge.no_grad()` (`forge/autograd/engine.py`) is the minimal
@@ -1253,6 +1280,18 @@ and pre-save/post-load numerical equivalence) independent of any one
 example.
 
 See `docs/development/m83-regression-artifact-workflow.md`.
+
+**Non-finite input (Issue I1).** `predict_tensor_artifact()`,
+`predict_tabular_classification_artifact()`, and the numeric branches of
+`predict_model()`/`ArtifactPredictor.predict()` all share
+`_predict_tensor_core()`, which raises `forge.DataError` if the input the
+model would receive -- *after* the artifact's persisted preprocessing --
+contains NaN/Inf. Before I1 a NaN row produced
+`ClassificationPrediction(label=..., confidence=nan)` (an arbitrary
+`argmax` of NaN) or a NaN regression output, with no error. The check runs
+after preprocessing so a persisted transform that removes a value is
+honored. The whole call is rejected if any row is bad. Image inputs are
+decoded from files and are not checked (they cannot be NaN).
 
 ## Portable-artifact inference for image-to-image output: `predict_image_artifact()` (Milestone 84)
 

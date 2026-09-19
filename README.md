@@ -123,7 +123,7 @@ python models/image_classifier/predict.py path/to/image.jpg
 
 ```text
 Forge Image Classifier
-──────────────────────
+----------------------
 Image: path/to/image.jpg
 Prediction: cat
 Confidence: 96.0%
@@ -138,12 +138,16 @@ model: it was trained only to tell cats from dogs, so it will answer "cat" or
 "dog" for any image you give it.
 
 The artifact was saved from a CUDA run, and Forge does not silently move a
-CUDA-saved model onto the CPU. `predict.py` loads the model on the device
-recorded in the file, so it currently expects a working CUDA setup. From Python
-you can load the same file on any machine by choosing the device:
+CUDA-saved model onto the CPU. `predict.py` therefore loads it with
+`device="cpu"`, so it runs on any machine, with or without a GPU. To use the
+same file on CUDA, choose the device yourself (the default, `device=None`,
+uses the device recorded in the file and raises `forge.PersistenceError` if
+that device is unavailable):
 
 ```python
 predictor = forge.load_predictor("models/image_classifier/image_model.forge", device="cpu")
+# or, on a machine with a working CUDA setup:
+predictor = forge.load_predictor("models/image_classifier/image_model.forge", device="cuda")
 ```
 
 ### Lower-level control

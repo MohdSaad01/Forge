@@ -44,12 +44,14 @@ Run before and after any change:
 python -m pytest tests/ -q
 ```
 
-Baseline recorded at Milestone 110 (2026-09-18, reference hardware, CUDA
-present):
+Baseline recorded at Issue I1 (2026-09-19, reference hardware, CUDA
+present; 2765 at Milestone 110, plus the 37 tests I1 added in
+`tests/test_non_finite_input.py`, `tests/test_non_finite_input_cuda.py`
+and `tests/test_bundled_image_classifier.py`):
 
 ```text
-Total:   2765
-Passed:  2765
+Total:   2802
+Passed:  2802
 Failed:  0
 Skipped: 0
 ```
@@ -67,35 +69,47 @@ reproducible on the reference GPU.
 
 ## 3. Real-world smoke test
 
-`sandbox/petimages_smoke.py` is the maintenance-mode real-world acceptance
-check:
+`tests/real_world/petimages_smoke.py` is the maintenance-mode real-world
+acceptance check:
 
 ```text
 ImageFolder -> train_image_classifier() -> artifact -> inference
 ```
 
-against a small (160-image), deterministic subset of the real
-`sandbox/petimages` cat/dog dataset Milestone 107 validated against (the
-full ~25,000-image dataset itself is not checked into git -- see
-`.gitignore` -- and is not retrained for ordinary changes; the full run
-stays a manual, occasional exercise via
-`sandbox/t1_cat_dog/train_high_level.py`). Run it:
+It is a tracked, standalone script -- **local validation, not CI, and not
+part of `pytest`** (`tests/` collects only `test_*.py`, so neither
+`python -m pytest tests/` nor `.github/workflows/ci.yml` ever runs it). What
+it needs and where it lives:
+
+- **Data:** a real cat/dog dataset in the ~25,000-image "PetImages" layout
+  (`<root>/<class>/<n>.jpg`, two classes) that Milestone 107 validated
+  against. The dataset is not part of Forge and is never committed; keep it
+  anywhere outside the repository and pass its directory as the first
+  argument, or set `FORGE_PETIMAGES_DIR`.
+- **What it does:** copies a deterministic 160-image subset (the first 80
+  files of each class in sorted filename order) to a temporary directory,
+  trains 2 epochs on the CPU (~10s on the reference machine), asserts the
+  artifact saves/verifies and reloads with the right classes, and asserts
+  that inference on one held-out image per class returns a valid
+  `ClassificationPrediction`. It is not an accuracy benchmark -- the subset
+  and epoch count are chosen for speed, not for a meaningful accuracy number.
+- **Without the dataset:** it prints `SKIP: ...` and exits 0. A skip is not
+  a pass -- if the change you are validating touches the chain below, run it
+  where the dataset is available.
 
 ```bash
-python sandbox/petimages_smoke.py
+python tests/real_world/petimages_smoke.py /path/to/petimages
 ```
-
-It trains 2 epochs on CPU (~10s on the reference machine), asserts the
-artifact saves/verifies and that inference on two held-out real images
-returns a valid `ClassificationPrediction`, and skips cleanly (exit 0) if
-`sandbox/petimages` is not present locally. It is not an accuracy
-benchmark -- the subset and epoch count are chosen for speed, not for a
-meaningful accuracy number.
 
 Run this after any change that plausibly touches the chain above (image
 decoding, `ImageFolder`, `train_image_classifier`, artifact save/load,
 `predict_model`/`predict_artifact`), in addition to the full regression
-suite.
+suite. The full ~25,000-image run is not repeated for ordinary changes; it
+stays a manual, occasional exercise:
+
+```python
+forge.train_image_classifier("/path/to/petimages", path="model.forge", epochs=5, device="cuda")
+```
 
 ## 4. Bug classification
 

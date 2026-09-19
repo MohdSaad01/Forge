@@ -117,7 +117,11 @@ class ReplaceValue(Transform):
     dataset-wide.
 
     - `sentinel`: the value to detect (compared with `==`; not intended for
-      float values requiring tolerance-based matching).
+      float values requiring tolerance-based matching). NaN is rejected
+      (`DataError`) -- it can never compare equal, so it would silently
+      replace nothing; `Trainer` and the numeric `predict_*_artifact()`
+      functions reject NaN/Inf data outright, so fill NaN in the raw array
+      first.
     - `columns`: the feature-axis indices to check, matching `fill`
       one-to-one.
     - `fill`: the replacement value for each entry in `columns`.
@@ -145,7 +149,16 @@ class ReplaceValue(Transform):
         if len(set(columns)) != len(columns):
             raise DataError(f"ReplaceValue requires unique column indices, got {columns}.")
 
-        self.sentinel = float(sentinel)
+        sentinel = float(sentinel)
+        if sentinel != sentinel:
+            raise DataError(
+                "ReplaceValue does not support NaN as a sentinel: matching uses `==`, and "
+                "NaN never equals anything, so it would silently replace nothing. Fill NaN "
+                "values in the raw array before building the dataset "
+                "(e.g. `np.where(np.isnan(X), fill_value, X)`)."
+            )
+
+        self.sentinel = sentinel
         self.columns = columns
         self.fill = fill
 

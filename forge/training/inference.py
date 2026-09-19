@@ -386,7 +386,28 @@ def _predict_tensor_core(
     _validate_feature_count(prepared, expected_features, fn_name)
     if preprocessing is not None:
         prepared = preprocessing(prepared)
+    _require_finite_input(prepared, fn_name)
     return predict(model, prepared)
+
+
+def _require_finite_input(prepared: Tensor, fn_name: str) -> None:
+    """Reject NaN/Inf numeric input before it reaches the model (Issue I1).
+
+    Checked *after* preprocessing, on exactly what the model would receive,
+    so a persisted transform that removes a value is never second-guessed.
+    Without this, a NaN row came back as a real-looking
+    `ClassificationPrediction(label=..., confidence=nan)` -- an arbitrary
+    `argmax` of NaN -- or a NaN regression output, with no error. Training
+    already refuses NaN/Inf (`Trainer`), so inference now agrees.
+    """
+    values = prepared.to("cpu").numpy()
+    if np.issubdtype(values.dtype, np.floating) and not np.isfinite(values).all():
+        count = int((~np.isfinite(values)).sum())
+        raise DataError(
+            f"{fn_name}() received {count} non-finite value(s) (NaN/Inf) in its input, after "
+            "preprocessing. The model cannot produce a meaningful prediction from them -- "
+            "replace them with real values before calling."
+        )
 
 
 def _require_sequence_vocab(path: str, vocab: "list[str] | None", fn_name: str) -> None:
