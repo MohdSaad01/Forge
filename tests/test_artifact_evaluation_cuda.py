@@ -4,8 +4,8 @@ Device-specific behaviour only (the metric/validation contract is covered on
 CPU in `tests/test_artifact_evaluation.py`): a predictor loaded with
 `device="cuda"` evaluates on the CUDA model, and CPU and CUDA evaluation of the
 same artifact agree -- exactly (confusion matrix, accuracy) or within the
-project's float tolerance (loss). Uses the committed Pima diabetes artifact and
-holdout, plus a synthetic regression artifact. No CUDA-specific evaluation code
+project's float tolerance (loss). Uses a freshly trained Pima diabetes artifact and the
+committed holdout, plus a synthetic regression artifact. No CUDA-specific evaluation code
 exists; these tests exercise the existing predictor/CUDA kernels.
 """
 
@@ -31,16 +31,28 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from examples.tabular_diabetes.evaluate import load_labeled_csv  # noqa: E402
+from examples.tabular_diabetes.train import main as diabetes_train_main  # noqa: E402
 
-_PIMA_MODEL = str(_REPO_ROOT / "examples" / "tabular_diabetes" / "artifacts" / "tabular_diabetes_model.forge")
 _PIMA_HOLDOUT = str(_REPO_ROOT / "examples" / "tabular_diabetes" / "data" / "diabetes_holdout_eval.csv")
 TOL = dict(rel=1e-4, abs=1e-5)
 
 
-def test_pima_cuda_evaluation_agrees_with_cpu():
+@pytest.fixture(scope="module")
+def pima_model(tmp_path_factory) -> str:
+    """The README's reference Pima artifact, trained (on CPU) here rather than read from `examples/`.
+
+    `examples/tabular_diabetes/artifacts*/` is gitignored, so a checkout that has not run the example
+    has no such file. Same recipe as `tests/test_artifact_evaluation.py`.
+    """
+    out_dir = tmp_path_factory.mktemp("pima_artifact")
+    diabetes_train_main(["--epochs", "60", "--seed", "0", "--device", "cpu", "--output-dir", str(out_dir)])
+    return str(out_dir / "tabular_diabetes_model.forge")
+
+
+def test_pima_cuda_evaluation_agrees_with_cpu(pima_model):
     X, y = load_labeled_csv(_PIMA_HOLDOUT)
-    cpu = load_predictor(_PIMA_MODEL, device="cpu")
-    cuda = load_predictor(_PIMA_MODEL, device="cuda")
+    cpu = load_predictor(pima_model, device="cpu")
+    cuda = load_predictor(pima_model, device="cuda")
     assert cpu.model.device.type == "cpu" and cuda.model.device.type == "cuda"
 
     on_cpu = cpu.evaluate(X, y)
@@ -56,9 +68,9 @@ def test_pima_cuda_evaluation_agrees_with_cpu():
     assert on_cuda.accuracy == pytest.approx(0.7208, abs=5e-4)
 
 
-def test_cuda_evaluation_is_repeatable_and_batch_size_independent():
+def test_cuda_evaluation_is_repeatable_and_batch_size_independent(pima_model):
     X, y = load_labeled_csv(_PIMA_HOLDOUT)
-    cuda = load_predictor(_PIMA_MODEL, device="cuda")
+    cuda = load_predictor(pima_model, device="cuda")
     first = cuda.evaluate(X, y)
     for batch_size in (1, 32, 1000):
         again = cuda.evaluate(X, y, batch_size=batch_size)
@@ -66,9 +78,9 @@ def test_cuda_evaluation_is_repeatable_and_batch_size_independent():
         assert again.loss == pytest.approx(first.loss, **TOL)
 
 
-def test_cuda_evaluation_leaves_the_model_on_cuda_and_unchanged():
+def test_cuda_evaluation_leaves_the_model_on_cuda_and_unchanged(pima_model):
     X, y = load_labeled_csv(_PIMA_HOLDOUT)
-    cuda = load_predictor(_PIMA_MODEL, device="cuda")
+    cuda = load_predictor(pima_model, device="cuda")
     before = [p.to("cpu").numpy().copy() for p in cuda.model.parameters()]
     cuda.model.train(True)
     cuda.evaluate(X, y)

@@ -46,8 +46,8 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from examples.tabular_diabetes.evaluate import evaluate_artifact, load_labeled_csv  # noqa: E402
+from examples.tabular_diabetes.train import main as diabetes_train_main  # noqa: E402
 
-_PIMA_MODEL = _REPO_ROOT / "examples" / "tabular_diabetes" / "artifacts" / "tabular_diabetes_model.forge"
 _PIMA_HOLDOUT = _REPO_ROOT / "examples" / "tabular_diabetes" / "data" / "diabetes_holdout_eval.csv"
 
 # Deliberately not alphabetical, and with a class ("unused") no model output can ever select.
@@ -276,6 +276,19 @@ def test_regression_applies_persisted_preprocessing(tmp_path):
 # -- Pima diabetes: real dataset, parity with the independent oracle ----------
 
 
+@pytest.fixture(scope="module")
+def pima_model(tmp_path_factory) -> Path:
+    """The README's reference Pima artifact, trained here rather than read from `examples/`.
+
+    `examples/tabular_diabetes/artifacts*/` is gitignored (generated, machine-local), so a fresh
+    checkout has no such file. The reference recipe is deterministic and bit-identical across
+    platforms, so every known-number assertion below holds on a freshly trained copy.
+    """
+    out_dir = tmp_path_factory.mktemp("pima_artifact")
+    diabetes_train_main(["--epochs", "60", "--seed", "0", "--device", "cpu", "--output-dir", str(out_dir)])
+    return out_dir / "tabular_diabetes_model.forge"
+
+
 def _oracle_metrics(model_path: str, csv_path: str) -> dict:
     """The oracle's own composition (`load_model` + `load_preprocessing` + `forge.predict`), plus plain NumPy."""
     X, y = load_labeled_csv(csv_path)
@@ -296,12 +309,12 @@ def _oracle_metrics(model_path: str, csv_path: str) -> dict:
     }
 
 
-def test_pima_evaluate_matches_the_existing_oracle():
+def test_pima_evaluate_matches_the_existing_oracle(pima_model):
     X, y = load_labeled_csv(str(_PIMA_HOLDOUT))
-    summary = evaluate_artifact(str(_PIMA_MODEL), str(_PIMA_HOLDOUT))
-    oracle = _oracle_metrics(str(_PIMA_MODEL), str(_PIMA_HOLDOUT))
+    summary = evaluate_artifact(str(pima_model), str(_PIMA_HOLDOUT))
+    oracle = _oracle_metrics(str(pima_model), str(_PIMA_HOLDOUT))
 
-    result = load_predictor(str(_PIMA_MODEL)).evaluate(X, y)
+    result = load_predictor(str(pima_model)).evaluate(X, y)
 
     assert result.samples == summary.samples == 154
     assert result.accuracy == pytest.approx(summary.accuracy, abs=1e-12)
@@ -316,22 +329,22 @@ def test_pima_evaluate_matches_the_existing_oracle():
     assert result.baseline_accuracy == pytest.approx(0.6234, abs=5e-4)
 
 
-def test_pima_evaluate_applies_the_persisted_replacevalue_and_normalize():
+def test_pima_evaluate_applies_the_persisted_replacevalue_and_normalize(pima_model):
     """Raw sentinel-zero rows through the bare model reproduce the M97 wrong number; evaluate() does not."""
     X, y = load_labeled_csv(str(_PIMA_HOLDOUT))
-    bare = forge.load_model(str(_PIMA_MODEL))
+    bare = forge.load_model(str(pima_model))
     raw_logits = forge.predict(bare, forge.Tensor(X)).numpy()
     raw_accuracy = float((raw_logits.argmax(axis=1) == y).mean())
 
-    result = load_predictor(str(_PIMA_MODEL)).evaluate(X, y)
+    result = load_predictor(str(pima_model)).evaluate(X, y)
 
     assert raw_accuracy < 0.5 < result.accuracy
-    assert repr(load_predictor(str(_PIMA_MODEL))._preprocessing) == "Compose([ReplaceValue, Normalize])"
+    assert repr(load_predictor(str(pima_model))._preprocessing) == "Compose([ReplaceValue, Normalize])"
 
 
-def test_pima_evaluate_with_string_labels_and_wrong_feature_count():
+def test_pima_evaluate_with_string_labels_and_wrong_feature_count(pima_model):
     X, y = load_labeled_csv(str(_PIMA_HOLDOUT))
-    predictor = load_predictor(str(_PIMA_MODEL))
+    predictor = load_predictor(str(pima_model))
     by_name = predictor.evaluate(X, [predictor.classes[i] for i in y])
     assert by_name.accuracy == pytest.approx(predictor.evaluate(X, y).accuracy)
     with pytest.raises(DataError, match="expected 8 input feature"):
@@ -357,13 +370,13 @@ print(json.dumps({
 """
 
 
-def test_fresh_processes_agree_with_each_other_and_with_this_process():
-    args = f' "{_PIMA_MODEL}" "{_PIMA_HOLDOUT}"'
+def test_fresh_processes_agree_with_each_other_and_with_this_process(pima_model):
+    args = f' "{pima_model}" "{_PIMA_HOLDOUT}"'
     script = "import sys; sys.argv = ['x'] + sys.argv[1:]\n" + _FRESH_SCRIPT
 
     def run_once() -> dict:
         completed = subprocess.run(
-            [sys.executable, "-c", _FRESH_SCRIPT, str(_PIMA_MODEL), str(_PIMA_HOLDOUT)],
+            [sys.executable, "-c", _FRESH_SCRIPT, str(pima_model), str(_PIMA_HOLDOUT)],
             cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=120,
         )
         assert completed.returncode == 0, f"subprocess failed:\n{completed.stderr}"
@@ -373,7 +386,7 @@ def test_fresh_processes_agree_with_each_other_and_with_this_process():
     assert process_a == process_b
 
     X, y = load_labeled_csv(str(_PIMA_HOLDOUT))
-    here = load_predictor(str(_PIMA_MODEL)).evaluate(X, y)
+    here = load_predictor(str(pima_model)).evaluate(X, y)
     assert process_a["samples"] == here.samples == 154
     assert process_a["accuracy"] == here.accuracy
     assert process_a["loss"] == here.loss
