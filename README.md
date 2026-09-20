@@ -131,11 +131,15 @@ predictor.evaluate(X_test, y_test).accuracy
 
 `y` for classification is class names (strings) or integer indices; the class
 order is fixed (sorted names, or exactly `classes=`). Regression targets are used
-in their own units, not scaled: this works well at moderate magnitudes (Concrete
+in their own units by default: this works well at moderate magnitudes (Concrete
 strength, about 36) and degrades for very large ones (California house prices in
-dollars, about 200,000, scored R² 0.67 unscaled against 0.75 standardized by
-hand on a 3,000-row sample; if you do that, keep the mean and standard deviation, since
-the artifact then predicts in the standardized units). NaN/Inf anywhere in `X` or
+dollars, about 200,000, scored R² 0.665 on a 3,000-row sample, using all 500
+epochs). For those pass `target_transform="standardize"`: the model trains on
+z-scores (fitted on the training rows only, R² 0.749 on the same data in about a
+quarter of the time) and the artifact stores the transform, so `predict()` and
+`evaluate()` still return and compare the original units -- nothing to invert or
+remember. Don't rescale `y` yourself; the artifact would then predict in the
+rescaled units. NaN/Inf anywhere in `X` or
 a regression `y` is rejected with a `forge.DataError`: Forge does not train
 through missing values, so fill or drop them first. If a column encodes "not
 measured" as a sentinel such as `0` (as the Pima diabetes data does), pass

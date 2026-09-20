@@ -35,7 +35,8 @@ import numpy as np
 from .. import random as forge_random
 from ..backend import get_backend
 from ..backend.device import SUPPORTED_DEVICE_TYPES
-from ..exceptions import PersistenceError
+from ..data.target_transform import TARGET_TRANSFORM_TYPES, StandardizeTarget
+from ..exceptions import DataError, PersistenceError
 from ..nn.module import Module
 from ..nn.parameter import Parameter
 from ..tensor.tensor import Tensor
@@ -44,6 +45,21 @@ from .registry import spec_for_class, spec_for_name
 from .transforms import deserialize_transform, serialize_transform
 
 FORMAT_VERSION = 2
+
+# Milestone 116: an artifact that carries a `"target_transform"` (a regression model
+# trained on transformed targets, whose raw output is NOT in the user's units) is
+# written as version 3; every other artifact is still written as version 2, byte for
+# byte as before. The version is what keeps an older Forge from reading a version-3
+# file, ignoring the unknown `"target_transform"` key, and returning standardised
+# numbers as if they were native: it refuses the file ("unsupported format version 3")
+# instead. This build reads both. Version 3 *requires* the key and version 2 *forbids*
+# it, so a stripped or smuggled key is an error rather than a silent reinterpretation.
+TARGET_TRANSFORM_FORMAT_VERSION = 3
+SUPPORTED_FORMAT_VERSIONS = (FORMAT_VERSION, TARGET_TRANSFORM_FORMAT_VERSION)
+
+
+def _supported_versions_text() -> str:
+    return " and ".join(str(v) for v in SUPPORTED_FORMAT_VERSIONS)
 
 # Milestone 87 (classification/regression/segmentation) + Milestone 90
 # (sequence) + Milestone 91 (tabular_classification): the fixed, small
@@ -123,12 +139,29 @@ def _validate_classes(classes: "list[str] | None", task: "str | None" = None) ->
         )
 
 
+def _validate_target_transform(target_transform: Any, task: "str | None") -> None:
+    if target_transform is None:
+        return
+    if not isinstance(target_transform, StandardizeTarget):
+        raise PersistenceError(
+            f"save_model() target_transform= must be a forge.data.StandardizeTarget, got "
+            f"{type(target_transform).__name__}. Only the closed set of persistable target "
+            f"transforms {TARGET_TRANSFORM_TYPES!r} can be saved (arbitrary callables cannot)."
+        )
+    if task != "regression":
+        raise PersistenceError(
+            f"save_model() target_transform= requires task='regression', got task={task!r} -- only a "
+            "regression artifact has a target to map back to native units."
+        )
+
+
 def save_model(
     model: Module,
     path: str,
     preprocessing: "Any | None" = None,
     classes: "list[str] | None" = None,
     task: "str | None" = None,
+    target_transform: "StandardizeTarget | None" = None,
 ) -> None:
     """Save `model`'s architecture, configuration, and parameter state to `path`.
 
@@ -238,11 +271,26 @@ def save_model(
     heuristic for such files (`forge/training/inference.py::
     _legacy_infer_workflow()`) rather than treating an absent task as any
     particular value.
+
+    `target_transform` (Milestone 116) optionally records the
+    `forge.data.StandardizeTarget` a regression model's *targets* went through in
+    training -- the output-side counterpart of `preprocessing`. The model then
+    predicts in that transformed space, and `predict()`/`evaluate()` on the artifact
+    (`load_predictor()`, `predict_tensor_artifact()`, `forge model predict`) apply its
+    inverse so callers get native units and never need to know it exists. It requires
+    `task="regression"` (`PersistenceError` otherwise) and is written as a JSON-safe
+    `"target_transform"` sibling entry. Only this closed, configuration-only type is
+    accepted: no callable and nothing pickled. An artifact saved with a target
+    transform has format version 3; omitting it (the default) writes the
+    version-2 file exactly as before -- see `TARGET_TRANSFORM_FORMAT_VERSION`,
+    `load_target_transform()`. `load_model()` alone still returns just the model,
+    whose raw output is in the transformed space.
     """
     if not isinstance(model, Module):
         raise PersistenceError(f"save_model() requires a forge.nn.Module, got {type(model).__name__}.")
     _validate_classes(classes, task)
     _validate_task(task, classes)
+    _validate_target_transform(target_transform, task)
 
     model_device = model.device
     device_str = model_device.type if model_device is not None else "cpu"
@@ -253,13 +301,15 @@ def save_model(
     preprocessing_node = serialize_transform(preprocessing) if preprocessing is not None else None
 
     metadata = {
-        "forge_format_version": FORMAT_VERSION,
+        "forge_format_version": FORMAT_VERSION if target_transform is None else TARGET_TRANSFORM_FORMAT_VERSION,
         "device": device_str,
         "root": root_node,
         "preprocessing": preprocessing_node,
         "classes": list(classes) if classes is not None else None,
         "task": task,
     }
+    if target_transform is not None:
+        metadata["target_transform"] = target_transform.to_config()
     prefixed_arrays = {f"{PARAMETERS_DIR}/{name}": array for name, array in arrays.items()}
     write_archive(path, metadata, prefixed_arrays)
 
@@ -304,10 +354,10 @@ def load_model(path: str, device: "str | None" = None) -> Module:
         raise PersistenceError(f"Cannot load model from '{path}': metadata is not a JSON object.")
 
     version = metadata.get("forge_format_version")
-    if version != FORMAT_VERSION:
+    if version not in SUPPORTED_FORMAT_VERSIONS:
         raise PersistenceError(
             f"Cannot load model from '{path}': unsupported format version {version!r} "
-            f"(this build of Forge supports version {FORMAT_VERSION})."
+            f"(this build of Forge supports version {_supported_versions_text()})."
         )
 
     saved_device = metadata.get("device")
@@ -643,6 +693,80 @@ def load_classes(path: str) -> "list[str] | None":
     return classes
 
 
+def _target_transform_from_metadata(metadata: dict, path: str, what: str) -> "StandardizeTarget | None":
+    """The `StandardizeTarget` an artifact's metadata declares, or `None` -- validated, never guessed (Milestone 116).
+
+    No `"target_transform"` key and format version 2 is the ordinary artifact (every
+    file saved before Milestone 116 is this): the identity, `None`. Anything that
+    would make the model's raw output be misread as native units is an error instead:
+    version 3 without the key (stripped), version 2 with the key (a version-2 reader
+    would not know to invert it), a key that is not a well-formed `standardize`
+    node, or one on a non-regression artifact.
+    """
+    version = metadata.get("forge_format_version")
+    present = "target_transform" in metadata
+    if version == TARGET_TRANSFORM_FORMAT_VERSION and not present:
+        raise PersistenceError(
+            f"Cannot {what} '{path}': format version {TARGET_TRANSFORM_FORMAT_VERSION} declares a target "
+            "transform, but the 'target_transform' metadata entry is missing. The model's output is in "
+            "transformed units and cannot be converted back without it."
+        )
+    if not present:
+        return None
+    if version != TARGET_TRANSFORM_FORMAT_VERSION:
+        raise PersistenceError(
+            f"Cannot {what} '{path}': it has a 'target_transform' entry but format version {version!r} "
+            f"(a target transform requires version {TARGET_TRANSFORM_FORMAT_VERSION})."
+        )
+    node = metadata["target_transform"]
+    if (
+        not isinstance(node, dict)
+        or node.get("type") not in TARGET_TRANSFORM_TYPES
+        or "mean" not in node
+        or "std" not in node
+    ):
+        raise PersistenceError(
+            f"Cannot {what} '{path}': malformed 'target_transform' metadata (expected an object with "
+            f"'type' one of {TARGET_TRANSFORM_TYPES!r}, 'mean' and 'std', got {node!r})."
+        )
+    try:
+        transform = StandardizeTarget.from_config(node)
+    except (DataError, TypeError, ValueError) as exc:
+        raise PersistenceError(f"Cannot {what} '{path}': invalid 'target_transform' metadata ({exc}).") from exc
+    if metadata.get("task") != "regression":
+        raise PersistenceError(
+            f"Cannot {what} '{path}': a 'target_transform' is only valid on a task='regression' artifact, "
+            f"this one declares task={metadata.get('task')!r}."
+        )
+    return transform
+
+
+def load_target_transform(path: str) -> "StandardizeTarget | None":
+    """Reconstruct the `StandardizeTarget` saved alongside a regression model at `path`, or `None` (Milestone 116).
+
+    Mirrors `load_preprocessing()`/`load_classes()`: reads only the
+    `"target_transform"` metadata entry a `save_model(..., target_transform=...)` call
+    wrote, independent of `load_model()`. `None` is the ordinary answer for every
+    artifact saved without one (all files saved before Milestone 116 included) -- the
+    model's output is already in native units.
+
+    Raises `PersistenceError` for a corrupt file, an unsupported format version, and
+    for metadata that would make the model's output be misread: a version-3 file whose
+    entry is missing, a version-2 file that has one, a malformed or non-finite entry,
+    or one on a non-regression artifact.
+    """
+    metadata, _ = read_archive(path, kind="model")
+    if not isinstance(metadata, dict):
+        raise PersistenceError(f"Cannot load target transform from '{path}': metadata is not a JSON object.")
+    version = metadata.get("forge_format_version")
+    if version not in SUPPORTED_FORMAT_VERSIONS:
+        raise PersistenceError(
+            f"Cannot load target transform from '{path}': unsupported format version {version!r} "
+            f"(this build of Forge supports version {_supported_versions_text()})."
+        )
+    return _target_transform_from_metadata(metadata, path, "load target transform from")
+
+
 @dataclass(frozen=True)
 class ModelSummary:
     """Identifies a saved module tree without exposing raw serialization internals (Milestone 85).
@@ -779,17 +903,24 @@ class ModelInfo:
     format_version: int
     device: str
     input_schema: "InputSchema | None" = None
+    target_transform: "StandardizeTarget | None" = None
 
     def __str__(self) -> str:
         preprocessing_line = self.preprocessing.description if self.preprocessing is not None else "none"
         classes_line = ", ".join(self.classes) if self.classes else "none"
         task_line = self.task if self.task is not None else "unknown (legacy artifact, saved before Milestone 87)"
         input_line = f"{self.input_schema.feature_count} feature(s)" if self.input_schema is not None else "n/a"
+        # Only shown when present, so an artifact without one prints exactly as before Milestone 116.
+        target_line = (
+            f"Target transform: standardize {self.target_transform!r} (predictions are returned in native units)\n"
+            if self.target_transform is not None else ""
+        )
         return (
             f"Model: {self.model.type} ({self.model.parameter_count:,} parameters)\n"
             f"Task: {task_line}\n"
             f"Input: {input_line}\n"
             f"Input preprocessing: {preprocessing_line}\n"
+            f"{target_line}"
             f"Classes: {classes_line}\n"
             f"Artifact format: version {self.format_version} (device={self.device})"
         )
@@ -888,10 +1019,10 @@ def inspect_model(path: str) -> ModelInfo:
         raise PersistenceError(f"Cannot inspect model '{path}': metadata is not a JSON object.")
 
     version = metadata.get("forge_format_version")
-    if version != FORMAT_VERSION:
+    if version not in SUPPORTED_FORMAT_VERSIONS:
         raise PersistenceError(
             f"Cannot inspect model '{path}': unsupported format version {version!r} "
-            f"(this build of Forge supports version {FORMAT_VERSION})."
+            f"(this build of Forge supports version {_supported_versions_text()})."
         )
 
     device = metadata.get("device")
@@ -938,6 +1069,8 @@ def inspect_model(path: str) -> ModelInfo:
         if feature_count is not None:
             input_schema = InputSchema(feature_count=feature_count)
 
+    target_transform = _target_transform_from_metadata(metadata, path, "inspect model")
+
     return ModelInfo(
         model=model_summary,
         preprocessing=preprocessing_info,
@@ -946,11 +1079,12 @@ def inspect_model(path: str) -> ModelInfo:
         format_version=version,
         device=device,
         input_schema=input_schema,
+        target_transform=target_transform,
     )
 
 
 __all__ = [
-    "save_model", "load_model", "load_preprocessing", "load_classes", "inspect_model",
+    "save_model", "load_model", "load_preprocessing", "load_classes", "load_target_transform", "inspect_model",
     "ModelInfo", "ModelSummary", "PreprocessingInfo", "InputSchema", "FORMAT_VERSION",
-    "SUPPORTED_DEVICE_TYPES", "TASK_TYPES",
+    "TARGET_TRANSFORM_FORMAT_VERSION", "SUPPORTED_FORMAT_VERSIONS", "SUPPORTED_DEVICE_TYPES", "TASK_TYPES",
 ]

@@ -386,6 +386,7 @@ def _predict_tensor_core(
     fn_name: str,
     *,
     require_batch: bool = False,
+    target_transform: "Any | None" = None,
 ) -> Tensor:
     """The artifact-independent body shared by `predict_tensor_artifact()`
     and `predict_tabular_classification_artifact()` (Milestone 102): coerce
@@ -404,6 +405,15 @@ def _predict_tensor_core(
     the default `False` -- an unbatched 1-D input there has always been a
     legitimate "single unbatched sample" call, per `_validate_feature_count()`'s
     own docstring, and returns an unbatched 1-D result correctly.
+
+    `target_transform` (Milestone 116) is the artifact's persisted
+    `StandardizeTarget`, or `None` (every artifact saved without one): the
+    model's raw output is then in the space it was *trained* in, and its inverse
+    is applied last so the returned `Tensor` is in the caller's native target
+    units. Only `task="regression"` artifacts can carry one, so the tabular
+    classification callers never pass it. There is exactly one place this happens
+    -- here, where `predict()`, `predict_tensor_artifact()`, `predict_model()` and
+    `evaluate()` already converge -- so no path can return un-inverted numbers.
     """
     prepared = _coerce_numeric_input(input_data, fn_name)
     if require_batch and prepared.ndim == 1:
@@ -417,7 +427,32 @@ def _predict_tensor_core(
     if preprocessing is not None:
         prepared = preprocessing(prepared)
     _require_finite_input(prepared, fn_name)
-    return predict(model, prepared)
+    output = predict(model, prepared)
+    if target_transform is not None:
+        output = _to_native_units(output, target_transform, fn_name)
+    return output
+
+
+def _to_native_units(output: Tensor, target_transform: Any, fn_name: str) -> Tensor:
+    """Apply a persisted target transform's inverse to a regression model's raw `output` (Milestone 116).
+
+    Host-side float64 arithmetic (`z * std + mean`), then back to the model
+    output's own dtype on the CPU -- the same type `predict()` returns, so a
+    caller sees a `Tensor` of the same kind with the values in native units. The
+    last axis must be the transform's target columns; a disagreement means the
+    artifact's model and its recorded transform do not describe the same target
+    (an inconsistent file), which is reported rather than broadcast into
+    plausible-looking numbers.
+    """
+    values = output.to("cpu").numpy()
+    if values.ndim == 0 or values.shape[-1] != target_transform.outputs:
+        raise PersistenceError(
+            f"{fn_name}(): the model's output has shape {values.shape}, but the artifact's target "
+            f"transform was fitted for {target_transform.outputs} target column(s). The artifact is "
+            "inconsistent."
+        )
+    native = target_transform.inverse_transform(values)
+    return Tensor(native.astype(output.dtype.numpy_dtype), dtype=output.dtype, device="cpu")
 
 
 def _require_finite_input(prepared: Tensor, fn_name: str) -> None:
@@ -573,6 +608,7 @@ def save_and_verify(
     classes: "list[str] | None" = None,
     task: "str | None" = None,
     atol: float = 1e-5,
+    target_transform: "Any | None" = None,
 ) -> Module:
     """Save `model` to `path`, then immediately prove it is a genuinely portable
     artifact by reloading it fresh and confirming its prediction on `sample`
@@ -626,6 +662,14 @@ def save_and_verify(
     dispatch to it reliably. See `save_model()`'s own docstring for the exact
     vocabulary and its interaction with `classes`.
 
+    `target_transform` (Milestone 116) is passed straight through to `save_model()`
+    (see its docstring; `task="regression"` only). Besides the model check above, the
+    saved file's transform is read back with `load_target_transform()` and must equal
+    the one given exactly, else `forge.PersistenceError` -- so a transform that did
+    not survive the round trip can never be discovered later as wrong-unit predictions.
+    The `sample` comparison itself is on the raw model output (the transformed space),
+    which is what `predict()` returns; it verifies the weights, not the units.
+
     **Scope.** Deliberately narrow: this only composes `save_model()` +
     `load_model()` + `predict()`, so it covers exactly `predict()`'s own
     calling convention (`model(x)` on a single batched `Tensor`) -- it does
@@ -645,14 +689,24 @@ def save_and_verify(
     if not isinstance(sample, Tensor):
         raise DataError(f"save_and_verify() requires sample to be a Tensor, got {type(sample).__name__}.")
 
-    from ..serialization.model import load_model as _load_model, save_model as _save_model
+    from ..serialization.model import (
+        load_model as _load_model,
+        load_target_transform as _load_target_transform,
+        save_model as _save_model,
+    )
 
     resolved_device = Device.parse(device) if device is not None else None
     pre_save = predict(model, sample, device=resolved_device).numpy()
 
-    _save_model(model, path, preprocessing=preprocessing, classes=classes, task=task)
+    _save_model(model, path, preprocessing=preprocessing, classes=classes, task=task, target_transform=target_transform)
     reloaded = _load_model(path, device=resolved_device.type if resolved_device is not None else None)
     post_load = predict(reloaded, sample).numpy()
+
+    if target_transform is not None and _load_target_transform(path) != target_transform:
+        raise PersistenceError(
+            f"save_and_verify(): the target transform read back from '{path}' differs from the one that "
+            "was just saved, so its predictions would not be in native units."
+        )
 
     if not np.allclose(pre_save, post_load, atol=atol):
         max_diff = float(np.max(np.abs(pre_save - post_load)))
@@ -836,9 +890,17 @@ def predict_tensor_artifact(
     resolve to a fixed feature count, gets no such check -- this call
     behaves exactly as it did before Milestone 101.
 
+    **Target transform (Milestone 116).** When the artifact was trained on
+    transformed targets (`forge.train_tabular_regressor(..., target_transform=
+    "standardize")`), its persisted `StandardizeTarget`'s inverse is applied to the
+    model output, so the returned `Tensor` is in the caller's native target units --
+    the caller never needs to know or remember the transform. An artifact without
+    one (every file saved before Milestone 116) returns the raw model output,
+    exactly as before.
+
     Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
-    artifact or an unreconstructable `"preprocessing"` entry (the same
-    conditions `load_model()`/`load_preprocessing()` already raise).
+    artifact or an unreconstructable `"preprocessing"`/`"target_transform"` entry
+    (the same conditions `load_model()`/`load_preprocessing()` already raise).
 
     **Scope.** Composes exactly `load_model()` + `load_preprocessing()` +
     `predict()`, each called unchanged -- no new artifact format, generic
@@ -855,7 +917,10 @@ def predict_tensor_artifact(
     info = _inspect_model(path)
     preprocessing = _load_preprocessing(path)
     model = _load_model(path, device=device.type if isinstance(device, Device) else device)
-    return _predict_tensor_core(model, preprocessing, info.input_schema, checked, "predict_tensor_artifact")
+    return _predict_tensor_core(
+        model, preprocessing, info.input_schema, checked, "predict_tensor_artifact",
+        target_transform=info.target_transform,
+    )
 
 
 def predict_image_artifact(
@@ -1465,6 +1530,18 @@ class ArtifactPredictor:
         return self._classes
 
     @property
+    def target_transform(self) -> "Any | None":
+        """The `forge.data.StandardizeTarget` this regression artifact was trained through, or `None` (Milestone 116).
+
+        Read from the artifact's own `ModelInfo` at load time. `predict()` and
+        `evaluate()` already apply its inverse, so this is informational: the
+        callers of those never need it. `None` means the model's output is already
+        in native units (every artifact saved without one, and every non-regression
+        artifact). The bare `.model`'s raw output is in the *transformed* space.
+        """
+        return self._info.target_transform
+
+    @property
     def model(self) -> Module:
         """The loaded `forge.nn.Module` this predictor runs -- see this
         class's own **Metadata** docstring paragraph for the mutability
@@ -1505,6 +1582,7 @@ class ArtifactPredictor:
         if self._workflow == "regression":
             return _predict_tensor_core(
                 self._model, self._preprocessing, self.input_schema, input_data, "ArtifactPredictor.predict",
+                target_transform=self.target_transform,
             )
         if self._workflow == "segmentation":
             return _segment_image_core(self._model, self._preprocessing, input_data, threshold)
@@ -1562,6 +1640,11 @@ class ArtifactPredictor:
           `ClassificationEvaluationResult`.
         - `"regression"` -- same `X`; `y` is `(n,)`, `(n, 1)` or `(n, outputs)`
           matching the model's output. Returns `RegressionEvaluationResult`.
+          `y` is always the caller's **native** targets: if the artifact was
+          trained on transformed targets (`predictor.target_transform`), its inverse
+          has already been applied to the predictions (Milestone 116), so `mse`,
+          `mae`, `loss` and `baseline_mse` are in native units (squared units for
+          the squared ones) -- never in the model's training space.
         - `"classification"` (image) -- `X` is a directory in the
           `forge.data.ImageFolder` layout (`root/class_a/*.jpg`,
           `root/class_b/*.jpg`, ...) and `y` must be omitted: the labels are the
@@ -1683,7 +1766,7 @@ class ArtifactPredictor:
             features.shape[0], batch_size, fn_name,
             lambda start, stop: _predict_tensor_core(
                 self._model, self._preprocessing, self.input_schema, features[start:stop], fn_name,
-                require_batch=True,
+                require_batch=True, target_transform=self.target_transform,
             ),
         )
 

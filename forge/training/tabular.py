@@ -63,7 +63,8 @@ Every failure below is a clear `forge` exception raised before any training:
 
 `Normalize(mean, std)` per feature, fitted on the training split. A constant
 (zero-variance) training feature gets `std = 1`, so it becomes 0 instead of
-dividing by zero. Targets are **not** scaled or transformed in any way.
+dividing by zero. Targets are **not** scaled or transformed unless a regression
+caller asks for it (see **Target transform**).
 
 `missing_columns=[...]` (with `missing_value=`, default `0.0`) opts specific
 columns into `ReplaceValue`: entries equal to the sentinel are replaced with the
@@ -73,6 +74,27 @@ measured" in five of its columns); it is off by default because a sentinel
 that means "missing" in one column is a legitimate value in another. It is not
 a general missing-value framework: NaN is not a sentinel (`ReplaceValue` cannot
 express it) and is rejected as above.
+
+## Target transform (regression only, opt-in; Milestone 116)
+
+`train_tabular_regressor(..., target_transform="standardize")` trains on
+`z = (y - mean) / std` instead of `y`, with `mean`/`std` fitted **per target column on
+the training split only** (the validation rows, which early stopping and the
+result's validation numbers use, are transformed with those training statistics and
+never contribute to them). The fitted `forge.data.StandardizeTarget` is saved in the
+artifact next to the preprocessing, so the artifact -- not the caller's memory --
+converts back: `predict()` and `evaluate()` speak the caller's native units, and
+every `train_*`/`validation_*`/`baseline_mse` number in the result is a native-unit
+number computed on the saved artifact, exactly as without a transform. Why it exists
+(a target of magnitude ~2x10^5 needs 500 epochs to reach R^2 0.665 where standardised
+it reaches 0.746 in ~130) and why it is an artifact-level output transform rather than
+a rescaling of the last `Linear` layer: `docs/development/m116-persisted-target-transforms.md`.
+
+Off by default (`target_transform=None`): the default pipeline and the artifacts it
+writes are byte-for-byte what they were before this milestone. A constant target
+column has no scale to standardise by and is a `DataError`, not a silent divide.
+Anything that reads `result.model` / `result.history` directly sees the *training*
+space (z-scores); only the artifact and the result's metrics are in native units.
 
 ## Validation split
 
@@ -104,7 +126,7 @@ are computed while the weights are still changing.
 ## Not here
 
 No hyperparameter search, schedulers, callbacks, DataFrame/CSV handling,
-target scaling, time-series behaviour or CLI. Anything else: build the pipeline
+target transforms other than `"standardize"`, time-series behaviour or CLI. Anything else: build the pipeline
 from `train_and_save()` directly, exactly as `examples/tabular_diabetes` does.
 """
 
@@ -120,6 +142,7 @@ from .. import random as forge_random
 from ..backend.device import Device
 from ..data.dataloader import DataLoader
 from ..data.dataset import TensorDataset, random_split
+from ..data.target_transform import TARGET_TRANSFORM_TYPES, StandardizeTarget
 from ..data.transforms import Compose, Normalize, ReplaceValue
 from ..exceptions import DataError, TrainerError
 from ..nn.activation import ReLU
@@ -212,6 +235,16 @@ def _validate_arguments(
     ):
         raise DataError(f"{fn}() missing_value must be a finite number, got {missing_value!r}.")
     return path, columns
+
+
+def _validate_target_transform(value: Any, fn: str) -> "str | None":
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in TARGET_TRANSFORM_TYPES:
+        raise DataError(
+            f"{fn}() target_transform must be None or one of {TARGET_TRANSFORM_TYPES!r}, got {value!r}."
+        )
+    return value
 
 
 def _to_host_array(data: Any, name: str, fn: str) -> np.ndarray:
@@ -528,6 +561,14 @@ class TabularRegressionResult:
     `baseline_mse` is the MSE of always predicting the **validation** targets' own
     per-output mean (the M113 definition); `validation_mse` is only evidence of
     learning if it is well below this.
+
+    With `target_transform="standardize"` (Milestone 116) `target_transform` is the
+    fitted `forge.data.StandardizeTarget` (else `None`). Every `*_mse`/`*_mae`/
+    `*_loss`/`baseline_mse` above is still in native units -- computed by the saved
+    artifact's `evaluate()` on native targets. What is *not* native: `history` (the
+    per-epoch curves), `best_monitored_value` (early stopping's validation loss) and
+    `model` (the bare reloaded `Module`, whose output is the training space) -- they
+    are in z-scores; use `forge.load_predictor(result.artifact_path)` for predictions.
     """
 
     task: str
@@ -550,6 +591,7 @@ class TabularRegressionResult:
     best_monitored_value: "float | None"
     history: TrainingResult
     model: Module
+    target_transform: "StandardizeTarget | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -704,6 +746,7 @@ def train_tabular_regressor(
     device: "str | Device | None" = None,
     seed: int = 0,
     verbose: bool = False,
+    target_transform: "str | None" = None,
 ) -> TabularRegressionResult:
     """Train a regressor on a numeric feature matrix and save it as a portable artifact, in one call.
 
@@ -717,13 +760,19 @@ def train_tabular_regressor(
     Same contract and arguments as `train_tabular_classifier()` (see it and the
     module docstring), except:
 
-    - `y` -- a numeric, finite target: `(n,)`, `(n, 1)` or `(n, outputs)`. It is
-      **not** scaled; it is trained on in its own units, and the artifact predicts in
-      them. NaN/Inf raise `DataError`. Large targets train worse (M115, 3,000 real
-      California house prices: R^2 0.67 in dollars, ~200,000, against 0.75 once `y` was
-      standardised by hand, and the 500-epoch default was exhausted). If you rescale `y`
-      yourself, keep its training mean and standard deviation: the artifact then
-      predicts in the rescaled units and does not know how to convert back.
+    - `y` -- a numeric, finite target: `(n,)`, `(n, 1)` or `(n, outputs)`. By default
+      it is trained on in its own units, and the artifact predicts in them. NaN/Inf
+      raise `DataError`. Large targets train worse (M115, 3,000 real California house
+      prices: R^2 0.665 in dollars, ~200,000, against 0.75 once `y` was standardised, and
+      the 500-epoch default was exhausted) -- pass `target_transform="standardize"` for
+      those. Do **not** rescale `y` yourself and train on that: the artifact would then
+      predict in the rescaled units and not know how to convert back.
+    - `target_transform` -- `None` (default: train on `y` as given) or `"standardize"`:
+      train on `(y - mean) / std` with `mean`/`std` fitted per target column on the
+      **training split only** and saved in the artifact, so `predict()` and `evaluate()`
+      return and compare **native** units and no caller ever inverts anything. A
+      constant training target column is a `DataError`. See the module docstring
+      (**Target transform**); the result's metrics are native either way.
     - There is no `classes=`.
     - Defaults are `epochs=500`, `patience=30`: an unscaled target starts a
       randomly-initialised network far from the answer and needs longer (on
@@ -741,6 +790,7 @@ def train_tabular_regressor(
     path, columns = _validate_arguments(
         fn, path, epochs, batch_size, learning_rate, val_fraction, patience, seed, missing_columns, missing_value,
     )
+    target_transform = _validate_target_transform(target_transform, fn)
     features = _coerce_features(X, fn)
     targets = _coerce_regression_targets(y, features.shape[0], fn)
     n_outputs = targets.shape[1]
@@ -750,19 +800,34 @@ def train_tabular_regressor(
     )
     train_targets, val_targets = targets[prepared.train_indices], targets[prepared.val_indices]
 
+    # Fitted on the TRAINING targets only (after the split, like the input preprocessing);
+    # the validation targets are transformed with those statistics and never contribute.
+    fitted = None
+    train_fit, val_fit = train_targets, val_targets  # what the model is trained/early-stopped on
+    if target_transform == "standardize":
+        try:
+            fitted = StandardizeTarget.fit(train_targets)
+        except DataError as exc:
+            raise DataError(f"{fn}() target_transform='standardize' cannot be fitted: {exc}") from exc
+        train_fit, val_fit = fitted.transform(train_targets), fitted.transform(val_targets)
+        for name, values in (("training", train_fit), ("validation", val_fit)):
+            with np.errstate(over="ignore"):
+                as_float32 = values.astype(np.float32)
+            _require_all_finite(as_float32, f"{name} targets after target_transform", fn, "targets")
+
     n_features = features.shape[1]
     net = _resolve_model(
         model, n_features, n_outputs, _REGRESSOR_HIDDEN, device, seed,
         Tensor(prepared.train_features[:2]), f"one value per target column, for a {n_outputs}-column y", fn,
     )
-    preflight_save(net, path, prepared.transform, None, "regression", fn)
+    preflight_save(net, path, prepared.transform, None, "regression", fn, target_transform=fitted)
 
     train_loader = DataLoader(
-        TensorDataset(Tensor(prepared.train_features), Tensor(train_targets.astype(np.float32))),
+        TensorDataset(Tensor(prepared.train_features), Tensor(train_fit.astype(np.float32))),
         batch_size=batch_size, shuffle=True, generator=np.random.default_rng(seed),
     )
     val_loader = DataLoader(
-        TensorDataset(Tensor(prepared.val_features), Tensor(val_targets.astype(np.float32))), batch_size=batch_size,
+        TensorDataset(Tensor(prepared.val_features), Tensor(val_fit.astype(np.float32))), batch_size=batch_size,
     )
     saved = train_and_save(
         net, train_loader,
@@ -778,6 +843,7 @@ def train_tabular_regressor(
         preprocessing=prepared.transform,
         task="regression",
         early_stopping=_early_stopping(patience),
+        target_transform=fitted,
     )
 
     predictor = load_predictor(path)
@@ -804,6 +870,7 @@ def train_tabular_regressor(
         best_monitored_value=saved.best_monitored_value,
         history=saved.history,
         model=saved.model,
+        target_transform=fitted,
     )
 
 

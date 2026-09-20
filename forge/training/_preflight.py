@@ -49,6 +49,7 @@ def check_save_path(path: "str | os.PathLike", fn: str) -> None:
 
 def preflight_save(
     model: Module, path: "str | os.PathLike", preprocessing: Any, classes: "list[str] | None", task: str, fn: str,
+    target_transform: Any = None,
 ) -> None:
     """Prove `path` can be saved to, before training, without writing the artifact itself.
 
@@ -67,7 +68,10 @@ def preflight_save(
         raise PersistenceError(f"{fn}() cannot save to '{path}': {exc}") from exc
     os.close(fd)
     try:
-        save_model(model, tmp_path, preprocessing=preprocessing, classes=classes, task=task)
+        save_model(
+            model, tmp_path, preprocessing=preprocessing, classes=classes, task=task,
+            target_transform=target_transform,
+        )
     finally:
         try:
             os.remove(tmp_path)

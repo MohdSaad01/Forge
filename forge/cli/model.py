@@ -95,7 +95,9 @@ import os
 import numpy as np
 
 from ..data import save_image
-from ..serialization import inspect_model, load_classes, load_model, load_preprocessing, save_model
+from ..serialization import (
+    inspect_model, load_classes, load_model, load_preprocessing, load_target_transform, save_model,
+)
 from ..training import ClassificationPrediction, predict_model
 from ._archive_info import count_elements, module_training_state, read_model_metadata, walk_modules, walk_parameters
 from .errors import CLIError
@@ -172,6 +174,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     # "tabular_classification", or an architecture the contract can't be
     # derived from) -- reported as `null`/"n/a", never fabricated.
     input_feature_count = info.input_schema.feature_count if info.input_schema is not None else None
+    # Milestone 116: `null` for every artifact without a target transform.
+    target_transform = info.target_transform.to_config() if info.target_transform is not None else None
 
     if args.json:
         payload = {
@@ -184,6 +188,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             "classes": classes,
             "task": task,
             "input_feature_count": input_feature_count,
+            "target_transform": target_transform,
             "modules": [{"name": name, "type": type_name} for name, type_name in modules],
             "parameters": [
                 {
@@ -209,6 +214,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     print(f"Preprocessing: {'yes' if has_preprocessing else 'no'}")
     if preprocessing_description is not None:
         print(f"Preprocessing detail: {preprocessing_description}")
+    if info.target_transform is not None:
+        print(f"Target transform: {info.target_transform!r} (predictions are returned in native units)")
     print(f"Classes: {', '.join(classes) if classes else '(none)'}")
     print()
     print("Modules:")
@@ -245,7 +252,14 @@ def cmd_convert(args: argparse.Namespace) -> int:
     preprocessing = load_preprocessing(args.model)
     classes = load_classes(args.model)
     task = inspect_model(args.model).task
-    save_model(model, args.output, preprocessing=preprocessing, classes=classes, task=task)
+    # Milestone 116: a regression artifact's target transform is part of what its
+    # predictions mean; dropping it here would silently turn native-unit predictions
+    # into the model's raw training-space output.
+    target_transform = load_target_transform(args.model)
+    save_model(
+        model, args.output, preprocessing=preprocessing, classes=classes, task=task,
+        target_transform=target_transform,
+    )
     print(f"Converted '{args.model}' -> '{args.output}' (device={args.device}).")
     return 0
 

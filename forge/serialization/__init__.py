@@ -42,6 +42,12 @@ Forge's three portable-artifact inference workflows a saved file represents
 authoritative signal `forge.predict_model()` uses to dispatch reliably,
 replacing the architecture-based guess Milestone 86 had to fall back on. See
 `docs/architecture/persistence.md`'s **Task metadata** section.
+
+`save_model(..., target_transform=...)`/`load_target_transform()` (Milestone 116)
+optionally save and reconstruct the `forge.data.StandardizeTarget` a regression model's
+targets were trained through, so `load_predictor()` returns predictions in the caller's
+own units. An artifact carrying one is format version 3; all others stay version 2. See
+`forge.data.target_transform` and `docs/development/m116-persisted-target-transforms.md`.
 """
 
 from .checkpoint import Checkpoint, CHECKPOINT_FORMAT_VERSION, load_checkpoint, save_checkpoint
@@ -55,6 +61,7 @@ from .model import (
     load_classes,
     load_model,
     load_preprocessing,
+    load_target_transform,
     save_model,
 )
 from .optimizer_registry import register_optimizer
@@ -62,7 +69,7 @@ from .registry import register_module
 from .transforms import register_transform
 
 __all__ = [
-    "save_model", "load_model", "load_preprocessing", "load_classes", "register_module",
+    "save_model", "load_model", "load_preprocessing", "load_classes", "load_target_transform", "register_module",
     "inspect_model", "ModelInfo", "ModelSummary", "PreprocessingInfo", "InputSchema", "TASK_TYPES",
     "save_checkpoint", "load_checkpoint", "Checkpoint", "CHECKPOINT_FORMAT_VERSION",
     "register_optimizer", "register_transform",

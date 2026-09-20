@@ -38,7 +38,7 @@ from ..backend.device import SUPPORTED_DEVICE_TYPES
 from ..exceptions import PersistenceError
 from ..serialization.archive import read_archive
 from ..serialization.checkpoint import CHECKPOINT_FORMAT_VERSION
-from ..serialization.model import FORMAT_VERSION
+from ..serialization.model import SUPPORTED_FORMAT_VERSIONS
 from .errors import CLIError
 
 
@@ -58,10 +58,11 @@ def read_model_metadata(path: str) -> dict:
         raise CLIError(f"Cannot inspect model '{path}': malformed archive (metadata is not an object).")
 
     version = metadata.get("forge_format_version")
-    if version != FORMAT_VERSION:
+    if version not in SUPPORTED_FORMAT_VERSIONS:
+        supported = " and ".join(str(v) for v in SUPPORTED_FORMAT_VERSIONS)
         raise CLIError(
             f"Cannot inspect model '{path}': unsupported format version {version!r} "
-            f"(this build of Forge supports version {FORMAT_VERSION})."
+            f"(this build of Forge supports version {supported})."
         )
     device = metadata.get("device")
     if device not in SUPPORTED_DEVICE_TYPES:

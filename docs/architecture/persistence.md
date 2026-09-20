@@ -1292,6 +1292,42 @@ Chosen over a bespoke binary format or a full-object `pickle` dump because:
   the surrounding ZIP -- appropriate for the small CPU models this
   milestone targets (see `docs/development/development-environment.md`).
 
+## Target transform metadata
+
+*Milestone 116.* A regression model may be trained on transformed targets; the artifact then has
+to carry the map back to the caller's units, or every consumer must remember it. `save_model(...,
+target_transform=StandardizeTarget)` writes an optional sibling entry next to `"preprocessing"`:
+
+```json
+"forge_format_version": 3,
+"target_transform": {"type": "standardize", "mean": [206856.5], "std": [115393.25]}
+```
+
+- **Closed vocabulary, configuration only.** `"standardize"` is the only type
+  (`forge.data.target_transform.TARGET_TRANSFORM_TYPES`); there is no registry, no callable and
+  nothing pickled. `mean`/`std` are per target column; `std` must be finite and `> 0`.
+- **Only on `task="regression"`** (`PersistenceError` otherwise, at save and at load).
+- **Versioned so nothing is reinterpreted.** Version 3 *requires* the key and version 2
+  *forbids* it: a stripped key or a key smuggled into a version-2 file is a `PersistenceError`,
+  never a silent identity. A file with no key and version 2 -- every artifact saved before M116
+  and every artifact saved without a transform -- means "the model's output is already native": the
+  identity, exactly the previous behaviour, with no regeneration required.
+- **Read paths.** `inspect_model(path).target_transform` (a reconstructed `StandardizeTarget`, or
+  `None`), `load_target_transform(path)`, `ArtifactPredictor.target_transform`. Malformed entries
+  (unknown type, `std <= 0`, non-finite, mismatched lengths, missing fields) raise
+  `PersistenceError` from all of them, and therefore from `load_predictor()`.
+- **Applied in one place.** `_predict_tensor_core()` applies the inverse to the model's raw output
+  (host-side float64, back to the model's dtype on the CPU). `predict()`, `predict_tensor_artifact()`,
+  `predict_model()`, `evaluate()` and `forge model predict` all go through it, so no path can return
+  un-inverted numbers. `load_model()` alone still returns the bare model, whose output is in the
+  training space.
+- **Preserved by `forge model convert`**, reported by `forge model inspect` (`"target_transform"` in
+  `--json`, a line in text output), verified by `save_and_verify()` (the transform read back must
+  equal the one saved).
+
+Why an artifact-level output transform and not a rescaling of the last `Linear` layer:
+`docs/development/m116-persisted-target-transforms.md`.
+
 ## Versioning
 `metadata.json`'s `"forge_format_version"` field is checked against this
 build's `forge.serialization.model.FORMAT_VERSION` (`2`, as of Milestone 53
@@ -1304,6 +1340,14 @@ later milestone implements migration, and Forge does not claim otherwise.
 **Milestone 53 bumped `FORMAT_VERSION` `1 -> 2`** for the new required
 `"buffers"` key per module node (**Buffer state**, above) -- the first
 bump since the format's introduction.
+
+**Milestone 116 introduced version 3, for one kind of artifact only.** A regression
+artifact saved with a target transform is written as version `3`
+(`TARGET_TRANSFORM_FORMAT_VERSION`); every other artifact is still written as version `2`,
+byte for byte as before. This build reads both (`SUPPORTED_FORMAT_VERSIONS`); an older build
+refuses a version-3 file with the ordinary "unsupported format version 3" instead of ignoring
+the unknown key and returning standardised numbers as if they were native. See **Target
+transform metadata** below.
 
 **Milestone 13 did not bump `FORMAT_VERSION`.** CUDA persistence needed no
 new metadata field or archive layout -- only the `"device"` field's set of

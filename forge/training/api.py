@@ -376,6 +376,7 @@ def train_and_save(
     task: "str | None" = None,
     atol: float = 1e-5,
     early_stopping: "EarlyStopping | None" = None,
+    target_transform: "Any | None" = None,
 ) -> TrainAndSaveResult:
     """Train `model`, then save + verify it as a portable artifact, in one call (Milestone 81).
 
@@ -450,6 +451,16 @@ def train_and_save(
     never the later, possibly-worse final-epoch state. `result.
     stopped_early`/`result.best_epoch`/`result.best_monitored_value` mirror
     `TrainingResult`'s own fields for a caller who only kept this result.
+
+    **Target transform (Milestone 116).** `target_transform` is a
+    `forge.data.StandardizeTarget` passed straight through to `save_and_verify()`
+    / `save_model()` (`task="regression"` only). It is **not** applied to `dataset`:
+    the caller trains on the already-transformed targets and this records the
+    transform in the artifact so `load_predictor()` returns native units. Because the
+    training is on transformed targets, everything this call reports --
+    `train_loss`/`val_loss`/`*_metrics`, `history`, `best_monitored_value` -- is in
+    the *transformed* space; use `forge.load_predictor(path).evaluate(X, y)` for
+    native-unit metrics (`forge.train_tabular_regressor()` does exactly that).
     """
     history = train(
         model, dataset,
@@ -460,6 +471,7 @@ def train_and_save(
     )
     reloaded = save_and_verify(
         model, path, sample, preprocessing=preprocessing, classes=classes, task=task, atol=atol,
+        target_transform=target_transform,
     )
     last = history[-1]
     return TrainAndSaveResult(

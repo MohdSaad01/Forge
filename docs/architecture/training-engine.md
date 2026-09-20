@@ -1626,14 +1626,20 @@ semantics. Decisions worth recording:
 - **No `validation_data=`.** For i.i.d. rows a seeded random split is right; a
   caller with a dedicated held-out set scores it with `predictor.evaluate()`. It
   becomes necessary only for ordered data (windowed time series), not addressed here.
-- **Targets are not scaled.** On UCI Concrete this works without it (test R^2 0.93);
+- **Targets are not scaled by default.** On UCI Concrete this works without it (test R^2 0.93);
   it degrades as the target's magnitude grows (Concrete strength multiplied by 30:
-  R^2 0.68). Scaling would need a persisted, inverted target transform -- a design
-  decision deliberately not improvised here.
+  R^2 0.68). **Milestone 116** added the opt-in `target_transform="standardize"` to
+  `train_tabular_regressor()`: the model trains on `(y - mean) / std` (statistics from the
+  training split only), the fitted `forge.data.StandardizeTarget` is persisted in the artifact
+  (`save_model(..., target_transform=)`, format version 3), and `predict()`/`evaluate()` apply its
+  inverse in the one shared `_predict_tensor_core()`, so every result and metric is in native
+  units. An output-side artifact transform was chosen over folding the affine map into the last
+  `Linear`; see `docs/development/m116-persisted-target-transforms.md`. `result.history` and
+  `best_monitored_value` remain in the training (z-score) space.
 
 **Limits.** Only what the real workloads justified: no stratified split (a class
-with no training rows is rejected instead), no class weights, no target scaling,
-no DataFrame/CSV/time-series behaviour, no CLI. On the reference 940MX these small
+with no training rows is rejected instead), no class weights, no target transform other
+than the opt-in `"standardize"`, no DataFrame/CSV/time-series behaviour, no CLI. On the reference 940MX these small
 MLPs train about 5x *faster on CPU* than on CUDA (per-batch kernel-launch
 overhead dominates), so `device="cuda"` is supported and hardware-tested but not
 a speed-up here. Measurements: `docs/development/m114-tabular-workflows.md`.

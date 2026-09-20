@@ -13,6 +13,7 @@ from .dataloader import DataLoader
 from .dataset import Dataset, Subset, TensorDataset, random_split, sequential_split
 from .image_folder import IMAGE_EXTENSIONS, ImageFolder, save_image
 from .prefetch import CUDAPrefetchLoader
+from .target_transform import StandardizeTarget
 from .transforms import Compose, Flatten, Lambda, Normalize, ReplaceValue, Reshape, Resize, ToTensor, Transform
 
 __all__ = [
@@ -35,4 +36,5 @@ __all__ = [
     "Flatten",
     "Resize",
     "Lambda",
+    "StandardizeTarget",
 ]

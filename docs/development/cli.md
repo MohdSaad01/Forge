@@ -44,7 +44,11 @@ names), every parameter's name/shape/dtype, total parameter count, the
 recorded device, the saved training/eval mode, whether a preprocessing
 pipeline was saved (`forge.save_model(..., preprocessing=...)`, Milestone
 71), and the saved class-name vocabulary if any (`forge.save_model(...,
-classes=...)`, Milestone 72). Never prints tensor values.
+classes=...)`, Milestone 72). A regression artifact trained on standardised
+targets also reports its target transform (a `Target transform:` line, and
+`"target_transform"` in `--json`, `null` otherwise; Milestone 116) -- `forge
+model predict` on such an artifact already returns native units, and `forge model
+convert` carries the transform over. Never prints tensor values.
 
 The module tree and parameter list (text and `--json`) are always ordered by
 construction order (e.g. a `Sequential`'s children as `0, 1, 2, ..., 12`, not

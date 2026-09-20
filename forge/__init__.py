@@ -79,7 +79,10 @@ Public subpackages:
   epoch 1, early stopping, and a verified `.forge` artifact that
   `load_predictor()` can `predict()` and `evaluate()` -- returning a
   `TabularClassificationResult` / `TabularRegressionResult` (see
-  `forge/training/tabular.py`).
+  `forge/training/tabular.py`). `train_tabular_regressor(..., target_transform="standardize")`
+  (Milestone 116) trains on standardised targets and persists the fitted
+  `forge.data.StandardizeTarget` in the artifact, so `predict()`/`evaluate()`
+  work in the caller's own units.
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a
