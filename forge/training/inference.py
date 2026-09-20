@@ -167,6 +167,7 @@ from ..autograd import no_grad
 from ..backend.device import Device
 from ..exceptions import DataError, PersistenceError, ShapeMismatchError, TrainerError
 from ..nn.module import Module
+from ..tensor import DEFAULT_DTYPE
 from ..tensor.tensor import Tensor
 from .evaluation import (
     ClassificationEvaluationResult,
@@ -296,11 +297,22 @@ def _require_preprocessing(path: str, preprocessing: "Any | None", fn_name: str)
 def _coerce_numeric_input(input_data: Any, fn_name: str) -> Tensor:
     """Shared "turn a Tensor/ndarray/list/tuple into a Tensor, or reject it"
     step every numeric-input artifact function requires (Milestone 102).
+
+    A NumPy array/list/tuple is built as a `DEFAULT_DTYPE` (float32) `Tensor`
+    (Milestone 114): every Forge model's parameters are float32, and an array
+    keeps whatever dtype it has -- `np.genfromtxt`/`np.loadtxt` give float64, an
+    integer CSV column gives int64 -- so a float64 or integer array reached the
+    model as-is and a CUDA-loaded artifact refused it with `CUDA 'matmul'
+    requires matching dtypes` (CPU silently promoted and returned float64). An
+    explicit `Tensor` is used exactly as given.
     """
     if isinstance(input_data, Tensor):
         return input_data
     if isinstance(input_data, (np.ndarray, list, tuple)):
-        return Tensor(input_data)
+        tensor = Tensor(input_data)
+        if tensor.dtype is not DEFAULT_DTYPE:
+            tensor = Tensor(tensor.numpy().astype(DEFAULT_DTYPE.numpy_dtype), dtype=DEFAULT_DTYPE)
+        return tensor
     raise DataError(
         f"{fn_name}() requires input_data to be a Tensor, NumPy array, or list/tuple of "
         f"numbers, got {type(input_data).__name__}."

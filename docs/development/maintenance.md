@@ -29,6 +29,7 @@ change (see **Release discipline** below), not an ordinary bug fix:
 | Artifacts | `save_model`/`load_model`, `save_checkpoint`/`load_checkpoint`, `inspect_model()`, `InputSchema` | `docs/architecture/persistence.md` |
 | Inference | `predict()`, the five `predict_*_artifact()` functions, `predict_model()`, `load_predictor()`/`ArtifactPredictor` | `docs/architecture/training-engine.md` |
 | High-level image classification | `forge.train_image_classifier()`, `ImageFolder(on_error=)` | `forge/training/image_classifier.py` module docstring |
+| High-level tabular classification/regression | `forge.train_tabular_classifier()`, `forge.train_tabular_regressor()`, `ArtifactPredictor.evaluate()` | `forge/training/tabular.py` module docstring, `docs/development/m114-tabular-workflows.md` |
 | Packaging | `pip install`/wheel+sdist build, CLI entry point | M93, M105, M106 in `progress.md` |
 
 Not supported, and not implicitly promised by any of the above: attention/

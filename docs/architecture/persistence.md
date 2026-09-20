@@ -1216,6 +1216,13 @@ preprocessing, and classes are reused, never reloaded.
 | `classification` (image) | a directory in `ImageFolder` layout | omitted -- labels are the folder names, matched to `predictor.classes` **by name** | `ClassificationEvaluationResult` |
 | `segmentation`, `sequence` | -- | -- | `DataError`: no evaluation semantics yet |
 
+**Input dtype (Milestone 114).** A NumPy array or list given to `predict()`/`evaluate()`
+(or any numeric `predict_*_artifact()`) is converted to Forge's default float32 before
+preprocessing; an explicit `Tensor` is used as given. Previously an array kept its own
+dtype, so the float64 array `np.genfromtxt` returns -- or an integer column -- was
+rejected by a CUDA-loaded artifact (`CUDA 'matmul' requires matching dtypes`), while
+CPU silently promoted and returned float64. CPU and CUDA now behave the same.
+
 Both result types are frozen dataclasses exported from `forge.training`.
 `ClassificationEvaluationResult`: `task`, `samples`, `loss` (mean
 `CrossEntropyLoss`), `accuracy`, `baseline_accuracy`, `classes`,

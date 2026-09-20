@@ -28,6 +28,12 @@ from .inference import (
 )
 from .metrics import Accuracy, MeanAbsoluteError, MeanSquaredError, Metric
 from .session import TrainingSession, start_training_session
+from .tabular import (
+    TabularClassificationResult,
+    TabularRegressionResult,
+    train_tabular_classifier,
+    train_tabular_regressor,
+)
 from .trainer import EpochResult, EvaluationResult, Trainer, TrainingHistory
 
 __all__ = [
@@ -63,4 +69,8 @@ __all__ = [
     "ImageClassifierResult",
     "ClassificationEvaluationResult",
     "RegressionEvaluationResult",
+    "train_tabular_classifier",
+    "train_tabular_regressor",
+    "TabularClassificationResult",
+    "TabularRegressionResult",
 ]

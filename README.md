@@ -44,9 +44,9 @@ workloads in these areas:
   with RNNs, an RNN-vs-LSTM comparison on a long-range recall task, and 1D
   convolutional classification of waveforms.
 
-Image classification is the workflow with the most convenient high-level API
-today (see below). It is one demonstrated workflow, not the scope of the
-project.
+Image classification, tabular classification, and tabular regression have
+one-call high-level APIs (see below). They are the demonstrated workflows, not
+the scope of the project.
 
 ## A simple Forge workflow
 
@@ -95,6 +95,51 @@ model you pass in), trains it with cross-entropy loss and Adam, and saves and
 verifies a portable artifact. Unreadable image files are reported and skipped
 by default. Epochs, batch size, learning rate, image size, validation
 fraction, device, and seed are all keyword arguments.
+
+### Train a tabular classifier or regressor
+
+For a table of numbers, read the file with your usual tools and pass plain
+numeric arrays: `X` is `(samples, features)`, `y` one target per row. Forge has
+no CSV or DataFrame layer of its own.
+
+```python
+import forge
+
+clf = forge.train_tabular_classifier(
+    X, y, path="diabetes.forge",
+    classes=["no_diabetes", "diabetes"],   # optional: y holds 0/1 here
+)
+print(f"{clf.validation_accuracy:.1%} vs {clf.baseline_accuracy:.1%} majority baseline")
+
+reg = forge.train_tabular_regressor(X, y, path="strength.forge")
+print(f"validation MSE {reg.validation_mse:.1f} vs {reg.baseline_mse:.1f} predict-the-mean")
+```
+
+Each call validates the data, holds out a seeded validation split, fits
+per-feature standardization on the **training rows only**, trains a small
+multilayer perceptron (or your own `model=`) with early stopping, and saves and
+verifies an artifact that carries the fitted preprocessing. The artifact then
+takes raw rows, for both `predict()` and `evaluate()`:
+
+```python
+predictor = forge.load_predictor(clf.artifact_path)
+predictor.predict(new_rows)[0].label
+predictor.evaluate(X_test, y_test).accuracy
+```
+
+`y` for classification is class names (strings) or integer indices; the class
+order is fixed (sorted names, or exactly `classes=`). Regression targets are used
+in their own units, not scaled: this works well at moderate magnitudes (Concrete
+strength, about 36) and degrades for very large ones. NaN/Inf anywhere in `X` or
+a regression `y` is rejected with a `forge.DataError`: Forge does not train
+through missing values, so fill or drop them first. If a column encodes "not
+measured" as a sentinel such as `0` (as the Pima diabetes data does), pass
+`missing_columns=[...]` to replace it with the training-split median. Anything
+predictable that would otherwise waste a run -- a wrong-shaped `model=`, an
+unwritable `path`, a class with no training rows -- is reported before the
+first epoch. Two ready-made artifacts and consumer scripts are in
+[`models/tabular_classifier/`](models/tabular_classifier/predict.py) and
+[`models/tabular_regressor/`](models/tabular_regressor/predict.py).
 
 ### Use a saved model
 
@@ -231,7 +276,9 @@ artifact of any supported task type.
   `Normalize`, `Compose`, and others), `DataLoader` with batching and
   shuffling, train/validation splitting, and a CUDA prefetching loader.
 - **Training and evaluation:** `forge.train()`, `Trainer` with validation,
-  metrics, and early stopping, and checkpointing with exact resume.
+  metrics, and early stopping, and checkpointing with exact resume; one-call
+  workflows `train_image_classifier()`, `train_tabular_classifier()`, and
+  `train_tabular_regressor()`; `ArtifactPredictor.evaluate()` for saved artifacts.
 - **Persistence:** `.forge` model artifacts and training checkpoints. Loading
   reconstructs models only from a registry of known Forge classes and never
   executes code from the file. `forge.inspect_model()` reports what an artifact
@@ -299,8 +346,8 @@ has its own README with exact commands and expected results.
 | Sequences and signals | `char_rnn`, `word_rnn`, `long_range_recall`, `waveform_classification` |
 
 Most of these train, evaluate, checkpoint, save, and reload a model, and
-have been run on both CPU and CUDA. Only image-folder classification currently
-has a one-call convenience API; the others use `forge.train()`,
+have been run on both CPU and CUDA. Image-folder classification and tabular
+classification/regression have one-call convenience APIs; the others use `forge.train()`,
 `forge.train_and_save()`, or the `Trainer` directly, which is what makes them
 useful as starting points to copy and adapt.
 
@@ -330,8 +377,8 @@ this works in practice.
 
 ## What's next
 
-More high-level workflow APIs are planned as Forge matures. The image
-classification workflow above is a first step toward making common tasks
+More high-level workflow APIs may follow as Forge matures. The image and
+tabular workflows above are a first step toward making common tasks
 progressively easier without removing the lower-level building blocks
 underneath. What comes next depends on the workloads and problems that turn up
 as Forge is used.

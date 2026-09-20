@@ -70,7 +70,16 @@ Public subpackages:
   one call, returning an `ImageClassifierResult`. It replaces none of the
   pieces it composes -- see `forge/training/image_classifier.py`'s own
   module docstring for the full design rationale and what remains directly
-  accessible for a caller who needs more control than it exposes.
+  accessible for a caller who needs more control than it exposes; and
+  `train_tabular_classifier()` / `train_tabular_regressor()` (Milestone
+  114), the same one-call workflow for a numeric feature matrix `X` and
+  targets `y` (no DataFrame/CSV layer): a seeded train/validation split,
+  preprocessing fitted on the training rows only and saved in the artifact,
+  a default MLP or a caller's `model=` checked against the task before
+  epoch 1, early stopping, and a verified `.forge` artifact that
+  `load_predictor()` can `predict()` and `evaluate()` -- returning a
+  `TabularClassificationResult` / `TabularRegressionResult` (see
+  `forge/training/tabular.py`).
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a
@@ -139,6 +148,8 @@ from .training import (
     ClassificationPrediction,
     EarlyStopping,
     ImageClassifierResult,
+    TabularClassificationResult,
+    TabularRegressionResult,
     TrainAndSaveResult,
     TrainingResult,
     generate_sequence,
@@ -155,6 +166,8 @@ from .training import (
     train,
     train_and_save,
     train_image_classifier,
+    train_tabular_classifier,
+    train_tabular_regressor,
 )
 
 __version__ = "0.1.0"
@@ -214,4 +227,8 @@ __all__ = [
     "load_predictor",
     "train_image_classifier",
     "ImageClassifierResult",
+    "train_tabular_classifier",
+    "train_tabular_regressor",
+    "TabularClassificationResult",
+    "TabularRegressionResult",
 ]

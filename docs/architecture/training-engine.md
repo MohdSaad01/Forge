@@ -1562,6 +1562,62 @@ full contract and `docs/development/progress.md`'s Milestone 107 entry for
 the real `petimages` acceptance-test results and the before/after
 comparison.
 
+## Tabular convenience: `train_tabular_classifier()` / `train_tabular_regressor()` (Milestone 114)
+
+```python
+result = forge.train_tabular_classifier(X, y, path="model.forge")   # -> TabularClassificationResult
+result = forge.train_tabular_regressor(X, y, path="model.forge")    # -> TabularRegressionResult
+forge.load_predictor(result.artifact_path).evaluate(X_test, y_test)
+```
+
+The two "table of numbers" workflows, written once over the existing stack:
+`random_split` -> preprocessing fitted on the training rows only (`Normalize`,
+optionally `ReplaceValue`) -> `TensorDataset`/`DataLoader` -> a default MLP or the
+caller's `model=` -> `CrossEntropyLoss`/`MSELoss` + `Adam` -> `train_and_save()`
+(`task="tabular_classification"` / `"regression"`, the fitted `Compose` saved as
+`preprocessing=`) -> `ArtifactPredictor.evaluate()` for the numbers in the
+result. There is no second training loop, save path or prediction path; the module
+docstring (`forge/training/tabular.py`) is the reference for arguments and exact
+semantics. Decisions worth recording:
+
+- **Two explicit functions, not `train(task=...)`.** The loss, the label handling,
+  the model's output width, the baseline and the result fields all differ; a
+  universal function would be a switch statement with a single docstring.
+- **Preflight before epoch 1.** M111 found that a wrong-width `model=` trained,
+  saved, verified, and failed on every `predict()`, and that a bad `path=` failed
+  only after all epochs. Here every predictable failure is raised first: data and
+  argument validation, a *probe forward pass* of a caller's `model=` on real
+  preprocessed rows (its output width must be the class count / target width -- no
+  architecture inference to get wrong), and a *real `save_model()` dry run* of the
+  untrained model to a temporary sibling file of `path` (proving the directory,
+  the filename, module/transform serialisability and the class list, without
+  writing the artifact itself). Tests replace `Trainer.fit` with a tripwire.
+- **NaN is rejected, not imputed.** `ReplaceValue` cannot express NaN; no missing-
+  value framework was built. `missing_columns=` merely exposes the existing
+  `ReplaceValue` (sentinel -> training-split median) that the Pima example needs.
+- **Result numbers come from `evaluate()` on the saved artifact**, not from the
+  running per-epoch training numbers: with early stopping the artifact holds the
+  *best* epoch, and the last epoch's numbers describe a different model. Baselines
+  are therefore the M113 ones (majority share of the validation rows; MSE of the
+  validation mean). Regression targets are evaluated in the caller's float64, so
+  the result equals a later `evaluate(X_val, y_val)` exactly.
+- **Early stopping on by default** (`patience`, restoring the best epoch), because
+  `epochs` alone makes a long run hard to bound; `patience=None` disables it.
+- **No `validation_data=`.** For i.i.d. rows a seeded random split is right; a
+  caller with a dedicated held-out set scores it with `predictor.evaluate()`. It
+  becomes necessary only for ordered data (windowed time series), not addressed here.
+- **Targets are not scaled.** On UCI Concrete this works without it (test R^2 0.93);
+  it degrades as the target's magnitude grows (Concrete strength multiplied by 30:
+  R^2 0.68). Scaling would need a persisted, inverted target transform -- a design
+  decision deliberately not improvised here.
+
+**Limits.** Only what the real workloads justified: no stratified split (a class
+with no training rows is rejected instead), no class weights, no target scaling,
+no DataFrame/CSV/time-series behaviour, no CLI. On the reference 940MX these small
+MLPs train about 5x *faster on CPU* than on CUDA (per-batch kernel-launch
+overhead dominates), so `device="cuda"` is supported and hardware-tested but not
+a speed-up here. Measurements: `docs/development/m114-tabular-workflows.md`.
+
 ## Known limitations
 Explicitly out of scope for Milestone 6 (see `docs/product/scope.md` and
 the milestone's own non-goals): distributed training, mixed precision,
