@@ -1557,6 +1557,26 @@ internal widths. A caller needing either builds the pipeline directly from
 still does -- `train_image_classifier()` does not replace that path and does
 not make it harder to reach.
 
+**Preflight (Milestone 115).** Everything predictable is rejected *before
+epoch 1*, the same contract `train_tabular_*()` established in Milestone 114
+(the shared checks live in `forge/training/_preflight.py`). Before the
+dataset scan: `path`'s directory must exist and `path` must not be a
+directory (`PersistenceError`), a non-empty path is required (`DataError`),
+and `model=` must be a `Module` (`TrainerError`). After the split, a
+caller-supplied `model=` is *run once* on two real preprocessed images and
+must return `(batch, len(classes))` scores (`TrainerError`) -- probing input
+and output width exactly, for any `Module`, with no architecture guessing --
+and the untrained model, preprocessing and class list are saved through the
+real `save_model()` to a temporary sibling of `path`, removed at once
+(`PersistenceError`). The final artifact is still written only after
+training. Before M115 a bad `path=` or unserialisable model surfaced only
+after every epoch (estimated for a 25,000-image, 5-epoch run on the
+reference machine: ~10 minutes of scanning plus ~45 minutes of GPU training), and a `model=` with
+the wrong number of outputs trained, saved and verified without complaint and
+failed only at the first `predict()`. The default CNN is not probed (it is
+built for `image_size` here). Evidence and before/after timings:
+`docs/development/m115-high-level-workflow-hardening.md`.
+
 See `forge/training/image_classifier.py`'s own module docstring for the
 full contract and `docs/development/progress.md`'s Milestone 107 entry for
 the real `petimages` acceptance-test results and the before/after

@@ -111,7 +111,6 @@ from `train_and_save()` directly, exactly as `examples/tabular_diabetes` does.
 from __future__ import annotations
 
 import os
-import tempfile
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -122,7 +121,7 @@ from ..backend.device import Device
 from ..data.dataloader import DataLoader
 from ..data.dataset import TensorDataset, random_split
 from ..data.transforms import Compose, Normalize, ReplaceValue
-from ..exceptions import DataError, PersistenceError, TrainerError
+from ..exceptions import DataError, TrainerError
 from ..nn.activation import ReLU
 from ..nn.container import Sequential
 from ..nn.linear import Linear
@@ -130,10 +129,11 @@ from ..nn.loss import CrossEntropyLoss, MSELoss
 from ..nn.module import Module
 from ..optim.adam import Adam
 from ..tensor.tensor import Tensor
+from ._preflight import check_model_contract, preflight_save
 from .api import TrainingResult, train_and_save
 from .early_stopping import EarlyStopping
 from .evaluation import encode_class_labels, encode_regression_targets
-from .inference import load_predictor, predict
+from .inference import load_predictor
 from .metrics import Accuracy, MeanAbsoluteError, MeanSquaredError
 
 _CLASSIFIER = "train_tabular_classifier"
@@ -423,7 +423,7 @@ def _split_and_preprocess(
 
 
 # ---------------------------------------------------------------------------
-# Model / save preflight
+# Model resolution (the save preflight is in `_preflight.py`)
 # ---------------------------------------------------------------------------
 
 
@@ -444,53 +444,10 @@ def _resolve_model(
     model.to(resolved)
 
     if supplied:
-        try:
-            output = predict(model, probe_rows)
-        except Exception as exc:  # the caller's model, whatever it raises
-            raise TrainerError(
-                f"{fn}() model= could not process a {tuple(probe_rows.shape)} batch of preprocessed "
-                f"features ({type(exc).__name__}: {exc}). The model must take (batch, {features}) input."
-            ) from exc
-        if output.ndim != 2 or output.shape[1] != outputs:
-            raise TrainerError(
-                f"{fn}() model= produces output of shape {tuple(output.shape)} for a "
-                f"{tuple(probe_rows.shape)} input, but this task needs (batch, {outputs}): "
-                f"{output_meaning}. Its last layer must have {outputs} output(s)."
-            )
-    return model
-
-
-def _preflight_save(
-    model: Module, path: str, preprocessing: Compose, classes: "list[str] | None", task: str, fn: str,
-) -> None:
-    """Prove `path` can be saved to, before training, without writing the artifact itself.
-
-    Saves the *untrained* `model` (same architecture, so the same serialisability)
-    with the real `save_model()` to a temporary sibling of `path`, then removes it.
-    The temporary name embeds `path`'s own filename, so an invalid name fails here
-    exactly as it would at the final save. See this module's docstring.
-    """
-    from ..serialization.model import save_model
-
-    if os.path.isdir(path):
-        raise PersistenceError(f"{fn}() path '{path}' is a directory; give a file path such as 'model.forge'.")
-    directory = os.path.dirname(os.path.abspath(path))
-    if not os.path.isdir(directory):
-        raise PersistenceError(
-            f"{fn}() cannot save to '{path}': directory '{directory}' does not exist. Create it first."
+        check_model_contract(
+            model, probe_rows, outputs, "features", f"(batch, {features})", output_meaning, fn,
         )
-    try:
-        fd, tmp_path = tempfile.mkstemp(prefix=".forge-preflight-", suffix="-" + os.path.basename(path), dir=directory)
-    except OSError as exc:
-        raise PersistenceError(f"{fn}() cannot save to '{path}': {exc}") from exc
-    os.close(fd)
-    try:
-        save_model(model, tmp_path, preprocessing=preprocessing, classes=classes, task=task)
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+    return model
 
 
 def _early_stopping(patience: "int | None") -> "EarlyStopping | None":
@@ -682,7 +639,7 @@ def train_tabular_classifier(
         model, n_features, len(class_list), _CLASSIFIER_HIDDEN, device, seed,
         Tensor(prepared.train_features[:2]), f"one raw score per class, for the {len(class_list)} classes {class_list!r}", fn,
     )
-    _preflight_save(net, path, prepared.transform, class_list, "tabular_classification", fn)
+    preflight_save(net, path, prepared.transform, class_list, "tabular_classification", fn)
 
     train_loader = DataLoader(
         TensorDataset(Tensor(prepared.train_features), Tensor(train_labels)),
@@ -761,7 +718,12 @@ def train_tabular_regressor(
     module docstring), except:
 
     - `y` -- a numeric, finite target: `(n,)`, `(n, 1)` or `(n, outputs)`. It is
-      **not** scaled; it is trained on in its own units. NaN/Inf raise `DataError`.
+      **not** scaled; it is trained on in its own units, and the artifact predicts in
+      them. NaN/Inf raise `DataError`. Large targets train worse (M115, 3,000 real
+      California house prices: R^2 0.67 in dollars, ~200,000, against 0.75 once `y` was
+      standardised by hand, and the 500-epoch default was exhausted). If you rescale `y`
+      yourself, keep its training mean and standard deviation: the artifact then
+      predicts in the rescaled units and does not know how to convert back.
     - There is no `classes=`.
     - Defaults are `epochs=500`, `patience=30`: an unscaled target starts a
       randomly-initialised network far from the answer and needs longer (on
@@ -793,7 +755,7 @@ def train_tabular_regressor(
         model, n_features, n_outputs, _REGRESSOR_HIDDEN, device, seed,
         Tensor(prepared.train_features[:2]), f"one value per target column, for a {n_outputs}-column y", fn,
     )
-    _preflight_save(net, path, prepared.transform, None, "regression", fn)
+    preflight_save(net, path, prepared.transform, None, "regression", fn)
 
     train_loader = DataLoader(
         TensorDataset(Tensor(prepared.train_features), Tensor(train_targets.astype(np.float32))),

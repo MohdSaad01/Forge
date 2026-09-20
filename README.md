@@ -94,7 +94,9 @@ a validation set, builds a CNN sized for your classes and image size (or uses a
 model you pass in), trains it with cross-entropy loss and Adam, and saves and
 verifies a portable artifact. Unreadable image files are reported and skipped
 by default. Epochs, batch size, learning rate, image size, validation
-fraction, device, and seed are all keyword arguments.
+fraction, device, and seed are all keyword arguments. A bad output `path` or a
+`model=` that does not produce one score per class is reported before the first
+epoch, not after training.
 
 ### Train a tabular classifier or regressor
 
@@ -130,7 +132,10 @@ predictor.evaluate(X_test, y_test).accuracy
 `y` for classification is class names (strings) or integer indices; the class
 order is fixed (sorted names, or exactly `classes=`). Regression targets are used
 in their own units, not scaled: this works well at moderate magnitudes (Concrete
-strength, about 36) and degrades for very large ones. NaN/Inf anywhere in `X` or
+strength, about 36) and degrades for very large ones (California house prices in
+dollars, about 200,000, scored R² 0.67 unscaled against 0.75 standardized by
+hand on a 3,000-row sample; if you do that, keep the mean and standard deviation, since
+the artifact then predicts in the standardized units). NaN/Inf anywhere in `X` or
 a regression `y` is rejected with a `forge.DataError`: Forge does not train
 through missing values, so fill or drop them first. If a column encodes "not
 measured" as a sentinel such as `0` (as the Pima diabetes data does), pass

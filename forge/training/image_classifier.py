@@ -83,6 +83,32 @@ and a resolution too small for three such blocks raises a clear `DataError`
 naming the problem, pointing at `model=` as the escape hatch, rather than
 failing deep inside `Linear`'s shape check.
 
+## Preflight (Milestone 115)
+
+Everything below that a caller can get wrong and Forge can know in advance is
+checked **before epoch 1**, so a mistake costs seconds, not a training run
+(estimated for a 25,000-image, 5-epoch run on the reference machine: ~10 minutes
+scanning, then ~45 minutes training on the GPU or ~85 on the CPU):
+
+- `path`: its directory must exist and it must not be a directory
+  (`PersistenceError`) -- checked *before* the dataset scan, since with
+  `on_error="skip"` the scan alone decodes every image once.
+- `model=` must be a `forge.nn.Module` (`TrainerError`, also before the scan).
+- After the split, a caller-supplied `model=` is *run once* on two real
+  preprocessed images and must return `(batch, len(classes))` scores
+  (`TrainerError`). Running it, rather than reading its structure, checks the
+  input shape and the output width exactly for any `Module`. This closes the
+  worst late failure: a model with the wrong number of outputs used to train,
+  save and verify without complaint, and fail only at the first `predict()`.
+- The untrained model, the persisted preprocessing and the class list are
+  saved through the real `save_model()` to a temporary sibling of `path`, which
+  is removed at once (`PersistenceError`): an unwritable path, an invalid
+  filename or an unregistered `Module` fails here. The final artifact is still
+  written only after training. The helpers are shared with the tabular
+  workflows (`forge/training/_preflight.py`).
+
+The default architecture is not probed (it is built here, sized for `image_size`).
+
 ## Advanced control
 
 Every meaningful decision remains overridable, never hidden:
@@ -132,6 +158,8 @@ from ..nn.module import Module
 from ..nn.pooling import MaxPool2d
 from ..nn.activation import ReLU
 from ..optim.adam import Adam
+from ..tensor.tensor import Tensor
+from ._preflight import check_model_contract, check_save_path, preflight_save
 from .api import TrainingResult, train_and_save
 from .metrics import Accuracy
 
@@ -285,10 +313,9 @@ def train_image_classifier(
     `_default_image_classifier_cnn()` and this module's **Default
     architecture** section) after seeding `forge.random.seed(seed)` for
     reproducible initialization. When `model=` is given, it is used exactly
-    as given -- no reseeding, no shape inspection or validation beyond what
-    `train_and_save()` itself already performs; the caller is responsible
-    for it accepting `(N, 3, *image_size)` input and producing
-    `len(classes)` output logits.
+    as given (not reseeded), but it is verified on two real preprocessed
+    images before epoch 1: it must accept `(N, 3, *image_size)` input and
+    return `(N, len(classes))` raw scores (`forge.TrainerError` otherwise).
 
     **Loss/optimizer.** Always `CrossEntropyLoss()` and
     `Adam(model.parameters(), lr=learning_rate)` -- image-folder
@@ -305,11 +332,18 @@ def train_image_classifier(
     Raises `forge.DataError` for an invalid `data_dir` (`ImageFolder`'s own
     errors), an invalid `on_error`/`val_fraction`, fewer than 2 discovered
     classes, or an `image_size` too small for the default architecture (only
-    when `model=` is not given); raises `forge.TrainerError` if `model=` is
-    given and is not a `forge.nn.Module`.
+    when `model=` is not given); `forge.TrainerError` if `model=` is not a
+    `forge.nn.Module` or fails the contract above; `forge.PersistenceError` if
+    `path` cannot be written or the model cannot be serialised. All of these are
+    raised before epoch 1 (see this module's **Preflight** section);
+    `forge.TrainerError` is also raised if training itself diverges to NaN/Inf.
     """
+    fn = "train_image_classifier"
     if not (0.0 < val_fraction < 1.0):
         raise DataError(f"val_fraction must be strictly between 0 and 1, got {val_fraction!r}.")
+    if model is not None and not isinstance(model, Module):
+        raise TrainerError(f"{fn}() requires model= to be a forge.nn.Module, got {type(model).__name__}.")
+    check_save_path(path, fn)  # before the dataset scan: with on_error="skip" the scan alone can take minutes
 
     transform = Compose([Resize(image_size), Normalize(mean=0.0, std=255.0)])
     full_dataset = ImageFolder(data_dir, transform=transform, on_error=on_error)
@@ -342,20 +376,28 @@ def train_image_classifier(
     )
     val_loader = DataLoader(val_subset, batch_size=batch_size)
 
-    if model is None:
+    supplied = model is not None
+    if not supplied:
         forge_random.seed(seed)
         model = _default_image_classifier_cnn(len(full_dataset.classes), image_size)
-    elif not isinstance(model, Module):
-        raise TrainerError(
-            f"train_image_classifier() requires model= to be a forge.nn.Module, "
-            f"got {type(model).__name__}."
-        )
-
-    loss_fn = CrossEntropyLoss()
-    optimizer = Adam(model.parameters(), lr=learning_rate)
+    model.to(Device.parse(device) if device is not None else (model.device or Device.parse("cpu")))
 
     sample_x, _ = val_subset[0]
     sample_batch = sample_x.reshape(1, *sample_x.shape)
+
+    # Everything below is checkable now and would otherwise surface only after (or, for a wrong
+    # output width, only after saving -- at the first predict()) the whole training run.
+    if supplied:
+        train_x, _ = train_subset[0]
+        probe = Tensor(np.stack([train_x.numpy(), sample_x.numpy()]))
+        check_model_contract(
+            model, probe, len(full_dataset.classes), "images", f"(batch, {', '.join(map(str, sample_x.shape))})",
+            f"one raw score per class, for the {len(full_dataset.classes)} classes {full_dataset.classes!r}", fn,
+        )
+    preflight_save(model, path, transform, full_dataset.classes, "classification", fn)
+
+    loss_fn = CrossEntropyLoss()
+    optimizer = Adam(model.parameters(), lr=learning_rate)
 
     result = train_and_save(
         model, train_loader,

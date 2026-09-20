@@ -45,14 +45,13 @@ Run before and after any change:
 python -m pytest tests/ -q
 ```
 
-Baseline recorded at Issue I1 (2026-09-19, reference hardware, CUDA
-present; 2765 at Milestone 110, plus the 37 tests I1 added in
-`tests/test_non_finite_input.py`, `tests/test_non_finite_input_cuda.py`
-and `tests/test_bundled_image_classifier.py`):
+Baseline recorded at Milestone 115 (2026-09-20, reference hardware, CUDA
+present; 2802 at Issue I1, plus 43 tests for M113's `evaluate()`, 164 for
+M114's tabular workflows and 24 for M115's image-classifier preflight):
 
 ```text
-Total:   2802
-Passed:  2802
+Total:   3033
+Passed:  3033
 Failed:  0
 Skipped: 0
 ```
