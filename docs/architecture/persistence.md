@@ -1028,7 +1028,9 @@ caller, including `forge model predict` (`forge/cli/model.py`).
 
 ### What this explicitly does not validate
 
-**Feature ordering/semantics.** A same-width input whose columns have been
+**Feature ordering/semantics.** *(Closed for named input by Milestone 119 -- see **Feature
+names metadata**. What follows is what `feature_count` alone can and cannot do, and it remains
+exactly true for an artifact that records no names and for any unnamed array.)* A same-width input whose columns have been
 permuted (the diabetes dataset's real
 `[Pregnancies, Glucose, BloodPressure, ...]` reordered to
 `[Glucose, Pregnancies, BloodPressure, ...]`) passes this check --
@@ -1074,7 +1076,9 @@ optional place for a caller to declare per-column names, a genuinely
 semantic (order-aware) contract could be built on top of this same
 `InputSchema` mechanism -- deferred, not attempted here, since no such place
 exists in the current public data API and inventing one was explicitly out
-of this milestone's scope.
+of this milestone's scope. *(Milestone 119 did exactly this, on the one path that has a natural
+place for names: the `train_tabular_*()` functions and `forge.data.load_csv()`. `forge.train()`'s
+`Dataset`/`DataLoader` path still carries no names.)*
 
 ### Compatibility
 
@@ -1336,6 +1340,57 @@ target_transform=StandardizeTarget)` writes an optional sibling entry next to `"
 Why an artifact-level output transform and not a rescaling of the last `Linear` layer:
 `docs/development/m116-persisted-target-transforms.md`.
 
+## Feature names metadata
+
+*Milestone 119.* `InputSchema` (M101) is *derived* from the saved architecture -- the first
+`Linear`'s `in_features` -- so it could only ever say how many features an artifact takes. It
+now can also say which one each column is. `save_model(..., feature_names=[...])` (tabular
+tasks only) writes an optional sibling entry next to `"preprocessing"`:
+
+```json
+"forge_format_version": 2,
+"feature_names": ["Pregnancies", "Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI",
+                  "DiabetesPedigreeFunction", "Age"]
+```
+
+- **Order is authoritative and names are exact.** `feature_names[i]` is what input column `i`
+  is, in the order the model consumes columns. Every entry is a non-empty, not-only-whitespace
+  `str`; all entries differ; nothing is stripped, lower-cased or normalised -- `"Age"`, `"age"`
+  and `" Age"` are three different names. One definition of "valid"
+  (`forge.data.feature_names.validate_feature_names`) serves training, saving, loading and
+  prediction, so a list that can be saved can always be loaded and matched.
+- **They are the *raw* input columns.** Names are positions in what the caller passes, before any
+  persisted `preprocessing` runs (`Normalize` and `ReplaceValue(columns=)` address the same
+  positions); preprocessing never renames or adds a name, and a target column is never a feature
+  name.
+- **Validated against the architecture, both ways.** `save_model()` requires
+  `task="regression"`/`"tabular_classification"` and exactly one name per input column of the
+  model's first `Linear` (`PersistenceError` otherwise -- including a model whose input width
+  cannot be read from its saved tree). `inspect_model()` re-checks on read and refuses an entry
+  `save_model()` could not have written (malformed, duplicated, wrong length, wrong task, no
+  derivable width) rather than align input against it; `load_predictor()` inspects first, so it
+  refuses too. An explicit `null` means "no names".
+- **Absent means unnamed.** With no `"feature_names"` entry -- every artifact saved before M119,
+  and every artifact trained from arrays -- `InputSchema.feature_names` is `None` and the M101
+  width check is the whole contract, exactly as before. Names are never invented
+  (`feature_0`, ...). Saving without names writes the file byte for byte as before.
+- **Read paths.** `inspect_model(path).input_schema.feature_names` (a tuple, or `None`),
+  `ArtifactPredictor.input_schema`, `forge model inspect` (a `Feature names:` line; `"input_feature_names"`
+  in `--json`), `ModelInfo.__str__`. **Preserved by `forge model convert`**, and read back by
+  `save_and_verify()` (a save that lost them is a `PersistenceError`).
+- **Used in one place.** Named input is matched by `_column_order()` in
+  `forge/training/inference.py`, reached by `predict()`, `predict_tensor_artifact()`,
+  `predict_tabular_classification_artifact()`, `predict_model()` and `evaluate()` (and through them
+  `forge model predict`/`evaluate`): the same names in any other order are reordered into the
+  artifact's; every other difference (missing, unknown, extra -- an `id` column is an extra column and
+  is never dropped -- duplicate, case/whitespace) is a `DataError` naming the columns. A bare array or
+  `.npy` file carries no names and is checked for width only, as before.
+- **No format-version change**, deliberately (see **Versioning**): the key is optional, an
+  older build ignores it and behaves as it always did -- width check only -- and nothing an
+  older build could return is *wrong* because of it.
+
+Design, alternatives and evidence: `docs/development/m119-persisted-tabular-feature-schema.md`.
+
 ## Versioning
 `metadata.json`'s `"forge_format_version"` field is checked against this
 build's `forge.serialization.model.FORMAT_VERSION` (`2`, as of Milestone 53
@@ -1356,6 +1411,18 @@ byte for byte as before. This build reads both (`SUPPORTED_FORMAT_VERSIONS`); an
 refuses a version-3 file with the ordinary "unsupported format version 3" instead of ignoring
 the unknown key and returning standardised numbers as if they were native. See **Target
 transform metadata** below.
+
+**Milestone 119 added an optional `"feature_names"` key and did *not* bump the format.** The rule
+this file has followed since M71 is the one M116 made explicit: bump when an older reader
+ignoring the key would *misinterpret* the artifact. A target transform does -- the old reader
+would return standardised numbers as if they were native. Feature names do not: an older
+build ignores them and checks the input's width, exactly its contract for every artifact; it
+returns the same predictions it always did (verified: a pristine M118 build loads a named
+artifact and produces bit-identical predictions and evaluation). The one residual cost is
+that an older build's `forge model convert` rewrites the file *without* the names -- a valid
+unnamed artifact, with column checking lost, not a misread one -- which is documented rather
+than versioned around (a bump would also make every named artifact unusable to an older build
+even for `.npy` input, and would need a combined scheme with M116's version 3).
 
 **Milestone 13 did not bump `FORMAT_VERSION`.** CUDA persistence needed no
 new metadata field or archive layout -- only the `"device"` field's set of

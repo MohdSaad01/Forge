@@ -84,7 +84,12 @@ Public subpackages:
   `forge/training/tabular.py`). `train_tabular_regressor(..., target_transform="standardize")`
   (Milestone 116) trains on standardised targets and persists the fitted
   `forge.data.StandardizeTarget` in the artifact, so `predict()`/`evaluate()`
-  work in the caller's own units.
+  work in the caller's own units. `train_tabular_*(..., feature_names=[...])`
+  (Milestone 119; `forge.data.load_csv(..., return_feature_names=True)` gives a CSV's)
+  records *which* feature each input column is in the artifact, so a named input
+  (`predict(X, feature_names=...)`, a CSV header) is matched by name -- the same names in
+  another order are reordered, any other difference is a `DataError`; a bare array is
+  checked for width only, as before.
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a

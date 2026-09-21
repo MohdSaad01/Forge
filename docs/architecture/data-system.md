@@ -133,9 +133,14 @@ duplicate or missing column names, a header-less or non-comma file, malformed qu
 non-UTF-8 file. No categorical features, dates, other delimiters, column selection or
 streaming. It knows nothing of preprocessing, classes, target transforms or artifacts;
 those stay in the training/evaluation code that receives the arrays. Feature *names* do not
-travel with the arrays and artifacts record only a feature count, so a reordered CSV is not
-detectable downstream. Full contract: `forge/data/csv_reader.py`'s module docstring and
-`docs/development/m118-csv-tabular-workflow.md`.
+travel with the arrays themselves (an array has none); `load_csv(..., return_feature_names=True)`
+returns the header names beside `X, y` (Milestone 119), and `load_csv_features(path)` reads a
+file with no target column into `(X, names)`. Handed on as `feature_names=`, they let an artifact
+that recorded names match a CSV's columns by name, so a reordered CSV is aligned and a wrong column
+rejected downstream -- an artifact trained without names records only a feature count and still
+cannot detect a reordered CSV. Full contract: `forge/data/csv_reader.py`'s module docstring,
+`docs/development/m118-csv-tabular-workflow.md` and
+`docs/development/m119-persisted-tabular-feature-schema.md`.
 
 ## DataLoader
 `DataLoader` (`forge/data/dataloader.py`) iterates a `Dataset` in batches:

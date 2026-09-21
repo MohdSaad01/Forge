@@ -104,7 +104,7 @@ are never written into a `.forge` file), and no new training semantics.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from ..backend.device import Device
 from ..data.dataloader import DataLoader
@@ -377,6 +377,7 @@ def train_and_save(
     atol: float = 1e-5,
     early_stopping: "EarlyStopping | None" = None,
     target_transform: "Any | None" = None,
+    feature_names: "Sequence[str] | None" = None,
 ) -> TrainAndSaveResult:
     """Train `model`, then save + verify it as a portable artifact, in one call (Milestone 81).
 
@@ -461,6 +462,12 @@ def train_and_save(
     `train_loss`/`val_loss`/`*_metrics`, `history`, `best_monitored_value` -- is in
     the *transformed* space; use `forge.load_predictor(path).evaluate(X, y)` for
     native-unit metrics (`forge.train_tabular_regressor()` does exactly that).
+
+    **Feature names (Milestone 119).** `feature_names` -- one name per input column, for
+    `task="regression"`/`"tabular_classification"` -- is passed straight through to
+    `save_and_verify()` / `save_model()`, which records it in the artifact and reads it back.
+    Nothing is trained differently: names are identity metadata about the *raw* input
+    columns, never an input to the model or to preprocessing.
     """
     history = train(
         model, dataset,
@@ -471,7 +478,7 @@ def train_and_save(
     )
     reloaded = save_and_verify(
         model, path, sample, preprocessing=preprocessing, classes=classes, task=task, atol=atol,
-        target_transform=target_transform,
+        target_transform=target_transform, feature_names=feature_names,
     )
     last = history[-1]
     return TrainAndSaveResult(

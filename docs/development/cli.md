@@ -49,7 +49,11 @@ classes=...)`, Milestone 72). A regression artifact trained on standardised
 targets also reports its target transform (a `Target transform:` line, and
 `"target_transform"` in `--json`, `null` otherwise; Milestone 116) -- `forge
 model predict` on such an artifact already returns native units, and `forge model
-convert` carries the transform over. Never prints tensor values.
+convert` carries the transform over. A tabular artifact trained with `feature_names=`
+(Milestone 119) also lists them -- a `Feature names: Pregnancies, Glucose, ...` line after
+`Input: 8 feature(s)`, and `"input_feature_names": [...]` in `--json` (`null` for an artifact
+that records none, which is every artifact saved before M119 and any trained from unnamed
+arrays; names are never invented) -- and `convert` carries them over. Never prints tensor values.
 
 The module tree and parameter list (text and `--json`) are always ordered by
 construction order (e.g. a `Sequential`'s children as `0, 1, 2, ..., 12`, not
@@ -177,6 +181,20 @@ here.
   `task="classification"`) failed with `predict_artifact() requires image to
   be a file path (str or os.PathLike), got ndarray`.
 
+**A `.csv` `INPUT` for the two tabular tasks (Milestone 119).** `regression` and
+`tabular_classification` also accept a CSV file (chosen by the `.csv` extension alone, as for
+`evaluate`) with a header row and **only feature columns** -- there is no target to name, and
+every column is a feature (`forge.data.load_csv_features()`). The header gives the columns'
+*names*, and the artifact then matches them to the model's by name -- the same rule, in the same
+place, as `forge model evaluate` (below): an artifact that records feature names reorders a CSV
+that has exactly those names in any order, and rejects anything else (a missing, unknown, extra
+-- including an `id`, or a target column left in the file -- or case/whitespace-different name)
+with one `Error:` line, exit 1, empty stdout. Nothing is dropped, renamed or guessed. A JSON
+`INPUT` has no column names, so it is read exactly as before and checked for width only. An
+artifact that records no names (saved before M119, or trained from arrays) takes the CSV as
+given and prints one `Warning: ... records no feature names ... cannot be verified` line on
+stderr after the result -- stdout, including `--json`, is unchanged.
+
 `--json` prints a stable, machine-readable result instead of the text above,
 e.g. `{"task": "classification", "class": "dog", "confidence": 0.942}` (or
 `{"task": "regression", "prediction": [[0.8134]]}` /
@@ -286,9 +304,18 @@ forge model evaluate housing.forge held_out.csv --target median_house_value --js
   numeric sentinel such as `0`, which is an ordinary number to the reader.
 - `TARGETS` is not accepted together with a `.csv` (the targets are in the file), and
   `--target` is not accepted with a `.npy` or an image directory.
-- **An artifact records how many features it expects, not their names.** The CLI cannot
-  tell that a CSV's feature columns are in a different order from the one the model was
-  trained on; keep one column order.
+- **Column names are checked against the artifact's, when it has any (Milestone 119).** The
+  CLI passes the header names of the feature columns (the `--target` excluded, file order)
+  to `ArtifactPredictor.evaluate(..., feature_names=)` untouched; it never reorders, drops
+  or renames a column itself. Against an artifact trained with `feature_names=`, a CSV with
+  exactly its names in another order is scored exactly like the correctly ordered one, and
+  anything else -- a missing, unknown or extra column (an `id` is an extra column: it is
+  never recognised or dropped, so remove it from the file), a duplicate, a name that differs
+  by case or whitespace -- is one `Error:` line naming the columns, before any row is scored.
+  An artifact saved before M119, or trained from unnamed arrays, records only a feature
+  *count*: it cannot detect a reordered CSV, uses the columns as given, and after a
+  successful run prints one `Warning:` line on stderr saying so (stdout is unchanged).
+  A `.npy` input has no column names and is checked for width only -- as before.
 
 The output, the `--json` keys and the numbers are exactly those of the `.npy` form:
 the CSV path is an input reader and adds no key, metric or preprocessing.

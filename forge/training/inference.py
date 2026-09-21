@@ -124,6 +124,17 @@ this does *not* solve: Forge's training APIs never capture which column is
 which, so same-length feature reordering is undetectable and this milestone
 does not pretend otherwise.
 
+**Named input (Milestone 119).** The limitation above is closed for *named* input. An
+artifact trained with `feature_names=` records which feature each input column is
+(`InputSchema.feature_names`), and `predict_tensor_artifact()`/
+`predict_tabular_classification_artifact()`/`predict_model()`/`ArtifactPredictor.predict()`/
+`.evaluate()` take `feature_names=` -- the names of the columns being passed
+(`forge.data.load_csv(..., return_feature_names=True)` gives a CSV's). One rule
+(`_column_order()`), run before the width check and preprocessing: exactly the artifact's
+names in another order are reordered; anything else is a `DataError`. A bare array has no
+names and is checked for width only, as before -- Forge does not pretend an array carries
+information it does not. See `docs/development/m119-persisted-tabular-feature-schema.md`.
+
 **Reusable inference (Milestone 102).** Every function above -- `predict_
 artifact()`, `predict_tensor_artifact()`, `predict_image_artifact()`,
 `predict_sequence_artifact()`, `predict_tabular_classification_artifact()`,
@@ -156,6 +167,7 @@ decode-and-preprocess step `_classify_image_core()` uses).
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
@@ -165,6 +177,7 @@ import numpy as np
 from .. import random as forge_random
 from ..autograd import no_grad
 from ..backend.device import Device
+from ..data.feature_names import validate_feature_names
 from ..exceptions import DataError, PersistenceError, ShapeMismatchError, TrainerError
 from ..nn.module import Module
 from ..tensor import DEFAULT_DTYPE
@@ -280,6 +293,111 @@ def _validate_feature_count(data: Tensor, expected: "int | None", fn_name: str) 
         raise DataError(f"{fn_name}() expected {expected} input feature(s), received {actual}.")
 
 
+_TABULAR_WORKFLOWS = ("regression", "tabular_classification")
+_MAX_LISTED_NAMES = 8
+
+
+def _listed(names: "Sequence[str]") -> str:
+    shown = ", ".join(repr(n) for n in names[:_MAX_LISTED_NAMES])
+    return f"[{shown}{', ...' if len(names) > _MAX_LISTED_NAMES else ''}]"
+
+
+def _column_order(
+    feature_names: Any, input_schema: "Any | None", width: int, fn_name: str,
+) -> "list[int] | None":
+    """How to reorder a named input's columns into an artifact's own order, or `None` if they already are (Milestone 119).
+
+    `feature_names` is the caller's claim about what the input's `width` columns are
+    (`forge.data.load_csv(..., return_feature_names=True)` gives exactly this for a
+    CSV). The one rule, applied identically by every prediction and evaluation path:
+
+    - The artifact records names (`input_schema.feature_names`) and the input has
+      **exactly those names, in any order** -> return the permutation `order` such
+      that `input[..., order]` is in the artifact's order (`None` when it already is:
+      nothing is copied). Names decide identity, so this is not a guess.
+    - Anything else -> `DataError` naming the missing and the unexpected columns:
+      a missing name, a name the artifact does not have, an extra column (an `id`
+      column is an extra column -- it is never recognised or dropped), a duplicate,
+      a name that differs by case or whitespace. Nothing is ever normalised,
+      renamed, ignored or dropped, because that would be guessing which column is
+      which.
+    - The artifact records **no** names (saved before Milestone 119, or trained from
+      unnamed arrays): there is nothing to check the names against, so the columns
+      are used as given, exactly as an unnamed array's are, and `None` is returned.
+      Whoever completes the call then says so with `_warn_order_unverified()` -- only
+      once the call has *succeeded*: silently accepting `feature_names=` would imply a
+      check that did not happen, but a warning beside an error that rejects the input
+      anyway is just noise.
+
+    Runs before preprocessing and before the width check: preprocessing is per
+    *artifact* column, so it must see the columns already in the artifact's order.
+    """
+    try:
+        names = validate_feature_names(feature_names)
+    except DataError as exc:
+        raise DataError(f"{fn_name}() {exc}") from exc
+    if len(names) != width:
+        raise DataError(
+            f"{fn_name}() feature_names has {len(names)} name(s) but the input has {width} column(s): "
+            "there must be exactly one name per column."
+        )
+    recorded = input_schema.feature_names if input_schema is not None else None
+    if recorded is None:
+        return None
+    if names == recorded:
+        return None
+    recorded_set, given_set = set(recorded), set(names)
+    missing = [n for n in recorded if n not in given_set]
+    unexpected = [n for n in names if n not in recorded_set]
+    if missing or unexpected:
+        parts = []
+        if missing:
+            parts.append(f"missing (the artifact expects them, the input has none): {_listed(missing)}")
+        if unexpected:
+            parts.append(f"unexpected (the input has them, the artifact does not): {_listed(unexpected)}")
+
+        def loose(name: str) -> str:  # the hint only: matching itself stays exact
+            return "".join(name.split()).casefold()
+
+        near =[f"{u!r} vs {m!r}" for u in unexpected for m in missing if loose(u) == loose(m)]
+        hint = f" {', '.join(near)} differ only in case/whitespace, which counts." if near else ""
+        raise DataError(
+            f"{fn_name}() the input's columns do not match this artifact's feature names -- "
+            f"{'; '.join(parts)}.{hint} Names are matched exactly; Forge reorders a named input only when "
+            "it has exactly the artifact's names, and never drops, renames or guesses a column "
+            f"(remove or rename it in the data). The artifact's features are {_listed(recorded)}."
+        )
+    position = {name: i for i, name in enumerate(names)}
+    return [position[name] for name in recorded]
+
+
+def _warn_order_unverified(input_schema: "Any | None", fn_name: str, stacklevel: int) -> None:
+    """Say, after a *successful* named call, that an artifact with no recorded names could not check them (Milestone 119)."""
+    if input_schema is not None and input_schema.feature_names is not None:
+        return
+    warnings.warn(
+        f"{fn_name}() was given feature_names, but this artifact records no feature names (it was saved "
+        "without feature_names=), so the column order cannot be verified: the input is used as given, "
+        "in the order given. Train with feature_names=... to record them.",
+        UserWarning, stacklevel=stacklevel,
+    )
+
+
+def _reorder_columns(data: Tensor, order: "list[int]") -> Tensor:
+    """`data` with its last axis permuted by `order` -- same dtype, same device (Milestone 119)."""
+    values = np.ascontiguousarray(data.to("cpu").numpy()[..., order])
+    return Tensor(values, dtype=data.dtype, device=data.device)
+
+
+def _require_tabular_for_names(workflow: str, fn_name: str) -> None:
+    """`feature_names=` names *columns*; refuse it for a workflow whose input has none rather than ignore it (Milestone 119)."""
+    if workflow not in _TABULAR_WORKFLOWS:
+        raise DataError(
+            f"{fn_name}() feature_names= applies only to tabular artifacts ({', '.join(_TABULAR_WORKFLOWS)}), "
+            f"whose input is a row of named numeric columns; this artifact's task is '{workflow}'."
+        )
+
+
 def _require_preprocessing(path: str, preprocessing: "Any | None", fn_name: str) -> None:
     """Shared "preprocessing is mandatory for this artifact shape" check
     (Milestone 102), extracted from `predict_artifact()`/`predict_image_
@@ -387,6 +505,7 @@ def _predict_tensor_core(
     *,
     require_batch: bool = False,
     target_transform: "Any | None" = None,
+    feature_names: "Sequence[str] | None" = None,
 ) -> Tensor:
     """The artifact-independent body shared by `predict_tensor_artifact()`
     and `predict_tabular_classification_artifact()` (Milestone 102): coerce
@@ -414,6 +533,15 @@ def _predict_tensor_core(
     classification callers never pass it. There is exactly one place this happens
     -- here, where `predict()`, `predict_tensor_artifact()`, `predict_model()` and
     `evaluate()` already converge -- so no path can return un-inverted numbers.
+
+    `feature_names` (Milestone 119) is the caller's claim about what the input's columns
+    are, or `None` for an unnamed array (the pre-Milestone-119 behaviour, unchanged).
+    When given, `_column_order()` aligns the columns to the artifact's recorded names
+    -- or rejects the input -- *first*, before the width check and before
+    `preprocessing`, in this same place, so every path that converges here
+    (`predict()`, `predict_tensor_artifact()`, `predict_model()`) has one and the same
+    rule. `evaluate()` applies the same `_column_order()` once per call rather than per
+    batch. It needs a 1-D or 2-D input, the only two shapes the width check knows.
     """
     prepared = _coerce_numeric_input(input_data, fn_name)
     if require_batch and prepared.ndim == 1:
@@ -422,6 +550,15 @@ def _predict_tensor_core(
             f"received an unbatched 1-D input with {prepared.shape[0]} feature(s). "
             f"Wrap a single row in an extra list, e.g. [[...]] instead of [...]."
         )
+    if feature_names is not None:
+        if prepared.ndim not in (1, 2):
+            raise DataError(
+                f"{fn_name}() feature_names= needs a 1-D row or a 2-D (rows, columns) input, "
+                f"got shape {tuple(prepared.shape)}."
+            )
+        order = _column_order(feature_names, input_schema, prepared.shape[-1], fn_name)
+        if order is not None:
+            prepared = _reorder_columns(prepared, order)
     expected_features = input_schema.feature_count if input_schema is not None else None
     _validate_feature_count(prepared, expected_features, fn_name)
     if preprocessing is not None:
@@ -430,6 +567,8 @@ def _predict_tensor_core(
     output = predict(model, prepared)
     if target_transform is not None:
         output = _to_native_units(output, target_transform, fn_name)
+    if feature_names is not None:
+        _warn_order_unverified(input_schema, fn_name, stacklevel=4)
     return output
 
 
@@ -609,6 +748,7 @@ def save_and_verify(
     task: "str | None" = None,
     atol: float = 1e-5,
     target_transform: "Any | None" = None,
+    feature_names: "Sequence[str] | None" = None,
 ) -> Module:
     """Save `model` to `path`, then immediately prove it is a genuinely portable
     artifact by reloading it fresh and confirming its prediction on `sample`
@@ -670,6 +810,12 @@ def save_and_verify(
     The `sample` comparison itself is on the raw model output (the transformed space),
     which is what `predict()` returns; it verifies the weights, not the units.
 
+    `feature_names` (Milestone 119) is passed straight through to `save_model()` (see its
+    docstring; tabular tasks only) and, like `target_transform`, read back from the saved
+    file (`inspect_model(path).input_schema.feature_names`) and required to equal what was
+    given, else `forge.PersistenceError` -- names that did not survive the round trip
+    must never be discovered later as a reordered CSV being accepted unchecked.
+
     **Scope.** Deliberately narrow: this only composes `save_model()` +
     `load_model()` + `predict()`, so it covers exactly `predict()`'s own
     calling convention (`model(x)` on a single batched `Tensor`) -- it does
@@ -690,6 +836,7 @@ def save_and_verify(
         raise DataError(f"save_and_verify() requires sample to be a Tensor, got {type(sample).__name__}.")
 
     from ..serialization.model import (
+        inspect_model as _inspect_model,
         load_model as _load_model,
         load_target_transform as _load_target_transform,
         save_model as _save_model,
@@ -698,7 +845,10 @@ def save_and_verify(
     resolved_device = Device.parse(device) if device is not None else None
     pre_save = predict(model, sample, device=resolved_device).numpy()
 
-    _save_model(model, path, preprocessing=preprocessing, classes=classes, task=task, target_transform=target_transform)
+    _save_model(
+        model, path, preprocessing=preprocessing, classes=classes, task=task, target_transform=target_transform,
+        feature_names=feature_names,
+    )
     reloaded = _load_model(path, device=resolved_device.type if resolved_device is not None else None)
     post_load = predict(reloaded, sample).numpy()
 
@@ -707,6 +857,14 @@ def save_and_verify(
             f"save_and_verify(): the target transform read back from '{path}' differs from the one that "
             "was just saved, so its predictions would not be in native units."
         )
+    if feature_names is not None:
+        schema = _inspect_model(path).input_schema
+        read_back = schema.feature_names if schema is not None else None
+        if read_back != tuple(str(name) for name in feature_names):
+            raise PersistenceError(
+                f"save_and_verify(): the feature names read back from '{path}' ({read_back!r}) differ from the "
+                "ones that were just saved, so named input could not be checked against them."
+            )
 
     if not np.allclose(pre_save, post_load, atol=atol):
         max_diff = float(np.max(np.abs(pre_save - post_load)))
@@ -826,6 +984,7 @@ def predict_tensor_artifact(
     input_data: "Tensor | np.ndarray | Sequence[Any]",
     *,
     device: "str | Device | None" = None,
+    feature_names: "Sequence[str] | None" = None,
 ) -> Tensor:
     """Run one already-batched numeric input through a portable `.forge` artifact, in one call (Milestone 83).
 
@@ -898,6 +1057,16 @@ def predict_tensor_artifact(
     one (every file saved before Milestone 116) returns the raw model output,
     exactly as before.
 
+    **Named input (Milestone 119).** `feature_names=` names the columns of `input_data`
+    (`forge.data.load_csv_features()` returns a CSV's). When the artifact records
+    feature names, the input is matched to them: the same names in another order are
+    reordered into the artifact's order, and any other difference -- a missing, unknown,
+    extra (e.g. `id`) or case/whitespace-different column -- is a `forge.DataError`.
+    Omit it (the default) for a bare array, which is checked for width only, exactly as
+    before. If the artifact records no names, `feature_names=` cannot be verified: the
+    input is used as given and a `UserWarning` says so. See `_column_order()` for the
+    full rule -- it is one rule for every prediction and evaluation path.
+
     Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
     artifact or an unreconstructable `"preprocessing"`/`"target_transform"` entry
     (the same conditions `load_model()`/`load_preprocessing()` already raise).
@@ -919,7 +1088,7 @@ def predict_tensor_artifact(
     model = _load_model(path, device=device.type if isinstance(device, Device) else device)
     return _predict_tensor_core(
         model, preprocessing, info.input_schema, checked, "predict_tensor_artifact",
-        target_transform=info.target_transform,
+        target_transform=info.target_transform, feature_names=feature_names,
     )
 
 
@@ -1102,6 +1271,7 @@ def predict_tabular_classification_artifact(
     input_data: "Tensor | np.ndarray | Sequence[Any]",
     *,
     device: "str | Device | None" = None,
+    feature_names: "Sequence[str] | None" = None,
 ) -> "list[ClassificationPrediction] | list[int]":
     """Classify an already-batched numeric input with a portable `.forge` artifact, in one call (Milestone 91).
 
@@ -1182,6 +1352,11 @@ def predict_tabular_classification_artifact(
     width only, never feature order/semantics). Here the required task is
     `task="tabular_classification"` rather than `"regression"`.
 
+    **Named input (Milestone 119).** Identical to `predict_tensor_artifact()`'s own --
+    `feature_names=` names `input_data`'s columns, and an artifact that records feature
+    names aligns the input to them (reordering the same names, rejecting anything
+    else); see that function's docstring and `_column_order()`.
+
     Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
     artifact or an unreconstructable `"preprocessing"` entry (the same
     conditions `load_model()`/`load_preprocessing()` already raise), and
@@ -1205,7 +1380,7 @@ def predict_tabular_classification_artifact(
     model = _load_model(path, device=device.type if isinstance(device, Device) else device)
     output = _predict_tensor_core(
         model, preprocessing, info.input_schema, checked, "predict_tabular_classification_artifact",
-        require_batch=True,
+        require_batch=True, feature_names=feature_names,
     )
 
     classes = _load_classes(path)
@@ -1313,6 +1488,7 @@ def predict_model(
     *,
     device: "str | Device | None" = None,
     length: "int | None" = None,
+    feature_names: "Sequence[str] | None" = None,
 ) -> "ClassificationPrediction | int | Tensor | list[ClassificationPrediction] | list[int] | list[str]":
     """Predict from any supported portable `.forge` artifact, in one call, with no manual workflow choice (Milestones 86/87/90).
 
@@ -1365,6 +1541,12 @@ def predict_model(
     `predict_artifact()`/`predict_tensor_artifact()`/`predict_image_artifact()`/
     `predict_sequence_artifact()` themselves.
 
+    `feature_names` (Milestone 119) names the columns of a tabular `input_data` and is
+    passed through to `predict_tensor_artifact()`/`predict_tabular_classification_
+    artifact()` (see the former for the rule). Unlike `length`/`device` it is **not**
+    silently ignored for a workflow it does not apply to: naming the columns of an
+    image path or a token seed is a mistake, so it raises `forge.DataError`.
+
     Raises `forge.PersistenceError` for a missing/corrupt/unsupported-version
     artifact (the same conditions `inspect_model()` itself raises), and also
     `forge.PersistenceError` when the artifact's metadata does not reliably
@@ -1386,15 +1568,17 @@ def predict_model(
 
     info = _inspect_model(path)
     workflow = _determine_workflow(info)
+    if feature_names is not None:
+        _require_tabular_for_names(workflow, "predict_model")
 
     if workflow == "classification":
         return predict_artifact(path, input_data, device=device)
     if workflow == "regression":
-        return predict_tensor_artifact(path, input_data, device=device)
+        return predict_tensor_artifact(path, input_data, device=device, feature_names=feature_names)
     if workflow == "segmentation":
         return predict_image_artifact(path, input_data, device=device)
     if workflow == "tabular_classification":
-        return predict_tabular_classification_artifact(path, input_data, device=device)
+        return predict_tabular_classification_artifact(path, input_data, device=device, feature_names=feature_names)
 
     if length is None:
         raise DataError(
@@ -1556,6 +1740,7 @@ class ArtifactPredictor:
         length: "int | None" = None,
         rng: "np.random.Generator | None" = None,
         threshold: float = 0.5,
+        feature_names: "Sequence[str] | None" = None,
     ) -> Any:
         """Run one prediction through the already-loaded artifact -- no reload, no reconstruction.
 
@@ -1576,20 +1761,29 @@ class ArtifactPredictor:
         `int` for classification, `Tensor` for regression/segmentation,
         `list[ClassificationPrediction]`/`list[int]` for tabular
         classification, `list` of tokens for sequence).
+
+        `feature_names` (Milestone 119) names the columns of a tabular `input_data` and
+        is matched to the artifact's recorded `input_schema.feature_names`: the same
+        names in another order are reordered, anything else is a `forge.DataError`
+        (`predict_tensor_artifact()`'s docstring, `_column_order()`). Omit it for a bare
+        array. Unlike `rng`/`threshold` it is not silently ignored for a non-tabular
+        task -- naming the columns of an image path is a mistake (`DataError`).
         """
+        if feature_names is not None:
+            _require_tabular_for_names(self._workflow, "ArtifactPredictor.predict")
         if self._workflow == "classification":
             return _classify_image_core(self._model, self._preprocessing, self._classes, input_data)
         if self._workflow == "regression":
             return _predict_tensor_core(
                 self._model, self._preprocessing, self.input_schema, input_data, "ArtifactPredictor.predict",
-                target_transform=self.target_transform,
+                target_transform=self.target_transform, feature_names=feature_names,
             )
         if self._workflow == "segmentation":
             return _segment_image_core(self._model, self._preprocessing, input_data, threshold)
         if self._workflow == "tabular_classification":
             output = _predict_tensor_core(
                 self._model, self._preprocessing, self.input_schema, input_data, "ArtifactPredictor.predict",
-                require_batch=True,
+                require_batch=True, feature_names=feature_names,
             )
             if self._classes is not None:
                 return interpret_classification(output, self._classes)
@@ -1611,6 +1805,7 @@ class ArtifactPredictor:
         y: Any = None,
         *,
         batch_size: int = 256,
+        feature_names: "Sequence[str] | None" = None,
     ) -> "ClassificationEvaluationResult | RegressionEvaluationResult":
         """Score this artifact on held-out labeled data, using its own persisted preprocessing (Milestone 113).
 
@@ -1660,6 +1855,13 @@ class ArtifactPredictor:
         (`PersistenceError` otherwise): the confusion matrix is indexed by the
         artifact's class order, never by an order inferred from `y`.
 
+        `feature_names` (Milestone 119) names the columns of a tabular `X` and follows
+        exactly the rule `predict()` does (`_column_order()`): against an artifact that
+        records feature names, the same names in another order are reordered -- so a
+        reordered CSV scores identically to the correctly ordered one -- and any other
+        difference is a `DataError` before any row is scored. Omit it for a bare array.
+        Only the numeric tasks take it (`DataError` for an image-folder artifact).
+
         `batch_size` only bounds memory; results are the same up to float32
         rounding in `loss` (batched matrix products round differently).
         Read-only: the artifact file, the model's parameters, the preprocessing
@@ -1676,17 +1878,21 @@ class ArtifactPredictor:
         fn_name = "ArtifactPredictor.evaluate"
         if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0:
             raise DataError(f"{fn_name}() batch_size must be a positive int, got {batch_size!r}.")
+        if feature_names is not None:
+            _require_tabular_for_names(self._workflow, fn_name)
 
         if self._workflow == "classification":
             return self._evaluate_image_folder(X, y, batch_size, fn_name)
         if self._workflow == "tabular_classification":
             classes = require_evaluation_classes(self._path, self._classes)
-            features = self._evaluation_features(X, fn_name)
+            features = self._align_named_features(self._evaluation_features(X, fn_name), feature_names, fn_name)
             labels = self._evaluation_labels(y, features.shape[0], classes, fn_name)
             output = self._evaluate_features(features, batch_size, fn_name)
-            return build_classification_result(self._workflow, output, labels, classes, self._path)
+            result = build_classification_result(self._workflow, output, labels, classes, self._path)
+            self._note_if_unverified(feature_names, fn_name)
+            return result
         if self._workflow == "regression":
-            features = self._evaluation_features(X, fn_name)
+            features = self._align_named_features(self._evaluation_features(X, fn_name), feature_names, fn_name)
             if y is None:
                 raise DataError(f"{fn_name}() requires y (the regression targets) for a regression artifact.")
             targets = encode_regression_targets(y, fn_name)
@@ -1695,7 +1901,9 @@ class ArtifactPredictor:
                     f"{fn_name}() X has {features.shape[0]} sample(s) but y has {targets.shape[0]}."
                 )
             output = self._evaluate_features(features, batch_size, fn_name)
-            return build_regression_result(self._workflow, output, targets, fn_name)
+            result = build_regression_result(self._workflow, output, targets, fn_name)
+            self._note_if_unverified(feature_names, fn_name)
+            return result
 
         raise DataError(
             f"{fn_name}() does not support task '{self._workflow}' -- evaluation is defined only for "
@@ -1718,6 +1926,28 @@ class ArtifactPredictor:
         if features.shape[0] == 0:
             raise DataError(f"{fn_name}() received no samples.")
         return features
+
+    def _align_named_features(
+        self, features: np.ndarray, feature_names: "Sequence[str] | None", fn_name: str,
+    ) -> np.ndarray:
+        """`features` in the artifact's column order if `feature_names` names them, else unchanged (Milestone 119).
+
+        The same `_column_order()` rule `predict()` applies, run once for the whole `X` rather than
+        per batch: what is scored is exactly what `predict()` would have predicted from.
+        """
+        if feature_names is None:
+            return features
+        if features.ndim != 2:
+            raise DataError(
+                f"{fn_name}() feature_names= needs a 2-D (rows, columns) X, got shape {features.shape}."
+            )
+        order = _column_order(feature_names, self.input_schema, features.shape[-1], fn_name)
+        return features if order is None else np.ascontiguousarray(features[:, order])
+
+    def _note_if_unverified(self, feature_names: "Sequence[str] | None", fn_name: str) -> None:
+        """`evaluate()`'s successful-completion note for names given to an artifact that records none (Milestone 119)."""
+        if feature_names is not None:
+            _warn_order_unverified(self.input_schema, fn_name, stacklevel=4)
 
     @staticmethod
     def _evaluation_labels(y: Any, n_samples: int, classes: "list[str]", fn_name: str) -> np.ndarray:

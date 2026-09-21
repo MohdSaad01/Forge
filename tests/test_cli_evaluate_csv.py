@@ -255,7 +255,9 @@ def test_the_cli_prints_whatever_the_api_returns_and_hands_it_the_csv_values_unt
     assert len(seen) == 1
     features, targets, kwargs = seen[0]
     np.testing.assert_array_equal(features, _X.astype(np.float64))         # raw file values: no Normalize, target removed
-    assert features.shape == (8, 2) and kwargs == {}
+    # Milestone 119: the one thing the CLI now also forwards is the header names of those columns (target removed,
+    # file order) -- it still never reorders or drops anything itself; `ArtifactPredictor` matches them by name.
+    assert features.shape == (8, 2) and kwargs == {"feature_names": ["x0", "x1"]}
     assert targets.tolist() == list(_TRUE)                                # verbatim names: no class-index mapping either
 
 
@@ -307,7 +309,8 @@ def test_the_cli_reads_the_csv_through_the_public_reader_once(monkeypatch, scori
     monkeypatch.setattr(cli_model, "load_csv", lambda *a, **k: calls.append((a, k)) or real(*a, **k))
     model, csv_path = scoring
     evaluate_csv_json(capsys, model, csv_path)
-    assert len(calls) == 1 and calls[0][1] == {"target": "label", "labels": True}
+    # Milestone 119: also asks the reader for the header names (`return_feature_names=True`); still one read.
+    assert len(calls) == 1 and calls[0][1] == {"target": "label", "labels": True, "return_feature_names": True}
 
 
 # ============================================================================================ dispatch + compatibility

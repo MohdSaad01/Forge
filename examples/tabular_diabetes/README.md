@@ -319,6 +319,13 @@ demonstrated blocker for this workload -- a single, documented, fixed
 column order was sufficient -- so no schema metadata was added (Milestone
 92 brief, Section 9).
 
+*Since Milestone 119* the framework can record the column names in the artifact
+(`forge.train_tabular_classifier(..., feature_names=)`, names from
+`forge.data.load_csv(..., return_feature_names=True)`), after which a CSV with the same
+columns in another order is reordered by name and a wrong column is rejected. This
+example's own scripts are unchanged: they still write an unnamed artifact, whose input
+is checked for width only, so its column order remains the caller's responsibility.
+
 ## What this milestone did *not* need to build
 
 Per the Milestone 92 brief's own scope discipline: no CSV-parsing

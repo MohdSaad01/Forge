@@ -154,6 +154,27 @@ first epoch. Two ready-made artifacts and consumer scripts are in
 [`models/tabular_classifier/`](models/tabular_classifier/predict.py) and
 [`models/tabular_regressor/`](models/tabular_regressor/predict.py).
 
+**Column names.** An artifact always knows how many features it takes; with
+`feature_names=` it also knows *which* feature each column is, so a CSV whose columns
+are in another order is matched by name instead of silently scored wrongly (on the
+Pima holdout, two swapped columns took accuracy from 72.7% to 39.0% with no error):
+
+```python
+X, y, names = forge.data.load_csv("diabetes.csv", target="Outcome", labels=True, return_feature_names=True)
+forge.train_tabular_classifier(X, y, path="diabetes.forge", feature_names=names)   # names are recorded in the artifact
+
+Xn, names_n = forge.data.load_csv_features("new_patients.csv")                       # header names travel with the rows
+forge.load_predictor("diabetes.forge").predict(Xn, feature_names=names_n)
+```
+
+The same names in another order are reordered into the artifact's order; a missing,
+unknown, extra (an `id` column is an extra column, never dropped) or misspelled name is a
+`forge.DataError` naming the columns -- Forge never guesses which column is which, and
+matches names exactly (case and whitespace count). A bare NumPy array or `.npy` file has no
+names, so it is checked for width only, exactly as before; an artifact trained without
+names (every artifact saved before this existed) keeps working and cannot check columns.
+See [`docs/development/m119-persisted-tabular-feature-schema.md`](docs/development/m119-persisted-tabular-feature-schema.md).
+
 ### Use a saved model
 
 Any saved artifact can be loaded once and used for predictions. The
@@ -211,6 +232,10 @@ native-unit metrics for a regression artifact saved with
 `target_transform="standardize"`. A CSV is a plain comma-delimited, UTF-8 file with
 a header; every column except `--target` must be numeric, and empty cells, NaN/Inf
 and text in a feature column are errors (Forge reads them, it never repairs them).
+Against an artifact trained with `feature_names=`, the CSV's header names are matched to
+the model's columns: a reordered file scores exactly like the ordered one and a wrong
+column is one `Error:` line. `forge model predict MODEL rows.csv` (feature columns only)
+follows the same rule.
 See [`docs/development/cli.md`](docs/development/cli.md) and
 [`docs/development/m118-csv-tabular-workflow.md`](docs/development/m118-csv-tabular-workflow.md).
 

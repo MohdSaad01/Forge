@@ -98,6 +98,22 @@ column has no scale to standardise by and is a `DataError`, not a silent divide.
 Anything that reads `result.model` / `result.history` directly sees the *training*
 space (z-scores); only the artifact and the result's metrics are in native units.
 
+## Feature names (opt-in; Milestone 119)
+
+`feature_names=[...]` -- one name per column of `X`, in column order -- is recorded in the
+artifact (`InputSchema.feature_names`), so that a later *named* input is matched to the
+model's columns by name instead of by position: the same names in another order are
+reordered, and a missing, unknown, extra or duplicated column is rejected. With a CSV,
+`X, y, names = forge.data.load_csv(path, target=..., return_feature_names=True)` gives
+exactly the names of the columns of `X`. Off by default: `X, y` alone produce the artifact
+they always did (no names, width-only input check), and a bare array never carries names.
+The names describe the **raw** columns, before preprocessing (`Normalize` and
+`missing_columns=` still address columns by position), and are never an input to the
+model. Names are stored exactly as given (no stripping, no case-folding). A `model=` whose
+input width Forge cannot read from its saved architecture (not a `Sequential` starting
+with `Linear`) cannot record names: `PersistenceError` before epoch 1.
+`docs/development/m119-persisted-tabular-feature-schema.md`.
+
 ## Validation split
 
 `val_fraction` (default `0.2`) of the rows are held out with `random_split`, seeded
@@ -145,6 +161,7 @@ from .. import random as forge_random
 from ..backend.device import Device
 from ..data.dataloader import DataLoader
 from ..data.dataset import TensorDataset, random_split
+from ..data.feature_names import validate_feature_names
 from ..data.target_transform import TARGET_TRANSFORM_TYPES, StandardizeTarget
 from ..data.transforms import Compose, Normalize, ReplaceValue
 from ..exceptions import DataError, TrainerError
@@ -238,6 +255,22 @@ def _validate_arguments(
     ):
         raise DataError(f"{fn}() missing_value must be a finite number, got {missing_value!r}.")
     return path, columns
+
+
+def _validate_feature_names(names: Any, n_features: int, fn: str) -> "tuple[str, ...] | None":
+    """`feature_names=` as a tuple of exactly one name per feature column, or `DataError` (Milestone 119)."""
+    if names is None:
+        return None
+    try:
+        checked = validate_feature_names(names)
+    except DataError as exc:
+        raise DataError(f"{fn}() {exc}") from exc
+    if len(checked) != n_features:
+        raise DataError(
+            f"{fn}() feature_names has {len(checked)} name(s) but X has {n_features} feature column(s): "
+            "there must be exactly one name per column."
+        )
+    return checked
 
 
 def _validate_target_transform(value: Any, fn: str) -> "str | None":
@@ -619,6 +652,7 @@ def train_tabular_classifier(
     device: "str | Device | None" = None,
     seed: int = 0,
     verbose: bool = False,
+    feature_names: "Sequence[str] | None" = None,
 ) -> TabularClassificationResult:
     """Train a classifier on a numeric feature matrix and save it as a portable artifact, in one call.
 
@@ -651,6 +685,9 @@ def train_tabular_classifier(
       **Early stopping**). `patience=None` disables early stopping.
     - `missing_columns`/`missing_value` -- opt columns into median replacement of a
       sentinel (module docstring, **Preprocessing**).
+    - `feature_names` -- optional, one distinct non-empty string per column of `X`
+      (module docstring, **Feature names**): recorded in the artifact so named input can be
+      aligned or rejected by name. `None` (default) records nothing.
     - `model` -- your own `forge.nn.Module` in place of the default MLP
       (`Linear(F,32)-ReLU-Linear(32,16)-ReLU-Linear(16,K)`). It is used as given (not
       reseeded) and must map `(batch, features)` to `(batch, K)` raw class scores;
@@ -668,6 +705,7 @@ def train_tabular_classifier(
         fn, path, epochs, batch_size, learning_rate, val_fraction, patience, seed, missing_columns, missing_value,
     )
     features = _coerce_features(X, fn)
+    names = _validate_feature_names(feature_names, features.shape[1], fn)
     labels, class_list = _coerce_class_targets(y, features.shape[0], classes, fn)
 
     prepared = _split_and_preprocess(features, labels, val_fraction, seed, columns, missing_value, fn)
@@ -684,7 +722,7 @@ def train_tabular_classifier(
         model, n_features, len(class_list), _CLASSIFIER_HIDDEN, device, seed,
         Tensor(prepared.train_features[:2]), f"one raw score per class, for the {len(class_list)} classes {class_list!r}", fn,
     )
-    preflight_save(net, path, prepared.transform, class_list, "tabular_classification", fn)
+    preflight_save(net, path, prepared.transform, class_list, "tabular_classification", fn, feature_names=names)
 
     train_loader = DataLoader(
         TensorDataset(Tensor(prepared.train_features), Tensor(train_labels)),
@@ -706,6 +744,7 @@ def train_tabular_classifier(
         classes=class_list,
         task="tabular_classification",
         early_stopping=_early_stopping(patience),
+        feature_names=names,
     )
 
     predictor = load_predictor(path)
@@ -750,6 +789,7 @@ def train_tabular_regressor(
     seed: int = 0,
     verbose: bool = False,
     target_transform: "str | None" = None,
+    feature_names: "Sequence[str] | None" = None,
 ) -> TabularRegressionResult:
     """Train a regressor on a numeric feature matrix and save it as a portable artifact, in one call.
 
@@ -777,6 +817,7 @@ def train_tabular_regressor(
       constant training target column is a `DataError`. See the module docstring
       (**Target transform**); the result's metrics are native either way.
     - There is no `classes=`.
+    - `feature_names` -- as for `train_tabular_classifier()`.
     - Defaults are `epochs=500`, `patience=30`: an unscaled target starts a
       randomly-initialised network far from the answer and needs longer (on
       Concrete, 200 epochs stopped while validation loss was still falling).
@@ -795,6 +836,7 @@ def train_tabular_regressor(
     )
     target_transform = _validate_target_transform(target_transform, fn)
     features = _coerce_features(X, fn)
+    names = _validate_feature_names(feature_names, features.shape[1], fn)
     targets = _coerce_regression_targets(y, features.shape[0], fn)
     n_outputs = targets.shape[1]
 
@@ -823,7 +865,7 @@ def train_tabular_regressor(
         model, n_features, n_outputs, _REGRESSOR_HIDDEN, device, seed,
         Tensor(prepared.train_features[:2]), f"one value per target column, for a {n_outputs}-column y", fn,
     )
-    preflight_save(net, path, prepared.transform, None, "regression", fn, target_transform=fitted)
+    preflight_save(net, path, prepared.transform, None, "regression", fn, target_transform=fitted, feature_names=names)
 
     train_loader = DataLoader(
         TensorDataset(Tensor(prepared.train_features), Tensor(train_fit.astype(np.float32))),
@@ -847,6 +889,7 @@ def train_tabular_regressor(
         task="regression",
         early_stopping=_early_stopping(patience),
         target_transform=fitted,
+        feature_names=names,
     )
 
     predictor = load_predictor(path)

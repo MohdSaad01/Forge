@@ -57,9 +57,14 @@ labels) or `str` (text labels). `float64` keeps every digit of the file; Forge's
 functions cast to `float32` themselves, exactly as for any NumPy array a caller passes.
 The whole file is read into memory.
 
-Column **names are not carried into the arrays and a saved artifact records only its
-feature *count***: an artifact cannot detect a CSV whose columns are in a different
-order from the one it was trained on. Keep the feature columns in one order.
+Column **names are not in the arrays** -- an array has none. `load_csv(...,
+return_feature_names=True)` returns them beside `X` (Milestone 119), and
+`load_csv_features(path)` reads a file with no target at all. Handed on as
+`feature_names=`, they let a saved artifact match a CSV's columns to the model's by name
+instead of by position (`train_tabular_*(..., feature_names=)` records them;
+`predict()`/`evaluate(..., feature_names=)` check against them). An artifact trained
+without names records only its feature *count* and cannot detect a reordered CSV: for
+those, keep the feature columns in one order.
 
 Integer labels are class **indices** and text labels class **names**, exactly as for any
 NumPy `y` -- see `train_tabular_classifier()` / `ArtifactPredictor.evaluate()`, which
@@ -111,7 +116,8 @@ def _parse_number(cell: str, where: str, role: str) -> float:
     return value
 
 
-def _read_header(row: "list[str]", path: str, target: str) -> "tuple[list[str], int]":
+def _read_header(row: "list[str]", path: str, target: "str | None") -> "tuple[list[str], int]":
+    """The stripped header names and the target's index (`-1` when `target` is `None`: every column is a feature)."""
     names = [cell.strip() for cell in row]
     where = f"CSV file '{path}'"
     empty = [i + 1 for i, name in enumerate(names) if name == ""]
@@ -130,7 +136,7 @@ def _read_header(row: "list[str]", path: str, target: str) -> "tuple[list[str], 
             f"{where}: the header is one column, {_quote(names[0])}. Forge reads comma-delimited CSV only "
             "(no other delimiter is detected)."
         )
-    if names.count(target) > 1:
+    if target is not None and names.count(target) > 1:
         positions = [i + 1 for i, name in enumerate(names) if name == target]
         raise DataError(
             f"{where}: the target column {target!r} appears {len(positions)} times in the header (columns "
@@ -139,6 +145,8 @@ def _read_header(row: "list[str]", path: str, target: str) -> "tuple[list[str], 
     duplicated = sorted({name for name in names if names.count(name) > 1})
     if duplicated:
         raise DataError(f"{where}: duplicate column name(s) {duplicated!r}; column names must be unique.")
+    if target is None:
+        return names, -1
     if target not in names:
         shown = ", ".join(repr(n) for n in names[:_MAX_LISTED]) + (", ..." if len(names) > _MAX_LISTED else "")
         raise DataError(
@@ -157,12 +165,17 @@ def load_csv(
     *,
     target: str,
     labels: bool = False,
-) -> "tuple[np.ndarray, np.ndarray]":
+    return_feature_names: bool = False,
+) -> "tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, list[str]]":
     """Read a numeric CSV file into `(X, y)` NumPy arrays (Milestone 118).
 
     ```python
     X, y = forge.data.load_csv("housing.csv", target="median_house_value")
     result = forge.train_tabular_regressor(X, y, path="housing.forge", target_transform="standardize")
+
+    # Milestone 119: keep the column names, so the artifact can check them later
+    X, y, names = forge.data.load_csv("housing.csv", target="median_house_value", return_feature_names=True)
+    result = forge.train_tabular_regressor(X, y, path="housing.forge", feature_names=names)
     ```
 
     - `path` -- the CSV file: comma-delimited UTF-8 with a header row (module docstring,
@@ -173,6 +186,12 @@ def load_csv(
       non-numeric cell is named). `True`: the target is class labels (classification): a
       column of integers gives an `int64` `y` of class indices, a column of text a `str`
       `y` of class names, a mixture or a non-integer number is an error.
+    - `return_feature_names` -- `False` (default): return `(X, y)`. `True` (Milestone 119): return
+      `(X, y, feature_names)`, the header names of the columns of `X` (the target excluded), in the
+      same order, from the *same read* of the file. Pass them to `train_tabular_*(..., feature_names=)`
+      to record them in the artifact, and to `predict()`/`evaluate(..., feature_names=)` to have a
+      named input checked against it. They are the header cells with surrounding whitespace
+      stripped -- nothing else about a name is changed.
 
     Returns `(X, y)`: `X` `(rows, features)` `float64`, `y` `(rows,)`. They are plain
     arrays for `train_tabular_classifier()` / `train_tabular_regressor()` /
@@ -180,15 +199,47 @@ def load_csv(
     array. Raises `forge.DataError` for anything the contract rejects, naming the file,
     line and column; nothing is repaired or skipped.
     """
-    if isinstance(path, os.PathLike):
-        path = os.fspath(path)
-    if not isinstance(path, str) or not path:
-        raise DataError(f"load_csv() path must be a non-empty file path (str or os.PathLike), got {path!r}.")
+    _check_path(path, "load_csv")
     if not isinstance(target, str) or not target.strip():
         raise DataError(f"load_csv() target must be the name of a column (a non-empty str), got {target!r}.")
-    target = target.strip()
     if not isinstance(labels, bool):
         raise DataError(f"load_csv() labels must be True or False, got {labels!r}.")
+    if not isinstance(return_feature_names, bool):
+        raise DataError(f"load_csv() return_feature_names must be True or False, got {return_feature_names!r}.")
+    X, y, feature_names = _read_csv(os.fspath(path), target.strip(), labels)
+    return (X, y, feature_names) if return_feature_names else (X, y)
+
+
+def load_csv_features(path: "str | os.PathLike") -> "tuple[np.ndarray, list[str]]":
+    """Read a CSV file that has *no target column* into `(X, feature_names)` (Milestone 119).
+
+    ```python
+    X, names = forge.data.load_csv_features("new_patients.csv")
+    forge.load_predictor("diabetes.forge").predict(X, feature_names=names)
+    ```
+
+    The prediction-time counterpart of `load_csv()`: the same file contract (header row,
+    comma-delimited UTF-8, unique non-empty names, numeric cells, no missing values),
+    except that **every** column is a feature, in file order. There is nothing to drop:
+    a target or `id` column left in the file is a feature column as far as this reader
+    knows, and a named artifact then rejects it as an unexpected column -- remove it from
+    the file. Returns `X` `(rows, features)` `float64` and the header names (whitespace
+    stripped) as a list. Raises `forge.DataError`, as `load_csv()` does.
+    """
+    _check_path(path, "load_csv_features")
+    X, _, feature_names = _read_csv(os.fspath(path), None, False)
+    return X, feature_names
+
+
+def _check_path(path: "str | os.PathLike", fn: str) -> None:
+    if not isinstance(path, (str, os.PathLike)) or not os.fspath(path):
+        raise DataError(f"{fn}() path must be a non-empty file path (str or os.PathLike), got {path!r}.")
+
+
+def _read_csv(
+    path: str, target: "str | None", labels: bool,
+) -> "tuple[np.ndarray, np.ndarray | None, list[str]]":
+    """The one reader behind `load_csv()`/`load_csv_features()`: `(X, y, feature_names)`, `y` is `None` without a target."""
     if not os.path.isfile(path):
         raise DataError(f"CSV file not found: {path}" if not os.path.exists(path) else f"CSV path is not a file: {path}")
 
@@ -215,11 +266,13 @@ def load_csv(
                         f"({names[0]!r}, ..., {names[-1]!r}). Every row needs one field per column."
                     )
                 cells = [cell.strip() for cell in row]
-                target_cell = cells.pop(target_index)
+                target_cell = cells.pop(target_index) if target is not None else None
                 features.append([
                     _parse_number(cell, f"{where}, line {line}, column {name!r}", "feature")
                     for cell, name in zip(cells, feature_names)
                 ])
+                if target is None:
+                    continue
                 if target_cell == "":
                     raise DataError(
                         f"{where}, line {line}, column {target!r}: empty target. A row without a target cannot "
@@ -245,8 +298,13 @@ def load_csv(
     if not features:
         raise DataError(f"{where} has a header but no data rows.")
 
-    y = _label_column(target_cells, target_lines, target, where) if labels else np.asarray(target_cells, dtype=np.float64)
-    return np.asarray(features, dtype=np.float64), y
+    if target is None:
+        y = None
+    elif labels:
+        y = _label_column(target_cells, target_lines, target, where)
+    else:
+        y = np.asarray(target_cells, dtype=np.float64)
+    return np.asarray(features, dtype=np.float64), y, feature_names
 
 
 def _label_column(cells: "list[str]", lines: "list[int]", target: str, where: str) -> np.ndarray:
@@ -278,4 +336,4 @@ def _label_column(cells: "list[str]", lines: "list[int]", target: str, where: st
     return np.array(cells, dtype=str)
 
 
-__all__ = ["load_csv"]
+__all__ = ["load_csv", "load_csv_features"]

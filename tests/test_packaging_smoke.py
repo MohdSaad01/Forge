@@ -540,3 +540,133 @@ def test_installed_cli_reports_a_bad_csv_without_a_traceback(clean_install, outs
             assert result.returncode == 1 and result.stdout == "", (args, result.stdout)
             assert result.stderr.startswith("Error: ") and "Traceback" not in result.stderr, result.stderr
             assert expected in result.stderr, result.stderr
+
+
+# -- persisted tabular feature names from the installed wheel (Milestone 119) ---------------------------------
+#
+# The consumer trains from a CSV *with* its header names, in a fresh process of the clean venv, then a fresh CLI
+# process per invocation checks named CSVs against the artifact: reordered columns are aligned, an unknown, extra
+# (`id`) or misspelled column is rejected. Everything runs from a directory outside the repository.
+
+_NAMED_TRAINING_CONSUMER = '''
+import json, sys
+import forge
+
+assert "site-packages" in forge.__file__, forge.__file__
+X, y, names = forge.data.load_csv(sys.argv[1], target="Outcome", labels=True, return_feature_names=True)
+forge.train_tabular_classifier(
+    X, y, path=sys.argv[2], classes=["no_diabetes", "diabetes"], missing_columns=[1, 2, 3, 4, 5], seed=0, epochs=15,
+    feature_names=names,
+)
+schema = forge.inspect_model(sys.argv[2]).input_schema
+print(json.dumps({"file": forge.__file__, "names": names, "recorded": list(schema.feature_names)}))
+'''
+
+_PIMA_FEATURES = ["Pregnancies", "Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI", "DiabetesPedigreeFunction", "Age"]
+
+
+def _write_csv_columns(path: Path, source: Path, columns: list, *, id_first: bool = False, keep_target: bool = True) -> Path:
+    """`source`'s rows with `columns` (source header names, or `(new_name, source_name)`): values moved, never changed."""
+    import csv
+
+    with open(source, newline="") as fh:
+        table = list(csv.reader(fh))
+    header = table[0]
+    picked = [(c, c) if isinstance(c, str) else c for c in columns]
+    out_header = (["id"] if id_first else []) + [new for new, _ in picked] + (["Outcome"] if keep_target else [])
+    with open(path, "w", newline="") as fh:
+        writer = csv.writer(fh, lineterminator="\n")
+        writer.writerow(out_header)
+        for n, row in enumerate(table[1:]):
+            values = [row[header.index(old)] for _, old in picked]
+            writer.writerow(([str(n)] if id_first else []) + values + ([row[header.index("Outcome")]] if keep_target else []))
+    return path
+
+
+def _installed_cli(clean_install, cwd: Path, *args):
+    return subprocess.run(
+        [str(_forge_console_script(clean_install)), *map(str, args)], cwd=str(cwd), capture_output=True, text=True,
+    )
+
+
+@pytest.fixture()
+def named_pima(clean_install, outside_repo_dir):
+    """A named Pima artifact trained in the clean venv, and the holdout in several column layouts."""
+    shutil.copy(_PIMA_DIR / "diabetes.csv", outside_repo_dir / "diabetes.csv")
+    holdout, features = _PIMA_DIR / "diabetes_holdout_eval.csv", _PIMA_FEATURES
+    swapped = [features[1], features[0], *features[2:]]
+    make = lambda name, *args, **kwargs: _write_csv_columns(outside_repo_dir / f"{name}.csv", holdout, *args, **kwargs)  # noqa: E731
+    files = {
+        "correct": make("correct", features),
+        "reordered": make("reordered", swapped),
+        "renamed": make("renamed", [*features[:-1], ("Weight", "Age")]),
+        "extra_id": make("extra_id", features, id_first=True),
+        "id_replaces_last": make("id_replaces_last", features[:-1], id_first=True),
+        "case": make("case", [("age", "Age"), *features[:-1]]),
+        "features_only": make("features_only", features, keep_target=False),
+        "features_only_reordered": make("features_only_reordered", swapped, keep_target=False),
+    }
+    script = outside_repo_dir / "consume_named.py"
+    script.write_text(_NAMED_TRAINING_CONSUMER)
+    ran = _run(clean_install, [str(script), "diabetes.csv", "named.forge"], outside_repo_dir)
+    assert ran.returncode == 0, ran.stderr
+    report = json.loads(ran.stdout)
+    assert "site-packages" in report["file"] and str(REPO_ROOT) not in report["file"]
+    assert report["recorded"] == report["names"] == features
+    return files
+
+
+def test_installed_forge_records_the_csv_header_names_in_the_artifact(clean_install, outside_repo_dir, named_pima):
+    inspected = _installed_cli(clean_install, outside_repo_dir, "model", "inspect", "named.forge", "--json")
+    assert inspected.returncode == 0, inspected.stderr
+    payload = json.loads(inspected.stdout)
+    assert payload["input_feature_count"] == 8 and payload["input_feature_names"] == _PIMA_FEATURES
+    assert payload["format_version"] == 2                                         # no format bump for names
+    text = _installed_cli(clean_install, outside_repo_dir, "model", "inspect", "named.forge")
+    assert "Feature names: Pregnancies, Glucose, BloodPressure" in text.stdout
+
+
+def test_installed_cli_aligns_a_reordered_csv_and_scores_it_like_the_ordered_one(clean_install, outside_repo_dir, named_pima):
+    args = ["--target", "Outcome", "--json"]
+    correct = _installed_cli(clean_install, outside_repo_dir, "model", "evaluate", "named.forge", named_pima["correct"].name, *args)
+    reordered = _installed_cli(clean_install, outside_repo_dir, "model", "evaluate", "named.forge", named_pima["reordered"].name, *args)
+    assert correct.returncode == reordered.returncode == 0, reordered.stderr
+    assert correct.stdout == reordered.stdout and correct.stderr == reordered.stderr == ""
+    assert json.loads(correct.stdout)["accuracy"] > json.loads(correct.stdout)["baseline_accuracy"]
+
+
+@pytest.mark.parametrize("name, needles", [
+    ("renamed", ("missing", "['Age']", "unexpected", "['Weight']")),
+    ("extra_id", ("unexpected", "['id']", "never drops")),
+    ("id_replaces_last", ("missing", "['Age']", "unexpected", "['id']")),
+    ("case", ("'age' vs 'Age' differ only in case/whitespace",)),
+])
+def test_installed_cli_rejects_a_csv_that_is_not_the_artifacts_columns(clean_install, outside_repo_dir, named_pima, name, needles):
+    for flags in ([], ["--json"]):
+        result = _installed_cli(clean_install, outside_repo_dir, "model", "evaluate", "named.forge", named_pima[name].name,
+                                "--target", "Outcome", *flags)
+        assert result.returncode == 1 and result.stdout == "", result.stdout
+        assert result.stderr.startswith("Error: ") and "Traceback" not in result.stderr and result.stderr.count("\n") == 1
+        for needle in needles:
+            assert needle in result.stderr, result.stderr
+
+
+def test_installed_cli_predicts_from_a_feature_only_csv_with_the_same_rule(clean_install, outside_repo_dir, named_pima):
+    ordered = _installed_cli(clean_install, outside_repo_dir, "model", "predict", "named.forge", named_pima["features_only"].name, "--json")
+    reordered = _installed_cli(clean_install, outside_repo_dir, "model", "predict", "named.forge",
+                               named_pima["features_only_reordered"].name, "--json")
+    assert ordered.returncode == reordered.returncode == 0, reordered.stderr
+    assert ordered.stdout == reordered.stdout and len(json.loads(ordered.stdout)["predictions"]) == 154
+    # a target column left in the file is an extra column, not silently dropped
+    with_target = _installed_cli(clean_install, outside_repo_dir, "model", "predict", "named.forge", named_pima["correct"].name)
+    assert with_target.returncode == 1 and with_target.stdout == "" and "['Outcome']" in with_target.stderr
+
+
+def test_installed_cli_takes_an_unnamed_pre_m119_artifact_with_one_warning_line(clean_install, outside_repo_dir):
+    """The bundled Pima classifier predates names: unchanged M118 behaviour, plus an honest stderr note."""
+    shutil.copy(REPO_ROOT / "models" / "tabular_classifier" / "diabetes_classifier.forge", outside_repo_dir / "pima.forge")
+    shutil.copy(_PIMA_DIR / "diabetes_holdout_eval.csv", outside_repo_dir / "holdout.csv")
+    cli, reference = _csv_evaluate_outside_repo(clean_install, outside_repo_dir, "pima.forge", "holdout.csv", "Outcome")
+    _assert_same_evaluation(cli, reference)
+    raw = _installed_cli(clean_install, outside_repo_dir, "model", "evaluate", "pima.forge", "holdout.csv", "--target", "Outcome", "--json")
+    assert raw.stderr.startswith("Warning: ") and raw.stderr.count("\n") == 1 and "records no feature names" in raw.stderr

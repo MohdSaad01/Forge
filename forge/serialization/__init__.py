@@ -48,6 +48,11 @@ optionally save and reconstruct the `forge.data.StandardizeTarget` a regression 
 targets were trained through, so `load_predictor()` returns predictions in the caller's
 own units. An artifact carrying one is format version 3; all others stay version 2. See
 `forge.data.target_transform` and `docs/development/m116-persisted-target-transforms.md`.
+
+`save_model(..., feature_names=...)` (Milestone 119) optionally records *which* feature each
+input column of a tabular artifact is (`InputSchema.feature_names`), so named input can be
+matched to the model's columns by name; an artifact without them is unchanged, and the format
+version is not bumped. See `docs/architecture/persistence.md`'s **Feature names metadata**.
 """
 
 from .checkpoint import Checkpoint, CHECKPOINT_FORMAT_VERSION, load_checkpoint, save_checkpoint

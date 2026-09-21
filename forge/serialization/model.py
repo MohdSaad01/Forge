@@ -28,13 +28,14 @@ will restore onto changed. See **Device semantics** in
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
 from .. import random as forge_random
 from ..backend import get_backend
 from ..backend.device import SUPPORTED_DEVICE_TYPES
+from ..data.feature_names import validate_feature_names
 from ..data.target_transform import TARGET_TRANSFORM_TYPES, StandardizeTarget
 from ..exceptions import DataError, PersistenceError
 from ..nn.module import Module
@@ -155,6 +156,43 @@ def _validate_target_transform(target_transform: Any, task: "str | None") -> Non
         )
 
 
+def _validate_feature_names_for_save(
+    feature_names: Any, task: "str | None", root_node: dict,
+) -> "tuple[str, ...] | None":
+    """The validated `feature_names=` for `save_model()`, or `None` (Milestone 119).
+
+    Beyond `validate_feature_names()`'s own rules, a name list is only meaningful on an
+    artifact that has an input contract to attach it to, and it must describe exactly
+    that contract: one name per input column. Both are checked against the tree that is
+    about to be written -- never against anything guessed -- so a saved file can never
+    carry names its own model cannot have.
+    """
+    if feature_names is None:
+        return None
+    try:
+        names = validate_feature_names(feature_names)
+    except DataError as exc:
+        raise PersistenceError(f"save_model() {exc}") from exc
+    if task not in _INPUT_SCHEMA_TASKS:
+        raise PersistenceError(
+            f"save_model() feature_names= requires task in {_INPUT_SCHEMA_TASKS!r} (the tabular workflows, "
+            f"whose input is a fixed-width numeric row), got task={task!r}."
+        )
+    width = _leading_linear_in_features(root_node)
+    if width is None:
+        raise PersistenceError(
+            "save_model() feature_names= needs a model whose input width Forge can read from its saved "
+            "architecture (a Sequential whose first layer is Linear), and this model's is not one -- the "
+            "names could not be checked against the input they describe."
+        )
+    if len(names) != width:
+        raise PersistenceError(
+            f"save_model() feature_names= has {len(names)} name(s), but the model's first Linear layer takes "
+            f"{width} input feature(s). There must be exactly one name per input column."
+        )
+    return names
+
+
 def save_model(
     model: Module,
     path: str,
@@ -162,6 +200,7 @@ def save_model(
     classes: "list[str] | None" = None,
     task: "str | None" = None,
     target_transform: "StandardizeTarget | None" = None,
+    feature_names: "Sequence[str] | None" = None,
 ) -> None:
     """Save `model`'s architecture, configuration, and parameter state to `path`.
 
@@ -285,6 +324,23 @@ def save_model(
     version-2 file exactly as before -- see `TARGET_TRANSFORM_FORMAT_VERSION`,
     `load_target_transform()`. `load_model()` alone still returns just the model,
     whose raw output is in the transformed space.
+
+    `feature_names` (Milestone 119) optionally records *which* feature each input column is,
+    in the order the model consumes them -- the identity half of the input contract that
+    `InputSchema.feature_count` (a width only) cannot express. A later named input
+    (`predict(..., feature_names=...)`, a CSV header) is then matched to it by name: the
+    same names in a different order are reordered, anything else is rejected. Requires
+    `task="regression"` or `"tabular_classification"` and exactly one name per input
+    column of the model's first `Linear` layer (`PersistenceError` otherwise); a list of
+    non-empty, mutually different strings, stored exactly as given -- never stripped or
+    case-folded. Names describe the *raw* input columns, i.e. what the caller passes,
+    before any persisted `preprocessing` runs. Omitting it (the default) writes no
+    `"feature_names"` key: the file is byte-for-byte what it was before this milestone and
+    still format version 2 (or 3 with a target transform). A build that predates the key
+    ignores it and behaves as it always did -- it checks the input's width, not its
+    columns -- which is why it needs no format-version change (a target transform, by
+    contrast, changes what the model's *output means* and did). See `InputSchema`,
+    `inspect_model()`.
     """
     if not isinstance(model, Module):
         raise PersistenceError(f"save_model() requires a forge.nn.Module, got {type(model).__name__}.")
@@ -297,6 +353,7 @@ def save_model(
 
     arrays: "dict[str, np.ndarray]" = {}
     root_node = _build_save_node(model, prefix="", arrays=arrays)
+    names = _validate_feature_names_for_save(feature_names, task, root_node)
 
     preprocessing_node = serialize_transform(preprocessing) if preprocessing is not None else None
 
@@ -310,6 +367,8 @@ def save_model(
     }
     if target_transform is not None:
         metadata["target_transform"] = target_transform.to_config()
+    if names is not None:
+        metadata["feature_names"] = list(names)
     prefixed_arrays = {f"{PARAMETERS_DIR}/{name}": array for name, array in arrays.items()}
     write_archive(path, metadata, prefixed_arrays)
 
@@ -816,19 +875,29 @@ class InputSchema:
     already accept (see **Batch dimension** in `docs/architecture/
     persistence.md`'s own Milestone 101 section).
 
-    **What this is not.** This is a *structural* contract only -- it says
+    **`feature_names` (Milestone 119): the identity half of the contract.**
+    `feature_names` is `None` -- the case for every artifact saved before Milestone 119,
+    and for one trained from plain arrays -- or a tuple of exactly `feature_count` distinct
+    names, `feature_names[i]` being what input column `i` *is*, in the order the model
+    consumes them and before any persisted `preprocessing`. It is never derived or
+    invented: it exists only when `save_model(..., feature_names=...)` recorded it
+    (`train_tabular_*(..., feature_names=...)`, or a CSV header read with
+    `forge.data.load_csv(..., return_feature_names=True)`). Named input
+    (`predict(..., feature_names=...)`) is then matched to it by name; unnamed input
+    (a bare NumPy array) carries no names and is checked for width only, exactly as ever.
+
+    **What `feature_count` alone is not.** A *structural* contract only -- it says
     nothing about which value belongs in which position. A same-length input
     whose columns have been reordered (e.g. swapping `Glucose` and
-    `Pregnancies` in `examples/tabular_diabetes`) passes this contract and
-    still reaches the model, because Forge's training APIs never captured a
-    per-column name to check against -- only a plain, unlabeled `Tensor`/
-    NumPy array ever crosses `forge.train()`'s `dataset=` boundary. See
-    `docs/architecture/persistence.md`'s **Portable input-contract
-    validation** section for the full semantic-honesty discussion of what
-    this does and does not catch.
+    `Pregnancies` in `examples/tabular_diabetes`) passes it and still reaches
+    the model. For an artifact with no `feature_names` that remains true, and
+    for an unnamed array it always will: an array has no column names to
+    check. See `docs/architecture/persistence.md`'s **Portable input-contract
+    validation** section for the full semantic-honesty discussion.
     """
 
     feature_count: int
+    feature_names: "tuple[str, ...] | None" = None
 
 
 def _leading_linear_in_features(node: "dict | None") -> "int | None":
@@ -910,6 +979,9 @@ class ModelInfo:
         classes_line = ", ".join(self.classes) if self.classes else "none"
         task_line = self.task if self.task is not None else "unknown (legacy artifact, saved before Milestone 87)"
         input_line = f"{self.input_schema.feature_count} feature(s)" if self.input_schema is not None else "n/a"
+        # Only shown when present, so an artifact without names prints exactly as before Milestone 119.
+        names = self.input_schema.feature_names if self.input_schema is not None else None
+        names_line = f"Feature names: {', '.join(names)}\n" if names is not None else ""
         # Only shown when present, so an artifact without one prints exactly as before Milestone 116.
         target_line = (
             f"Target transform: standardize {self.target_transform!r} (predictions are returned in native units)\n"
@@ -919,11 +991,49 @@ class ModelInfo:
             f"Model: {self.model.type} ({self.model.parameter_count:,} parameters)\n"
             f"Task: {task_line}\n"
             f"Input: {input_line}\n"
+            f"{names_line}"
             f"Input preprocessing: {preprocessing_line}\n"
             f"{target_line}"
             f"Classes: {classes_line}\n"
             f"Artifact format: version {self.format_version} (device={self.device})"
         )
+
+
+def _feature_names_from_metadata(
+    metadata: dict, path: str, what: str, task: "str | None", feature_count: "int | None",
+) -> "tuple[str, ...] | None":
+    """The `feature_names` an artifact's metadata declares, or `None` -- validated, never guessed (Milestone 119).
+
+    No `"feature_names"` entry is the ordinary artifact (every file saved before
+    Milestone 119, and every one trained from unnamed arrays): `None`. An entry that is
+    present is only trusted if it could have come from `save_model()`: a well-formed
+    name list, on a tabular task, whose length is the width the saved architecture
+    itself declares. Anything else is a `PersistenceError` rather than a schema that
+    would reorder input against the wrong names.
+    """
+    raw = metadata.get("feature_names")
+    if raw is None:
+        return None
+    if task not in _INPUT_SCHEMA_TASKS:
+        raise PersistenceError(
+            f"Cannot {what} '{path}': it has a 'feature_names' entry but task={task!r} (feature names apply "
+            f"only to {_INPUT_SCHEMA_TASKS!r} artifacts)."
+        )
+    if feature_count is None:
+        raise PersistenceError(
+            f"Cannot {what} '{path}': it has a 'feature_names' entry, but the saved architecture has no "
+            "input width to check it against."
+        )
+    try:
+        names = validate_feature_names(raw)
+    except DataError as exc:
+        raise PersistenceError(f"Cannot {what} '{path}': malformed 'feature_names' metadata ({exc})") from exc
+    if len(names) != feature_count:
+        raise PersistenceError(
+            f"Cannot {what} '{path}': 'feature_names' lists {len(names)} name(s) but the saved model takes "
+            f"{feature_count} input feature(s)."
+        )
+    return names
 
 
 def _module_types(node: dict) -> "list[str]":
@@ -972,7 +1082,7 @@ def inspect_model(path: str) -> ModelInfo:
     info.preprocessing.description  # "Resize(size=(64, 64)) -> Normalize(mean=0.0, std=255.0)"
     info.classes                 # ["cat", "dog"], or None
     info.task                    # one of forge.serialization.model.TASK_TYPES, or None
-    info.input_schema            # InputSchema(feature_count=8), or None (Milestone 101)
+    info.input_schema            # InputSchema(feature_count=8, feature_names=(...) or None), or None (M101/M119)
     ```
 
     Answers "what is this artifact?" -- a question a developer holding just a
@@ -1064,10 +1174,10 @@ def inspect_model(path: str) -> ModelInfo:
         )
 
     input_schema = None
-    if task in _INPUT_SCHEMA_TASKS:
-        feature_count = _leading_linear_in_features(root)
-        if feature_count is not None:
-            input_schema = InputSchema(feature_count=feature_count)
+    feature_count = _leading_linear_in_features(root) if task in _INPUT_SCHEMA_TASKS else None
+    feature_names = _feature_names_from_metadata(metadata, path, "inspect model", task, feature_count)
+    if feature_count is not None:
+        input_schema = InputSchema(feature_count=feature_count, feature_names=feature_names)
 
     target_transform = _target_transform_from_metadata(metadata, path, "inspect model")
 
