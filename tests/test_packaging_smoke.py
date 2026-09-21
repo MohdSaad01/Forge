@@ -16,6 +16,8 @@ dependency install) is the same regardless of which behavior is under test.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -207,3 +209,159 @@ def test_installed_forge_cuda_availability_matches_source_tree(clean_install, ou
     assert result.returncode == 0, result.stderr
     installed_cuda_available = result.stdout.strip() == "True"
     assert installed_cuda_available == forge.cuda.is_cuda_available()
+
+
+# -- `forge model evaluate` from the installed wheel (Milestone 117) -----------------------------------------
+#
+# The artifacts and data are produced by the dev-tree forge in this process (a developer *receives* them);
+# everything that evaluates runs in the clean venv, in a fresh process, from a directory outside the repository.
+# `_REFERENCE_EVALUATOR` is deliberately a separate, standalone consumer program using only `forge.load_predictor()`
+# and `.evaluate()` -- the oracle the CLI's output is compared against, field by field.
+
+_REFERENCE_EVALUATOR = '''
+import json, sys
+import numpy as np
+import forge
+
+predictor = forge.load_predictor(sys.argv[1])
+if predictor.task == "classification":
+    result = predictor.evaluate(sys.argv[2])
+else:
+    result = predictor.evaluate(np.load(sys.argv[2]), np.load(sys.argv[3]))
+out = {}
+for name, value in vars(result).items():
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    elif isinstance(value, tuple):
+        value = list(value)
+    out[name] = value
+print(json.dumps(out))
+'''
+
+
+def _forge_console_script(python: Path) -> Path:
+    return python.parent / ("forge.exe" if sys.platform == "win32" else "forge")
+
+
+def _evaluate_outside_repo(clean_install, cwd: Path, *args, cli_flags=("--json",)):
+    """Run the installed `forge model evaluate` and the reference evaluator; return `(cli_json, reference_json)`."""
+    cli = subprocess.run(
+        [str(_forge_console_script(clean_install)), "model", "evaluate", *map(str, args), *cli_flags],
+        cwd=str(cwd), capture_output=True, text=True,
+    )
+    assert cli.returncode == 0, cli.stderr
+    reference_script = cwd / "reference_evaluate.py"
+    reference_script.write_text(_REFERENCE_EVALUATOR)
+    reference = _run(clean_install, [str(reference_script), *map(str, args)], cwd)
+    assert reference.returncode == 0, reference.stderr
+    return json.loads(cli.stdout), json.loads(reference.stdout)
+
+
+def _assert_same_evaluation(cli: dict, reference: dict) -> None:
+    assert cli.keys() == reference.keys()
+    for key, expected in reference.items():
+        if isinstance(expected, float):
+            assert cli[key] == pytest.approx(expected, rel=1e-9), key
+        elif isinstance(expected, list) and expected and isinstance(expected[0], float):
+            assert cli[key] == pytest.approx(expected, rel=1e-9), key
+        else:
+            assert cli[key] == expected, key
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_installed_forge_is_what_evaluates(clean_install, outside_repo_dir):
+    result = _run(clean_install, ["-c", "import forge; print(forge.__file__)"], outside_repo_dir)
+    assert result.returncode == 0, result.stderr
+    assert "site-packages" in result.stdout and str(REPO_ROOT) not in result.stdout
+    assert _forge_console_script(clean_install).is_file()
+
+
+def test_installed_cli_evaluates_a_tabular_classification_artifact(clean_install, outside_repo_dir):
+    from forge.data.transforms import Normalize
+
+    forge.random.seed(0)
+    model_path = outside_repo_dir / "diabetes_like.forge"
+    forge.save_model(
+        Sequential(Linear(3, 6), ReLU(), Linear(6, 2)), str(model_path), task="tabular_classification",
+        preprocessing=Normalize(mean=np.array([1.0, 2.0, 3.0], dtype=np.float32), std=np.array([2.0, 1.0, 4.0], dtype=np.float32)),
+        classes=["no_disease", "disease"],
+    )
+    rng = np.random.default_rng(0)
+    np.save(outside_repo_dir / "X.npy", rng.normal(size=(40, 3)).astype(np.float32) * 3 + 1)
+    np.save(outside_repo_dir / "y.npy", np.array(["disease", "no_disease"] * 20))
+    before = _sha256(model_path)
+
+    cli, reference = _evaluate_outside_repo(clean_install, outside_repo_dir, "diabetes_like.forge", "X.npy", "y.npy")
+
+    assert cli["task"] == "tabular_classification" and cli["samples"] == 40 and cli["classes"] == ["no_disease", "disease"]
+    _assert_same_evaluation(cli, reference)
+    assert _sha256(model_path) == before
+
+    text = subprocess.run(
+        [str(_forge_console_script(clean_install)), "model", "evaluate", "diabetes_like.forge", "X.npy", "y.npy"],
+        cwd=str(outside_repo_dir), capture_output=True, text=True,
+    )
+    assert text.returncode == 0 and "Baseline accuracy:" in text.stdout and "Confusion matrix" in text.stdout
+
+
+def test_installed_cli_evaluates_a_standardized_regression_artifact_in_native_units(clean_install, outside_repo_dir):
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, 3)) * np.array([1000.0, 0.01, 5.0]) + np.array([500.0, 1.0, 20.0])
+    z = (X - X.mean(axis=0)) / X.std(axis=0)
+    y = 2.0e5 + 1.0e5 * (z[:, 0] - 0.5 * z[:, 1]) + 3.0e3 * rng.normal(size=300)
+    model_path = outside_repo_dir / "housing.forge"
+    forge.train_tabular_regressor(X, y, path=model_path, seed=3, epochs=150, target_transform="standardize")
+    np.save(outside_repo_dir / "X.npy", X[:100])
+    np.save(outside_repo_dir / "y.npy", y[:100])
+    before = _sha256(model_path)
+
+    cli, reference = _evaluate_outside_repo(clean_install, outside_repo_dir, "housing.forge", "X.npy", "y.npy")
+
+    _assert_same_evaluation(cli, reference)
+    assert cli["baseline_mse"] > 1e9 and cli["mse"] > 1e3     # native units; z-space would be < ~10
+    assert cli["mse"] < 0.2 * cli["baseline_mse"]
+    assert _sha256(model_path) == before
+
+
+def test_installed_cli_evaluates_an_image_classification_artifact(clean_install, outside_repo_dir):
+    from forge.data.transforms import Compose, Normalize, Resize
+
+    forge.random.seed(0)
+    model = Sequential(
+        Conv2d(3, 4, kernel_size=3, padding=1), ReLU(), MaxPool2d(kernel_size=2), Flatten(), Linear(4 * 4 * 4, 2),
+    )
+    model_path = outside_repo_dir / "pets.forge"
+    forge.save_model(
+        model, str(model_path), preprocessing=Compose([Resize((8, 8)), Normalize(mean=0.0, std=255.0)]),
+        classes=["dog", "cat"], task="classification",     # artifact order is the reverse of folder-name order
+    )
+    for class_name, fills in {"cat": (30, 60, 90), "dog": (160, 200, 240, 250)}.items():
+        (outside_repo_dir / "held_out" / class_name).mkdir(parents=True)
+        for i, fill in enumerate(fills):
+            Image.fromarray(np.full((8, 8, 3), fill, dtype=np.uint8), mode="RGB").save(
+                outside_repo_dir / "held_out" / class_name / f"{i}.png"
+            )
+    before = _sha256(model_path)
+
+    cli, reference = _evaluate_outside_repo(clean_install, outside_repo_dir, "pets.forge", "held_out")
+
+    assert cli["classes"] == ["dog", "cat"] and cli["support"] == [4, 3] and cli["samples"] == 7
+    _assert_same_evaluation(cli, reference)
+    assert _sha256(model_path) == before
+
+
+def test_installed_cli_evaluate_reports_a_bad_invocation_without_a_traceback(clean_install, outside_repo_dir):
+    for args in (["does_not_exist.forge", "X.npy", "y.npy"], ["--json"]):
+        result = subprocess.run(
+            [str(_forge_console_script(clean_install)), "model", "evaluate", *args],
+            cwd=str(outside_repo_dir), capture_output=True, text=True,
+        )
+        assert result.returncode != 0 and "Traceback" not in result.stderr
+    missing = subprocess.run(
+        [str(_forge_console_script(clean_install)), "model", "evaluate", "does_not_exist.forge", "X.npy", "y.npy", "--json"],
+        cwd=str(outside_repo_dir), capture_output=True, text=True,
+    )
+    assert missing.returncode == 1 and missing.stdout == "" and "artifact not found" in missing.stderr

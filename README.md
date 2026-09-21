@@ -190,6 +190,21 @@ per-class precision/recall; regression artifacts report `mse`, `mae`, and
 `loss`. Image classifiers are evaluated from a directory of
 `class_name/image.jpg` files: `predictor.evaluate("held_out_dir")`.
 
+The same evaluation is available from the command line, with no Python script.
+Inputs are `.npy` files (`numpy.save()`), or an image directory for image
+classifiers:
+
+```bash
+forge model evaluate diabetes.forge X.npy y.npy            # readable report
+forge model evaluate housing.forge X.npy y.npy --json      # machine-readable
+forge model evaluate pets.forge held_out_dir               # image classifier
+```
+
+The command only reads the files, calls `load_predictor(...).evaluate(...)`, and
+prints its result, so the numbers are identical to the Python API's -- including
+native-unit metrics for a regression artifact saved with
+`target_transform="standardize"`. See [`docs/development/cli.md`](docs/development/cli.md).
+
 The repository includes a trained model you can use straight away:
 
 ```text
@@ -296,7 +311,7 @@ artifact of any supported task type.
   `forge.predict_model()`, and per-task prediction functions for image
   classification, numeric regression, image-to-image segmentation, sequence
   generation, and tabular classification.
-- **Command line:** `forge model inspect|convert|predict` and
+- **Command line:** `forge model inspect|convert|predict|evaluate` and
   `forge checkpoint inspect|convert`.
 - **Backends:** a NumPy CPU backend that works on any platform, and a CUDA
   backend with hand-written kernels, a caching memory allocator, streams, and

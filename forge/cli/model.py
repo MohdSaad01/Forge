@@ -84,13 +84,31 @@ task's input has always meant "an image file path," and a tabular
 classification artifact's input is an already-batched numeric feature
 vector instead -- the exact same distinction `"regression"` already makes
 from `"classification"`.
+
+`evaluate` (**Milestone 117**) is the command-line door to
+`forge.load_predictor(path).evaluate(X, y)` (Milestone 113): `forge model
+evaluate MODEL INPUT [TARGETS]`. It is an interface layer and nothing else --
+it reads `INPUT`/`TARGETS` from disk (`.npy` files for the numeric tasks, an
+`ImageFolder`-layout directory for image classification), calls
+`load_predictor()` once and `ArtifactPredictor.evaluate()` once, and prints the
+frozen result dataclass it gets back. It computes no metric, applies no
+preprocessing, knows nothing about class order or target transforms
+(`ArtifactPredictor` applies the artifact's own, so a Milestone 116
+`target_transform="standardize"` artifact reports native-unit metrics with no
+CLI involvement), and its JSON is generated from the result dataclass's own
+fields (`dataclasses.fields()`), so the two cannot drift apart. As with
+`predict`, the artifact's persisted `task` is the only routing signal -- and it
+is used solely to decide how to *read* `INPUT`, never how to evaluate it. See
+`docs/development/m117-artifact-evaluation-cli.md`.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
+import zipfile
 
 import numpy as np
 
@@ -98,7 +116,10 @@ from ..data import save_image
 from ..serialization import (
     inspect_model, load_classes, load_model, load_preprocessing, load_target_transform, save_model,
 )
-from ..training import ClassificationPrediction, predict_model
+from ..training import (
+    ClassificationEvaluationResult, ClassificationPrediction, RegressionEvaluationResult, load_predictor,
+    predict_model,
+)
 from ._archive_info import count_elements, module_training_state, read_model_metadata, walk_modules, walk_parameters
 from .errors import CLIError
 
@@ -147,6 +168,34 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
     )
     predict_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of text")
     predict_parser.set_defaults(func=cmd_predict)
+
+    evaluate_parser = sub.add_parser(
+        "evaluate",
+        help="Score a saved model artifact on labeled data, using its own persisted preprocessing",
+    )
+    evaluate_parser.add_argument(
+        "model", help="Path to a .forge model file (must declare task metadata -- see forge.save_model(..., task=...))"
+    )
+    evaluate_parser.add_argument(
+        "input",
+        help="Evaluation inputs: a .npy file of shape (samples, features) for tabular_classification/regression, "
+        "or a directory laid out as root/<class_name>/<image files> for image classification",
+    )
+    evaluate_parser.add_argument(
+        "targets", nargs="?", default=None,
+        help="A .npy file with one target per sample (class names, class indices, or regression targets in native "
+        "units); required for tabular_classification/regression, not accepted for image classification",
+    )
+    evaluate_parser.add_argument(
+        "--device", default=None, choices=["cpu", "cuda"],
+        help="Device to load the model onto (default: whatever device it was saved from)",
+    )
+    evaluate_parser.add_argument(
+        "--batch-size", type=int, default=None,
+        help="Samples evaluated per batch; only bounds memory (default: the evaluation API's own default)",
+    )
+    evaluate_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of text")
+    evaluate_parser.set_defaults(func=cmd_evaluate)
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -443,3 +492,137 @@ def cmd_predict(args: argparse.Namespace) -> int:
     # this command has not yet been taught to handle fails clearly here
     # rather than falling through silently.
     raise CLIError(f"unsupported artifact task: {task}")
+
+
+# -- evaluate (Milestone 117) ---------------------------------------------------------------------------------
+#
+# Which tasks read `.npy` files and which read an ImageFolder directory. This is routing of *file formats* only
+# (how to read INPUT/TARGETS) -- the same role the per-task branches of `cmd_predict()` play -- and nothing else
+# about evaluation is decided here. A task in neither tuple has no evaluation semantics (`ArtifactPredictor.
+# evaluate()` refuses it too) and is reported before any data is read.
+_NUMERIC_EVALUATION_TASKS = ("tabular_classification", "regression")
+_IMAGE_EVALUATION_TASKS = ("classification",)
+
+
+def _load_npy(path: str, role: str) -> np.ndarray:
+    """Read one `.npy` array (`role` is "input" or "targets", for error messages).
+
+    `allow_pickle=False`: an evaluation file is data, never code. A missing file, a directory, something that is
+    not `.npy` at all (a CSV, a pickled object array), an `.npz` archive or a truncated `.npy` is one `CLIError`.
+    Nothing about the *contents* is validated here -- shape, dtype, finiteness and label vocabulary belong to
+    `ArtifactPredictor.evaluate()` and reach the user as its `DataError`.
+    """
+    if not os.path.isfile(path):
+        raise CLIError(f"{role} file not found: {path}")
+    try:
+        with open(path, "rb") as fh:
+            array = np.load(fh, allow_pickle=False)
+    except (OSError, ValueError, EOFError, zipfile.BadZipFile):
+        raise CLIError(f"{role} file '{path}' is not a readable .npy file (an array saved with numpy.save()).")
+    if not isinstance(array, np.ndarray):
+        if hasattr(array, "close"):
+            array.close()  # an .npz archive: np.load returns a lazy container, not an array
+        raise CLIError(f"{role} file '{path}' is not a single .npy array (an .npz archive was given).")
+    return array
+
+
+def _jsonable(value):
+    """`value` as plain JSON types: NumPy arrays/scalars and tuples become lists / Python numbers."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+def _evaluation_payload(result: "ClassificationEvaluationResult | RegressionEvaluationResult") -> dict:
+    """Every field of the result dataclass, verbatim -- no field list to keep in sync with `evaluation.py`."""
+    return {f.name: _jsonable(getattr(result, f.name)) for f in dataclasses.fields(result)}
+
+
+def _table(header: "list[str]", rows: "list[list[str]]") -> "list[str]":
+    """Left-align the first column, right-align the rest, two spaces between columns."""
+    widths = [max(len(row[i]) for row in [header, *rows]) for i in range(len(header))]
+    return [
+        "  ".join(cell.ljust(w) if i == 0 else cell.rjust(w) for i, (cell, w) in enumerate(zip(row, widths)))
+        for row in [header, *rows]
+    ]
+
+
+def _print_evaluation(result: "ClassificationEvaluationResult | RegressionEvaluationResult") -> None:
+    print(f"Task: {result.task}")
+    print(f"Samples: {result.samples}")
+    if isinstance(result, ClassificationEvaluationResult):
+        print(f"Accuracy: {result.accuracy:.2%}")
+        print(f"Baseline accuracy: {result.baseline_accuracy:.2%}")
+        print(f"Loss: {result.loss:.4f}")
+        print()
+        print("Classes:")
+        rows = [
+            [name, f"{p:.4f}", f"{r:.4f}", str(s)]
+            for name, p, r, s in zip(result.classes, result.precision, result.recall, result.support)
+        ]
+        for line in _table(["class", "precision", "recall", "support"], rows):
+            print(f"  {line}")
+        print()
+        print("Confusion matrix (rows = true class, columns = predicted class):")
+        rows = [[name, *(str(int(v)) for v in row)] for name, row in zip(result.classes, result.confusion_matrix)]
+        for line in _table(["", *result.classes], rows):
+            print(f"  {line}")
+    else:
+        print(f"MSE: {result.mse:.6g}")
+        print(f"MAE: {result.mae:.6g}")
+        print(f"Baseline MSE: {result.baseline_mse:.6g}")
+        print(f"Loss: {result.loss:.6g}")
+
+
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    if not os.path.isfile(args.model):
+        raise CLIError(f"artifact not found: {args.model}")
+
+    # The artifact's own persisted task decides how INPUT is read -- see this module's docstring, and
+    # `cmd_predict()` for why a task-less (pre-Milestone-87) artifact is refused rather than guessed at.
+    task = inspect_model(args.model).task
+    if task is None:
+        raise CLIError(
+            "artifact does not declare a task.\n"
+            "Resave the model with task metadata, or evaluate it through the Python API."
+        )
+    if task not in _NUMERIC_EVALUATION_TASKS + _IMAGE_EVALUATION_TASKS:
+        raise CLIError(
+            f"evaluation is not supported for task '{task}' -- it is defined only for "
+            f"{', '.join(_IMAGE_EVALUATION_TASKS + _NUMERIC_EVALUATION_TASKS)} artifacts."
+        )
+
+    if task in _IMAGE_EVALUATION_TASKS:
+        if args.targets is not None:
+            raise CLIError(
+                "an image-classification artifact takes no TARGETS file: the labels are the directory names "
+                "(INPUT/<class_name>/<image>)."
+            )
+        if not os.path.isdir(args.input):
+            raise CLIError(
+                f"input '{args.input}' is not a directory -- image evaluation needs root/<class_name>/<image files>."
+            )
+        features, targets = args.input, None
+    else:
+        if args.targets is None:
+            raise CLIError(f"a {task} artifact needs a TARGETS file: forge model evaluate MODEL INPUT TARGETS")
+        features, targets = _load_npy(args.input, "input"), _load_npy(args.targets, "targets")
+
+    options = {} if args.batch_size is None else {"batch_size": args.batch_size}
+    # One load, one evaluate call: everything else -- input check, preprocessing, target transform, class order,
+    # metrics -- happens inside the predictor. Nothing is written anywhere.
+    result = load_predictor(args.model, device=args.device).evaluate(features, targets, **options)
+
+    if args.json:
+        try:
+            text = json.dumps(_evaluation_payload(result), indent=2, allow_nan=False)
+        except ValueError:
+            raise CLIError("evaluation produced a non-finite metric, which JSON cannot represent; run without --json.")
+        print(text)
+    else:
+        _print_evaluation(result)
+    return 0

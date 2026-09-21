@@ -1261,6 +1261,14 @@ computed once over the concatenated outputs. It runs on whichever device the
 predictor was loaded onto. No `FORMAT_VERSION` change and no new bytes are
 written by `save_model()`.
 
+**Command line (Milestone 117).** `forge model evaluate MODEL INPUT [TARGETS]`
+is a thin interface over exactly this method: it reads `.npy` files (or an
+`ImageFolder`-layout directory), calls `load_predictor()` once and `evaluate()`
+once, and prints the result dataclass -- as text, or as JSON built from
+`dataclasses.fields()` of the result. It computes and converts nothing itself, so
+its numbers are the Python API's, including native-unit metrics for a
+`target_transform` artifact. See `docs/development/cli.md`.
+
 ## Custom-module limitations
 See **Custom/composite modules** above: only module types registered via
 `forge.serialization.register_module()` in the *loading* process can be

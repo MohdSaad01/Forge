@@ -1,4 +1,4 @@
-# Forge Command-Line Interface (Milestone 19, extended in 72)
+# Forge Command-Line Interface (Milestone 19, extended in 72 and 117)
 
 ## Purpose
 A thin command-line adapter over Forge's existing public persistence and
@@ -29,6 +29,7 @@ forge model --help
 forge model inspect --help
 forge model convert --help
 forge model predict --help
+forge model evaluate --help
 forge checkpoint --help
 forge checkpoint inspect --help
 forge checkpoint convert --help
@@ -229,6 +230,94 @@ This is a thin adapter over exactly the same Python sequence
 infer.py`, and `examples/regression/train.py`'s own demo each already
 demonstrate as standalone scripts.
 
+## Model evaluation (Milestone 117)
+```bash
+forge model evaluate MODEL INPUT [TARGETS] [--device {cpu,cuda}] [--batch-size N] [--json]
+```
+Scores a saved `.forge` artifact on labeled data and prints the metrics -- the
+command-line form of `forge.load_predictor(MODEL).evaluate(X, y)` (Milestone
+113). It is an interface, not a second evaluation system: the command reads
+`INPUT`/`TARGETS` from disk, calls `load_predictor()` once and `evaluate()` once,
+and prints the result dataclass it gets back. Preprocessing, the class order, a
+persisted regression target transform (Milestone 116) and every metric come from
+the artifact and the existing evaluation code; nothing is recomputed here, so the
+CLI's numbers are the Python API's.
+
+**Inputs** (the artifact's own `task` decides how they are read; a task-less
+legacy artifact is refused, exactly as for `predict`):
+
+| Artifact task | `INPUT` | `TARGETS` |
+|---|---|---|
+| `tabular_classification` | `.npy`, shape `(samples, features)` | `.npy`, shape `(samples,)`: class **names** (strings, each in the artifact's classes) or integer class **indices** |
+| `regression` | `.npy`, shape `(samples, features)` | `.npy`, shape `(samples,)`, `(samples, 1)` or `(samples, outputs)`, always in the caller's **native units** |
+| `classification` (image) | a directory laid out as `root/<class_name>/<image files>` | **not accepted** -- labels are the folder names, matched to the artifact's classes by name |
+| `segmentation`, `sequence` | no evaluation semantics -- use `forge model predict` | |
+
+`.npy` means a single array written by `numpy.save()`. The file is loaded with
+`allow_pickle=False` (data, never code), so an object array is refused; `.npz`
+archives, CSV and other formats are not read. Make the files from your data with
+`numpy.save("X.npy", X)`. Shape, dtype, finiteness and label checks are the
+evaluation API's own.
+
+```bash
+forge model evaluate diabetes.forge X.npy y.npy
+```
+```text
+Task: tabular_classification
+Samples: 154
+Accuracy: 72.08%
+Baseline accuracy: 62.34%
+Loss: 0.5858
+
+Classes:
+  class        precision  recall  support
+  no_diabetes     0.7573  0.8125       96
+  diabetes        0.6471  0.5690       58
+
+Confusion matrix (rows = true class, columns = predicted class):
+               no_diabetes  diabetes
+  no_diabetes           78        18
+  diabetes              25        33
+```
+```bash
+forge model evaluate housing.forge X.npy y.npy
+```
+```text
+Task: regression
+Samples: 2000
+MSE: 3.50082e+09
+MAE: 42632.2
+Baseline MSE: 1.39342e+10
+Loss: 3.50082e+09
+```
+For an artifact saved with `target_transform="standardize"` these are native
+units (here dollars, squared for MSE): no flag or inverse transform is involved.
+`Baseline accuracy` / `Baseline MSE` are what "always predict the evaluated
+data's majority class / mean target" would score on exactly these samples.
+R-squared is not printed (it is not part of the evaluation result); for a single-output model it is
+`1 - MSE / Baseline MSE`.
+
+**`--json`** prints one JSON document, and nothing else, to stdout. Its keys are
+exactly the fields of the result dataclass (`forge.training.
+ClassificationEvaluationResult` / `RegressionEvaluationResult`), in field order:
+
+- classification: `task`, `samples`, `loss`, `accuracy`, `baseline_accuracy`,
+  `classes` (list of names, the artifact's order), `confusion_matrix` (list of
+  lists of ints; row = true class, column = predicted class, both in `classes`
+  order), `precision`, `recall`, `support` (lists parallel to `classes`);
+- regression: `task`, `samples`, `loss`, `mse`, `mae`, `baseline_mse`.
+
+Numbers are plain JSON numbers (never `NaN`/`Infinity`: a non-finite metric is an
+error instead). Errors never touch stdout, so a pipeline can trust that stdout is
+either one valid document or empty.
+
+`--device` follows `model predict`: optional, and by default the model is loaded
+onto the device it was saved from; `--device cpu` evaluates a CUDA-saved artifact
+on CPU, and `--device cuda` requires a real CUDA backend (no fallback).
+`--batch-size N` only bounds memory (the API's default is used when omitted).
+Evaluation is read-only: the artifact, the inputs and the directory around them
+are unchanged afterwards.
+
 ## Checkpoint conversion
 ```bash
 forge checkpoint convert CHECKPOINT --device {cpu,cuda} --output OUTPUT
@@ -260,7 +349,7 @@ package with no `benchmarks/` directory alongside it, it fails with a clear
 Every device-affecting command that changes a model's device (`model
 convert`, `checkpoint convert`) requires an explicit `--device {cpu,cuda}`
 -- Forge's existing "no implicit device fallback" policy
-(`docs/architecture/persistence.md`), unchanged by the CLI. `model predict`'s
+(`docs/architecture/persistence.md`), unchanged by the CLI. `model predict`'s and `model evaluate`'s
 `--device` is optional, matching `forge.load_model()`'s/`forge.predict()`'s
 own default (the device the model was saved from) -- prediction does not
 *convert* the file, so there is no ambiguity to force an explicit choice
@@ -273,7 +362,7 @@ about. Inspection commands never touch a device or a backend at all.
 - `model convert` / `checkpoint convert` with `--device cuda`: require a
   real CUDA backend; if unavailable, fail with a clear error and exit
   status 1 (never a silent CPU fallback).
-- `model predict`: requires CUDA only if `--device cuda` is passed explicitly,
+- `model predict` / `model evaluate`: require CUDA only if `--device cuda` is passed explicitly,
   or if omitted and the model was saved from `"cuda"` -- identical policy to
   `forge.load_model()`'s own (**Device semantics**,
   `docs/architecture/persistence.md`).
@@ -317,6 +406,12 @@ never silently swallowed.
   sequence. There is no generic `forge predict` command spanning every
   Forge workload (autoencoders, ...) -- those have a different natural
   input shape with no single saved-artifact-describable file convention yet.
+- **`model evaluate` reads `.npy` files and image directories only** (Milestone
+  117). No CSV/DataFrame ingestion, no `.npz`, no train/holdout splitting: those
+  would be a data-ingestion subsystem, and Forge has none. It evaluates exactly
+  the three tasks `ArtifactPredictor.evaluate()` does (tabular classification,
+  regression, image classification). Its error messages are the evaluation API's
+  own `DataError` text, so they may name `ArtifactPredictor.evaluate()`.
 - **`model predict`'s sequence support is char-level-tokenization-only**
   (Milestone 90): the CLI splits `INPUT` into individual characters; a
   vocabulary tokenized a different way (e.g. `examples/word_rnn`'s
