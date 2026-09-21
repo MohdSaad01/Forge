@@ -88,8 +88,9 @@ from `"classification"`.
 `evaluate` (**Milestone 117**) is the command-line door to
 `forge.load_predictor(path).evaluate(X, y)` (Milestone 113): `forge model
 evaluate MODEL INPUT [TARGETS]`. It is an interface layer and nothing else --
-it reads `INPUT`/`TARGETS` from disk (`.npy` files for the numeric tasks, an
-`ImageFolder`-layout directory for image classification), calls
+it reads `INPUT`/`TARGETS` from disk (`.npy` files, or -- **Milestone 118** -- one
+`.csv` file plus `--target COLUMN`, for the numeric tasks; an `ImageFolder`-layout
+directory for image classification), calls
 `load_predictor()` once and `ArtifactPredictor.evaluate()` once, and prints the
 frozen result dataclass it gets back. It computes no metric, applies no
 preprocessing, knows nothing about class order or target transforms
@@ -100,6 +101,14 @@ fields (`dataclasses.fields()`), so the two cannot drift apart. As with
 `predict`, the artifact's persisted `task` is the only routing signal -- and it
 is used solely to decide how to *read* `INPUT`, never how to evaluate it. See
 `docs/development/m117-artifact-evaluation-cli.md`.
+
+The `.csv` reader is `forge.data.load_csv()` (Milestone 118), a boundary that only turns
+the file into the same `(X, y)` arrays a `.npy` pair would be: the extension picks the
+reader, and the CLI still makes exactly one `load_predictor()` and one `evaluate()` call
+on those arrays. A regression artifact's `--target` column is read as numbers, a
+classification one as class labels (integer indices or text names) -- and that is all
+the CSV path knows about the artifact: never its class order, its preprocessing or its
+target transform. See `docs/development/m118-csv-tabular-workflow.md`.
 """
 
 from __future__ import annotations
@@ -112,7 +121,7 @@ import zipfile
 
 import numpy as np
 
-from ..data import save_image
+from ..data import load_csv, save_image
 from ..serialization import (
     inspect_model, load_classes, load_model, load_preprocessing, load_target_transform, save_model,
 )
@@ -178,13 +187,19 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
     )
     evaluate_parser.add_argument(
         "input",
-        help="Evaluation inputs: a .npy file of shape (samples, features) for tabular_classification/regression, "
-        "or a directory laid out as root/<class_name>/<image files> for image classification",
+        help="Evaluation inputs: a .csv file (header row; needs --target) or a .npy file of shape (samples, features) "
+        "for tabular_classification/regression, or a directory laid out as root/<class_name>/<image files> for "
+        "image classification",
     )
     evaluate_parser.add_argument(
         "targets", nargs="?", default=None,
-        help="A .npy file with one target per sample (class names, class indices, or regression targets in native "
-        "units); required for tabular_classification/regression, not accepted for image classification",
+        help="For a .npy INPUT: a .npy file with one target per sample (class names, class indices, or regression "
+        "targets in native units). Not accepted for a .csv INPUT (use --target) or for image classification",
+    )
+    evaluate_parser.add_argument(
+        "--target", default=None, metavar="COLUMN",
+        help="For a .csv INPUT: the header name of the target column (every other column is a numeric feature, "
+        "in file order). Not accepted for a .npy or image INPUT",
     )
     evaluate_parser.add_argument(
         "--device", default=None, choices=["cpu", "cuda"],
@@ -496,12 +511,17 @@ def cmd_predict(args: argparse.Namespace) -> int:
 
 # -- evaluate (Milestone 117) ---------------------------------------------------------------------------------
 #
-# Which tasks read `.npy` files and which read an ImageFolder directory. This is routing of *file formats* only
+# Which tasks read `.npy`/`.csv` files and which read an ImageFolder directory. This is routing of *file formats* only
 # (how to read INPUT/TARGETS) -- the same role the per-task branches of `cmd_predict()` play -- and nothing else
 # about evaluation is decided here. A task in neither tuple has no evaluation semantics (`ArtifactPredictor.
 # evaluate()` refuses it too) and is reported before any data is read.
 _NUMERIC_EVALUATION_TASKS = ("tabular_classification", "regression")
 _IMAGE_EVALUATION_TASKS = ("classification",)
+
+
+def _is_csv(path: str) -> bool:
+    """Whether INPUT is read as CSV: decided by the file extension alone, never by sniffing its content."""
+    return os.path.splitext(path)[1].lower() == ".csv"
 
 
 def _load_npy(path: str, role: str) -> np.ndarray:
@@ -597,6 +617,11 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         )
 
     if task in _IMAGE_EVALUATION_TASKS:
+        if args.target is not None:
+            raise CLIError(
+                "--target names a column of a .csv INPUT; an image-classification artifact reads its labels from "
+                "the directory names (INPUT/<class_name>/<image>)."
+            )
         if args.targets is not None:
             raise CLIError(
                 "an image-classification artifact takes no TARGETS file: the labels are the directory names "
@@ -607,7 +632,25 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                 f"input '{args.input}' is not a directory -- image evaluation needs root/<class_name>/<image files>."
             )
         features, targets = args.input, None
+    elif _is_csv(args.input):
+        # The file extension picks the reader (no content sniffing); the artifact's task only says what the
+        # target column must hold. Everything after the two arrays exist is the same `evaluate()` call.
+        if args.targets is not None:
+            raise CLIError(
+                "a .csv INPUT carries its own targets: name the target column with --target COLUMN instead of "
+                "giving a TARGETS file."
+            )
+        if args.target is None:
+            raise CLIError(f"a .csv INPUT needs --target COLUMN, the header name of its target column: "
+                           f"forge model evaluate MODEL {args.input} --target COLUMN")
+        features, targets = load_csv(
+            args.input, target=args.target, labels=task == "tabular_classification",
+        )
     else:
+        if args.target is not None:
+            raise CLIError(
+                "--target names a column of a .csv INPUT; a .npy INPUT takes its targets as a TARGETS file."
+            )
         if args.targets is None:
             raise CLIError(f"a {task} artifact needs a TARGETS file: forge model evaluate MODEL INPUT TARGETS")
         features, targets = _load_npy(args.input, "input"), _load_npy(args.targets, "targets")

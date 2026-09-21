@@ -568,14 +568,14 @@ def test_unknown_class_labels_and_out_of_range_indices(scoring, tmp_path, capsys
 def test_corrupted_and_unsupported_input_files(scoring, tmp_path, capsys):
     model, X, y = scoring
     (tmp_path / "garbage.npy").write_bytes(b"\x93NUMPY but then nothing sensible")
-    (tmp_path / "text.csv").write_text("1,2\n3,4\n")
+    (tmp_path / "text.txt").write_text("1,2\n3,4\n")   # M118: an INPUT named .csv is now read as CSV, so this is .txt
     np.savez(tmp_path / "bundle.npz", X=_X)
     np.save(tmp_path / "objects.npy", np.array([{"a": 1}, None], dtype=object), allow_pickle=True)
     (tmp_path / "empty.npy").write_bytes(b"")
-    for bad in ("garbage.npy", "text.csv", "bundle.npz", "objects.npy", "empty.npy"):
+    for bad in ("garbage.npy", "text.txt", "bundle.npz", "objects.npy", "empty.npy"):
         code, out, err = run_cli(["model", "evaluate", model, tmp_path / bad, y], capsys)
         assert_clean_error(code, out, err, match="readable .npy" if bad != "bundle.npz" else "not a single .npy")
-    assert_clean_error(*run_cli(["model", "evaluate", model, X, tmp_path / "text.csv"], capsys), match="targets file")
+    assert_clean_error(*run_cli(["model", "evaluate", model, X, tmp_path / "text.txt"], capsys), match="targets file")
     assert_clean_error(*run_cli(["model", "evaluate", model, tmp_path, y], capsys), match="input file not found")
 
 

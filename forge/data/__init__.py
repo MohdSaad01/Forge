@@ -9,6 +9,7 @@ only produces model-ready `Tensor` batches; it does not run a forward pass or
 know about gradients. See `docs/architecture/data-system.md`.
 """
 
+from .csv_reader import load_csv
 from .dataloader import DataLoader
 from .dataset import Dataset, Subset, TensorDataset, random_split, sequential_split
 from .image_folder import IMAGE_EXTENSIONS, ImageFolder, save_image
@@ -25,6 +26,7 @@ __all__ = [
     "ImageFolder",
     "IMAGE_EXTENSIONS",
     "save_image",
+    "load_csv",
     "DataLoader",
     "CUDAPrefetchLoader",
     "Transform",

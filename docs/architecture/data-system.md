@@ -8,6 +8,7 @@ forge/
         dataloader.py    DataLoader, batch collation
         transforms.py    Transform, Compose, ToTensor, Normalize, ReplaceValue, Reshape, Flatten, Resize, Lambda
         image_folder.py  ImageFolder, IMAGE_EXTENSIONS (Milestone 69)
+        csv_reader.py    load_csv (Milestone 118)
 ```
 `forge.data` is exposed as a submodule of `forge` (`forge.data.TensorDataset`,
 `forge.data.DataLoader`, ...), alongside `forge.nn`/`forge.optim`/`forge.random`.
@@ -114,6 +115,27 @@ exactly 2 corrupt JPEGs among otherwise-good files, and the only way to
 handle them beforehand was reaching past this class's public surface into
 the underscore-prefixed `_load_image()` directly.
 Full contract: `forge/data/image_folder.py`'s module docstring.
+
+### load_csv (Milestone 118)
+`forge.data.load_csv(path, *, target, labels=False)` reads a numeric CSV file into the
+plain `(X, y)` NumPy arrays that `train_tabular_classifier()`, `train_tabular_regressor()`
+and `ArtifactPredictor.evaluate()` take -- it is a boundary, not a table type, and returns
+no `Dataset`:
+```python
+X, y = forge.data.load_csv("diabetes.csv", target="Outcome", labels=True)   # int64 class indices (or str names)
+X, y = forge.data.load_csv("housing.csv", target="median_house_value")      # float64 regression target
+```
+The file is comma-delimited UTF-8 with a header row; `target` names one column (exactly,
+never "the last column") and every other column is a numeric feature, kept in file order.
+Anything ambiguous is a `DataError` naming file, line and column: empty cells (nothing is
+imputed), `NaN`/`Inf`, text or `1_000`-style values in a feature column, ragged rows,
+duplicate or missing column names, a header-less or non-comma file, malformed quoting, a
+non-UTF-8 file. No categorical features, dates, other delimiters, column selection or
+streaming. It knows nothing of preprocessing, classes, target transforms or artifacts;
+those stay in the training/evaluation code that receives the arrays. Feature *names* do not
+travel with the arrays and artifacts record only a feature count, so a reordered CSV is not
+detectable downstream. Full contract: `forge/data/csv_reader.py`'s module docstring and
+`docs/development/m118-csv-tabular-workflow.md`.
 
 ## DataLoader
 `DataLoader` (`forge/data/dataloader.py`) iterates a `Dataset` in batches:

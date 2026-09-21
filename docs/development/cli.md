@@ -230,9 +230,9 @@ This is a thin adapter over exactly the same Python sequence
 infer.py`, and `examples/regression/train.py`'s own demo each already
 demonstrate as standalone scripts.
 
-## Model evaluation (Milestone 117)
+## Model evaluation (Milestone 117; CSV input Milestone 118)
 ```bash
-forge model evaluate MODEL INPUT [TARGETS] [--device {cpu,cuda}] [--batch-size N] [--json]
+forge model evaluate MODEL INPUT [TARGETS] [--target COLUMN] [--device {cpu,cuda}] [--batch-size N] [--json]
 ```
 Scores a saved `.forge` artifact on labeled data and prints the metrics -- the
 command-line form of `forge.load_predictor(MODEL).evaluate(X, y)` (Milestone
@@ -248,16 +248,50 @@ legacy artifact is refused, exactly as for `predict`):
 
 | Artifact task | `INPUT` | `TARGETS` |
 |---|---|---|
-| `tabular_classification` | `.npy`, shape `(samples, features)` | `.npy`, shape `(samples,)`: class **names** (strings, each in the artifact's classes) or integer class **indices** |
-| `regression` | `.npy`, shape `(samples, features)` | `.npy`, shape `(samples,)`, `(samples, 1)` or `(samples, outputs)`, always in the caller's **native units** |
+| `tabular_classification` | `.csv` with a header (targets in the `--target` column), or `.npy`, shape `(samples, features)` | `.npy`, shape `(samples,)`: class **names** (strings, each in the artifact's classes) or integer class **indices**; not accepted with a `.csv` |
+| `regression` | `.csv` with a header (targets in the `--target` column), or `.npy`, shape `(samples, features)` | `.npy`, shape `(samples,)`, `(samples, 1)` or `(samples, outputs)`, always in the caller's **native units**; not accepted with a `.csv` |
 | `classification` (image) | a directory laid out as `root/<class_name>/<image files>` | **not accepted** -- labels are the folder names, matched to the artifact's classes by name |
 | `segmentation`, `sequence` | no evaluation semantics -- use `forge model predict` | |
 
 `.npy` means a single array written by `numpy.save()`. The file is loaded with
 `allow_pickle=False` (data, never code), so an object array is refused; `.npz`
-archives, CSV and other formats are not read. Make the files from your data with
+archives and other formats are not read. Make the files from your data with
 `numpy.save("X.npy", X)`. Shape, dtype, finiteness and label checks are the
 evaluation API's own.
+
+**CSV input** (Milestone 118): an `INPUT` whose extension is `.csv` (case-insensitive;
+the extension alone picks the reader, the content is never sniffed) is read by
+`forge.data.load_csv()` into the same `(X, y)` arrays a `.npy` pair would give, and
+`--target COLUMN` names the target column:
+
+```bash
+forge model evaluate diabetes.forge holdout.csv --target Outcome
+forge model evaluate housing.forge held_out.csv --target median_house_value --json
+```
+
+- The first row is the header (never guessed); the file is comma-delimited UTF-8 with
+  standard double-quote quoting. `--target` is matched exactly and is required -- there
+  is no "last column" default -- and is removed from the features. **Every other column
+  is a numeric feature, in file order**; an ID or any other non-feature column must be
+  removed from the file first (there is no `--drop`).
+- A regression artifact's target column must be numbers (kept in native units, exactly as
+  in a `.npy`). A classification artifact's is integers (class **indices**, into the
+  *artifact's* class list) or text (class **names**, matched to the artifact's classes
+  by name); the class order is never taken from the file.
+- Nothing is repaired: an empty cell, `NaN`/`Inf`, text in a feature column, a row with
+  the wrong number of fields, duplicate column names, a missing/duplicated target
+  column, a header-less or non-comma-delimited file, malformed quoting or a non-UTF-8
+  file each stop the run with one `Error:` line naming the file, line and column.
+  Forge's one missing-value mechanism (`missing_columns=` at training time) replaces a
+  numeric sentinel such as `0`, which is an ordinary number to the reader.
+- `TARGETS` is not accepted together with a `.csv` (the targets are in the file), and
+  `--target` is not accepted with a `.npy` or an image directory.
+- **An artifact records how many features it expects, not their names.** The CLI cannot
+  tell that a CSV's feature columns are in a different order from the one the model was
+  trained on; keep one column order.
+
+The output, the `--json` keys and the numbers are exactly those of the `.npy` form:
+the CSV path is an input reader and adds no key, metric or preprocessing.
 
 ```bash
 forge model evaluate diabetes.forge X.npy y.npy
@@ -406,9 +440,11 @@ never silently swallowed.
   sequence. There is no generic `forge predict` command spanning every
   Forge workload (autoencoders, ...) -- those have a different natural
   input shape with no single saved-artifact-describable file convention yet.
-- **`model evaluate` reads `.npy` files and image directories only** (Milestone
-  117). No CSV/DataFrame ingestion, no `.npz`, no train/holdout splitting: those
-  would be a data-ingestion subsystem, and Forge has none. It evaluates exactly
+- **`model evaluate` reads `.csv` files (Milestone 118), `.npy` files and image
+  directories only.** A CSV is a header row plus numeric columns and one named
+  target: no categorical/string features, no missing-value handling, no dates, no
+  other delimiters or encodings, no column selection/`--drop`, no DataFrames, no
+  `.npz`, no train/holdout splitting. It evaluates exactly
   the three tasks `ArtifactPredictor.evaluate()` does (tabular classification,
   regression, image classification). Its error messages are the evaluation API's
   own `DataError` text, so they may name `ArtifactPredictor.evaluate()`.

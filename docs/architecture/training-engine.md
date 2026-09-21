@@ -1639,7 +1639,8 @@ semantics. Decisions worth recording:
 
 **Limits.** Only what the real workloads justified: no stratified split (a class
 with no training rows is rejected instead), no class weights, no target transform other
-than the opt-in `"standardize"`, no DataFrame/CSV/time-series behaviour, no CLI. On the reference 940MX these small
+than the opt-in `"standardize"`, no DataFrame/time-series behaviour, no file reading (a CSV is read into arrays by
+`forge.data.load_csv()`, M118, before the call). On the reference 940MX these small
 MLPs train about 5x *faster on CPU* than on CUDA (per-batch kernel-launch
 overhead dominates), so `device="cuda"` is supported and hardware-tested but not
 a speed-up here. Measurements: `docs/development/m114-tabular-workflows.md`.

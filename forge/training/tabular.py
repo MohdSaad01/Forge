@@ -18,8 +18,10 @@ predictor.evaluate(X_test, y_test)     # M113
 ```
 
 `X` is a numeric `(samples, features)` array-like, `y` the targets. There is
-no DataFrame or CSV support and no new data abstraction: read the file with
-ordinary Python/NumPy and pass the arrays.
+no DataFrame support and no new data abstraction: these functions take arrays,
+never a path to a data file. Read a CSV with `forge.data.load_csv()` (Milestone
+118: a numeric CSV in, plain `(X, y)` arrays out) or with ordinary Python/NumPy,
+and pass the arrays.
 
 ## What this composes (nothing new underneath)
 
@@ -125,7 +127,8 @@ are computed while the weights are still changing.
 
 ## Not here
 
-No hyperparameter search, schedulers, callbacks, DataFrame/CSV handling,
+No hyperparameter search, schedulers, callbacks, DataFrame or file handling (a CSV is
+read into arrays by `forge.data.load_csv()` before the call),
 target transforms other than `"standardize"`, time-series behaviour or CLI. Anything else: build the pipeline
 from `train_and_save()` directly, exactly as `examples/tabular_diabetes` does.
 """

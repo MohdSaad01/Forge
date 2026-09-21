@@ -100,19 +100,23 @@ epoch, not after training.
 
 ### Train a tabular classifier or regressor
 
-For a table of numbers, read the file with your usual tools and pass plain
-numeric arrays: `X` is `(samples, features)`, `y` one target per row. Forge has
-no CSV or DataFrame layer of its own.
+For a table of numbers, pass plain numeric arrays: `X` is `(samples, features)`,
+`y` one target per row. A numeric CSV file with a header row is read into those
+arrays by `forge.data.load_csv()` -- the target column is named, every other
+column is a numeric feature; the training functions themselves take arrays and
+Forge has no DataFrame layer:
 
 ```python
 import forge
 
+X, y = forge.data.load_csv("diabetes.csv", target="Outcome", labels=True)    # classification labels
 clf = forge.train_tabular_classifier(
     X, y, path="diabetes.forge",
     classes=["no_diabetes", "diabetes"],   # optional: y holds 0/1 here
 )
 print(f"{clf.validation_accuracy:.1%} vs {clf.baseline_accuracy:.1%} majority baseline")
 
+X, y = forge.data.load_csv("concrete.csv", target="strength")                # regression target
 reg = forge.train_tabular_regressor(X, y, path="strength.forge")
 print(f"validation MSE {reg.validation_mse:.1f} vs {reg.baseline_mse:.1f} predict-the-mean")
 ```
@@ -191,19 +195,24 @@ per-class precision/recall; regression artifacts report `mse`, `mae`, and
 `class_name/image.jpg` files: `predictor.evaluate("held_out_dir")`.
 
 The same evaluation is available from the command line, with no Python script.
-Inputs are `.npy` files (`numpy.save()`), or an image directory for image
-classifiers:
+Inputs are a CSV file with a header row plus `--target COLUMN`, `.npy` files
+(`numpy.save()`), or an image directory for image classifiers:
 
 ```bash
-forge model evaluate diabetes.forge X.npy y.npy            # readable report
-forge model evaluate housing.forge X.npy y.npy --json      # machine-readable
-forge model evaluate pets.forge held_out_dir               # image classifier
+forge model evaluate diabetes.forge holdout.csv --target Outcome            # readable report
+forge model evaluate housing.forge held_out.csv --target median_house_value --json   # machine-readable
+forge model evaluate diabetes.forge X.npy y.npy                              # the same, from .npy files
+forge model evaluate pets.forge held_out_dir                                 # image classifier
 ```
 
 The command only reads the files, calls `load_predictor(...).evaluate(...)`, and
 prints its result, so the numbers are identical to the Python API's -- including
 native-unit metrics for a regression artifact saved with
-`target_transform="standardize"`. See [`docs/development/cli.md`](docs/development/cli.md).
+`target_transform="standardize"`. A CSV is a plain comma-delimited, UTF-8 file with
+a header; every column except `--target` must be numeric, and empty cells, NaN/Inf
+and text in a feature column are errors (Forge reads them, it never repairs them).
+See [`docs/development/cli.md`](docs/development/cli.md) and
+[`docs/development/m118-csv-tabular-workflow.md`](docs/development/m118-csv-tabular-workflow.md).
 
 The repository includes a trained model you can use straight away:
 

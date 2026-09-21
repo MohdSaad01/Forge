@@ -13,7 +13,8 @@ Public subpackages:
   `Dropout`, `Sequential`, `ReLU`, `Tanh`; losses `MSELoss`, `CrossEntropyLoss`.
 - `forge.optim` -- `SGD`, `Adam`.
 - `forge.data` -- `Dataset`/`TensorDataset`/`ImageFolder`/`DataLoader`,
-  transforms, and CUDA-prefetching (`CUDAPrefetchLoader`).
+  transforms, `load_csv()` (a numeric CSV file to `(X, y)` arrays), and
+  CUDA-prefetching (`CUDAPrefetchLoader`).
 - `forge.training` -- `train()` (Milestone 79), the single-call high-level
   entry point that trains a `Module` directly on a `Dataset` (building its
   own `DataLoader`(s), moving the model to `device=`, and delegating to
@@ -73,7 +74,8 @@ Public subpackages:
   accessible for a caller who needs more control than it exposes; and
   `train_tabular_classifier()` / `train_tabular_regressor()` (Milestone
   114), the same one-call workflow for a numeric feature matrix `X` and
-  targets `y` (no DataFrame/CSV layer): a seeded train/validation split,
+  targets `y` (no DataFrame layer; `forge.data.load_csv()`, Milestone 118, reads a
+  numeric CSV into those arrays): a seeded train/validation split,
   preprocessing fitted on the training rows only and saved in the artifact,
   a default MLP or a caller's `model=` checked against the task before
   epoch 1, early stopping, and a verified `.forge` artifact that

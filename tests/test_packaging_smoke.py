@@ -365,3 +365,178 @@ def test_installed_cli_evaluate_reports_a_bad_invocation_without_a_traceback(cle
         cwd=str(outside_repo_dir), capture_output=True, text=True,
     )
     assert missing.returncode == 1 and missing.stdout == "" and "artifact not found" in missing.stderr
+
+
+# -- CSV evaluation and training from the installed wheel (Milestone 118) ------------------------------------
+#
+# Same arrangement as above: artifacts and data are produced by the dev tree (a developer *receives* them); every
+# run that reads a CSV happens in the clean venv (which has numpy + Pillow and nothing else -- asserted below, so
+# "no pandas" is a fact about the environment, not a hope), from a directory outside the repository, in a fresh
+# process. `_CSV_REFERENCE_EVALUATOR` is the oracle and deliberately does *not* use `forge.data.load_csv()`: it parses
+# the file with the standard `csv` module, so the CLI's CSV reading is compared against an independent reading of the
+# same bytes.
+
+_CSV_REFERENCE_EVALUATOR = '''
+import csv, json, sys
+import numpy as np
+import forge
+
+model, path, target = sys.argv[1:4]
+with open(path, newline="") as fh:
+    rows = list(csv.reader(fh))
+header, body = rows[0], rows[1:]
+column = header.index(target)
+features = np.array([[float(v) for i, v in enumerate(r) if i != column] for r in body])
+raw_target = [r[column] for r in body]
+predictor = forge.load_predictor(model)
+if predictor.task == "regression":
+    y = np.array([float(v) for v in raw_target])
+else:
+    y = np.array([int(float(v)) for v in raw_target])
+result = predictor.evaluate(features, y)
+out = {}
+for name, value in vars(result).items():
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    elif isinstance(value, tuple):
+        value = list(value)
+    out[name] = value
+print(json.dumps(out))
+'''
+
+_CSV_TRAINING_CONSUMER = '''
+import json, sys
+import forge
+
+assert "site-packages" in forge.__file__, forge.__file__
+try:
+    import pandas
+except ImportError:
+    pass
+else:
+    raise SystemExit("pandas is importable in the consumer environment")
+
+X, y = forge.data.load_csv(sys.argv[1], target="Outcome", labels=True)
+result = forge.train_tabular_classifier(
+    X, y, path=sys.argv[2], classes=["no_diabetes", "diabetes"], missing_columns=[1, 2, 3, 4, 5], seed=0, epochs=15,
+)
+holdout_X, holdout_y = forge.data.load_csv(sys.argv[3], target="Outcome", labels=True)
+held_out = forge.load_predictor(sys.argv[2]).evaluate(holdout_X, holdout_y)
+assert "pandas" not in sys.modules
+print(json.dumps({
+    "file": forge.__file__, "samples": result.samples, "classes": result.classes,
+    "validation_accuracy": result.validation_accuracy, "validation_loss": result.validation_loss,
+    "holdout_accuracy": held_out.accuracy, "holdout_samples": held_out.samples,
+}))
+'''
+
+_PIMA_DIR = REPO_ROOT / "examples" / "tabular_diabetes" / "data"
+
+
+def _csv_evaluate_outside_repo(clean_install, cwd: Path, model: str, csv_name: str, target: str):
+    """`(cli_json, reference_json)` for `forge model evaluate MODEL CSV --target TARGET --json` in the clean venv."""
+    cli = subprocess.run(
+        [str(_forge_console_script(clean_install)), "model", "evaluate", model, csv_name, "--target", target, "--json"],
+        cwd=str(cwd), capture_output=True, text=True,
+    )
+    assert cli.returncode == 0, cli.stderr
+    script = cwd / "reference_csv_evaluate.py"
+    script.write_text(_CSV_REFERENCE_EVALUATOR)
+    reference = _run(clean_install, [str(script), model, csv_name, target], cwd)
+    assert reference.returncode == 0, reference.stderr
+    return json.loads(cli.stdout), json.loads(reference.stdout)
+
+
+def test_the_consumer_environment_has_no_dataframe_library(clean_install, outside_repo_dir):
+    probe = _run(clean_install, ["-c", "import pandas"], outside_repo_dir)
+    assert probe.returncode != 0 and "ModuleNotFoundError" in probe.stderr
+    listing = _run(clean_install, ["-m", "pip", "list", "--format=freeze"], outside_repo_dir).stdout.lower()
+    assert "pandas" not in listing and "numpy==" in listing and "pillow==" in listing
+
+
+def test_installed_cli_evaluates_a_csv_with_a_pre_existing_real_artifact(clean_install, outside_repo_dir):
+    """The bundled Pima classifier (saved long before M118) on the bundled 154-row holdout CSV: real data."""
+    shutil.copy(REPO_ROOT / "models" / "tabular_classifier" / "diabetes_classifier.forge", outside_repo_dir / "pima.forge")
+    shutil.copy(_PIMA_DIR / "diabetes_holdout_eval.csv", outside_repo_dir / "holdout.csv")
+    before = (_sha256(outside_repo_dir / "pima.forge"), _sha256(outside_repo_dir / "holdout.csv"))
+
+    cli, reference = _csv_evaluate_outside_repo(clean_install, outside_repo_dir, "pima.forge", "holdout.csv", "Outcome")
+
+    assert cli["task"] == "tabular_classification" and cli["samples"] == 154
+    assert cli["baseline_accuracy"] == pytest.approx(96 / 154) and cli["accuracy"] > cli["baseline_accuracy"]
+    _assert_same_evaluation(cli, reference)
+    assert (_sha256(outside_repo_dir / "pima.forge"), _sha256(outside_repo_dir / "holdout.csv")) == before
+
+    text = subprocess.run(
+        [str(_forge_console_script(clean_install)), "model", "evaluate", "pima.forge", "holdout.csv", "--target", "Outcome"],
+        cwd=str(outside_repo_dir), capture_output=True, text=True,
+    )
+    assert text.returncode == 0 and "Baseline accuracy:" in text.stdout and "Confusion matrix" in text.stdout
+
+
+def test_installed_cli_evaluates_a_standardized_regression_csv_in_native_units(clean_install, outside_repo_dir):
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, 3)) * np.array([1000.0, 0.01, 5.0]) + np.array([500.0, 1.0, 20.0])
+    z = (X - X.mean(axis=0)) / X.std(axis=0)
+    y = 2.0e5 + 1.0e5 * (z[:, 0] - 0.5 * z[:, 1]) + 3.0e3 * rng.normal(size=300)
+    forge.train_tabular_regressor(X, y, path=outside_repo_dir / "housing.forge", seed=3, epochs=150, target_transform="standardize")
+    with open(outside_repo_dir / "held_out.csv", "w", newline="") as fh:            # target first, as in the StatLib file
+        fh.write("median_house_value,income,age,rooms\n")
+        for target, row in zip(y[:100], X[:100]):
+            fh.write(",".join(repr(float(v)) for v in (target, *row)) + "\n")
+    before = _sha256(outside_repo_dir / "housing.forge")
+
+    cli, reference = _csv_evaluate_outside_repo(clean_install, outside_repo_dir, "housing.forge", "held_out.csv", "median_house_value")
+
+    _assert_same_evaluation(cli, reference)
+    assert cli["baseline_mse"] > 1e9 and cli["mse"] > 1e3                            # native units; z-space would be < ~10
+    assert cli["mse"] < 0.2 * cli["baseline_mse"]
+    assert _sha256(outside_repo_dir / "housing.forge") == before
+
+
+def test_installed_forge_trains_from_a_csv_without_any_conversion_layer(clean_install, outside_repo_dir):
+    """`load_csv()` + the unchanged `train_tabular_classifier()` in the clean venv, then a fresh-process CLI evaluation."""
+    shutil.copy(_PIMA_DIR / "diabetes.csv", outside_repo_dir / "diabetes.csv")
+    shutil.copy(_PIMA_DIR / "diabetes_holdout_eval.csv", outside_repo_dir / "holdout.csv")
+    script = outside_repo_dir / "consume.py"
+    script.write_text(_CSV_TRAINING_CONSUMER)
+
+    ran = _run(clean_install, [str(script), "diabetes.csv", "trained.forge", "holdout.csv"], outside_repo_dir)
+    assert ran.returncode == 0, ran.stderr
+    report = json.loads(ran.stdout)
+    assert "site-packages" in report["file"] and str(REPO_ROOT) not in report["file"]
+    assert (report["samples"], report["classes"], report["holdout_samples"]) == (768, ["no_diabetes", "diabetes"], 154)
+
+    # The same training on plain NumPy arrays, in this (dev-tree) process, gives the same numbers.
+    data = np.genfromtxt(_PIMA_DIR / "diabetes.csv", delimiter=",", skip_header=1)
+    reference = forge.train_tabular_classifier(
+        data[:, :-1], data[:, -1].astype(int), path=outside_repo_dir / "reference.forge",
+        classes=["no_diabetes", "diabetes"], missing_columns=[1, 2, 3, 4, 5], seed=0, epochs=15,
+    )
+    assert report["validation_accuracy"] == reference.validation_accuracy
+    assert report["validation_loss"] == pytest.approx(reference.validation_loss, rel=1e-6)
+
+    cli, oracle = _csv_evaluate_outside_repo(clean_install, outside_repo_dir, "trained.forge", "holdout.csv", "Outcome")
+    _assert_same_evaluation(cli, oracle)
+    assert cli["accuracy"] == report["holdout_accuracy"]
+
+
+def test_installed_cli_reports_a_bad_csv_without_a_traceback(clean_install, outside_repo_dir):
+    shutil.copy(REPO_ROOT / "models" / "tabular_classifier" / "diabetes_classifier.forge", outside_repo_dir / "pima.forge")
+    (outside_repo_dir / "bad.csv").write_text("a,b,Outcome\n1,two,0\n")
+    (outside_repo_dir / "ok.csv").write_text("a,Outcome\n1,0\n")
+    cases = [
+        (["pima.forge", "bad.csv", "--target", "Outcome"], "line 2, column 'b': 'two' is not a number"),
+        (["pima.forge", "ok.csv", "--target", "nope"], "target column 'nope' is not in the header"),
+        (["pima.forge", "missing.csv", "--target", "Outcome"], "CSV file not found"),
+        (["pima.forge", "ok.csv"], "needs --target COLUMN"),
+    ]
+    for args, expected in cases:
+        for flags in ([], ["--json"]):
+            result = subprocess.run(
+                [str(_forge_console_script(clean_install)), "model", "evaluate", *args, *flags],
+                cwd=str(outside_repo_dir), capture_output=True, text=True,
+            )
+            assert result.returncode == 1 and result.stdout == "", (args, result.stdout)
+            assert result.stderr.startswith("Error: ") and "Traceback" not in result.stderr, result.stderr
+            assert expected in result.stderr, result.stderr
