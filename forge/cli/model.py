@@ -118,6 +118,23 @@ names (reorder the same names, reject anything else) lives in `forge.training.in
 never reorders, drops or renames a column, and `predict` and `evaluate` cannot differ because neither implements it.
 A `.npy`/JSON input has no names and is passed exactly as before. When the artifact records no names the API says so
 with a `UserWarning`, which `_warnings_as_notes()` prints as one `Warning:` line on stderr (stdout is unchanged).
+
+**Explicit column selection (Milestone 120).** A real CSV often carries a column that is not a model feature (an
+`id`, say) -- `--columns NAME [NAME ...]` on both `predict` and `evaluate` selects exactly those header columns as
+features, in exactly that order, and every other column (the `id` included) is never read: `forge.data.load_csv(...,
+columns=...)`/`load_csv_features(..., columns=...)`, the same rule for both commands (`_read_numeric_input()` for
+`predict`, the CSV branch of `cmd_evaluate()`), since neither implements column selection itself. `--columns` is
+rejected for a JSON/`.npy`/image INPUT, which has no header to select from. Selection and the M119 name-alignment
+above stay two separate steps in one pipeline: `--columns` decides which raw CSV columns become `X`, unchanged from
+before; `_column_order()` then decides what order the artifact needs them in -- selection never reorders for the
+artifact, and alignment never reads the file.
+
+**Feature-name retrofit (Milestone 120).** `forge model convert MODEL OUTPUT --device ... --feature-names NAME
+[NAME ...]` attaches (or replaces) `OUTPUT`'s feature names without retraining -- `convert` already reloads and
+re-saves the exact model weights unchanged, so this is a metadata-only edit; `save_model()` itself still requires
+the task to be tabular and the count to match the model's actual input width (one name per column), so a wrong
+retrofit is refused, never guessed. Omitting `--feature-names` keeps `convert`'s existing behaviour: whatever names
+(or lack of them) the input artifact already had.
 """
 
 from __future__ import annotations
@@ -161,6 +178,13 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
         help="Target device to load and re-save the model on -- always explicit, never a fallback.",
     )
     convert_parser.add_argument("--output", required=True, help="Path to write the converted model to")
+    convert_parser.add_argument(
+        "--feature-names", nargs="+", default=None, metavar="NAME",
+        help="Attach feature names to the converted artifact (Milestone 120): one name per input feature, in "
+        "column order, for a tabular artifact (regression/tabular_classification) whose input width Forge can "
+        "read. No model weights change. Replaces any feature names the artifact already has; omit to carry "
+        "over whatever it already has (or has none of), unchanged.",
+    )
     convert_parser.set_defaults(func=cmd_convert)
 
     predict_parser = sub.add_parser(
@@ -187,6 +211,11 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
         "--length", type=int, default=200,
         help="Number of new tokens to generate (sequence artifacts only; default 200)",
     )
+    predict_parser.add_argument(
+        "--columns", nargs="+", default=None, metavar="NAME",
+        help="For a .csv INPUT (regression/tabular_classification): read only these header columns as features, "
+        "in this order -- e.g. to skip an id column. Not accepted for a JSON INPUT (Milestone 120).",
+    )
     predict_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of text")
     predict_parser.set_defaults(func=cmd_predict)
 
@@ -211,7 +240,12 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
     evaluate_parser.add_argument(
         "--target", default=None, metavar="COLUMN",
         help="For a .csv INPUT: the header name of the target column (every other column is a numeric feature, "
-        "in file order). Not accepted for a .npy or image INPUT",
+        "in file order, unless --columns is also given). Not accepted for a .npy or image INPUT",
+    )
+    evaluate_parser.add_argument(
+        "--columns", nargs="+", default=None, metavar="NAME",
+        help="For a .csv INPUT: read only these header columns as features, in this order -- e.g. to skip an id "
+        "column -- instead of every non-target column. Not accepted for a .npy or image INPUT (Milestone 120).",
     )
     evaluate_parser.add_argument(
         "--device", default=None, choices=["cpu", "cuda"],
@@ -340,9 +374,14 @@ def cmd_convert(args: argparse.Namespace) -> int:
     task = info.task
     # Milestone 119: a named artifact's feature names are part of what its input means; dropping them here
     # would silently turn a column-checked artifact into a width-checked one.
+    # Milestone 120: --feature-names retrofits (or replaces) them explicitly -- never inferred from a CSV --
+    # for an artifact whose input width Forge can read; save_model() itself checks the count (one name per
+    # input column) and the task (tabular only), so a wrong retrofit is refused here with no weights touched.
     feature_names = (
         info.input_schema.feature_names if info.input_schema is not None else None
     )
+    if args.feature_names is not None:
+        feature_names = args.feature_names
     # Milestone 116: a regression artifact's target transform is part of what its
     # predictions mean; dropping it here would silently turn native-unit predictions
     # into the model's raw training-space output.
@@ -351,7 +390,8 @@ def cmd_convert(args: argparse.Namespace) -> int:
         model, args.output, preprocessing=preprocessing, classes=classes, task=task,
         target_transform=target_transform, feature_names=feature_names,
     )
-    print(f"Converted '{args.model}' -> '{args.output}' (device={args.device}).")
+    note = f" (attached {len(args.feature_names)} feature name(s))" if args.feature_names is not None else ""
+    print(f"Converted '{args.model}' -> '{args.output}' (device={args.device}){note}.")
     return 0
 
 
@@ -454,18 +494,22 @@ def _print_classification_results(results: "list", as_json: bool, task: str) -> 
                   "(no class-name vocabulary was saved with this model)")
 
 
-def _read_numeric_input(path: str) -> "tuple[np.ndarray, list[str] | None]":
-    """`(X, feature_names)` for a numeric prediction INPUT (Milestone 119).
+def _read_numeric_input(path: str, columns: "list[str] | None" = None) -> "tuple[np.ndarray, list[str] | None]":
+    """`(X, feature_names)` for a numeric prediction INPUT (Milestone 119; `columns` Milestone 120).
 
     A `.csv` file (chosen by extension alone, as for `evaluate`) is read by
-    `forge.data.load_csv_features()`: every column is a feature and the header gives their names,
-    which `predict_model()` then matches to the artifact's. A JSON file has no column names, so it is
-    read as before and carries `None` -- the unnamed, width-checked path. This function only reads;
-    the name-matching rule lives in one place, `forge.training.inference._column_order()`, and
-    `predict` and `evaluate` both reach it.
+    `forge.data.load_csv_features()`: by default every column is a feature and the header gives their
+    names, which `predict_model()` then matches to the artifact's; `columns` (from `--columns`), when
+    given, selects and orders exactly those header columns instead -- the same rule `load_csv()`/
+    `cmd_evaluate()` apply, never a second one. A JSON file has no column names, so it is read as before
+    and carries `None` -- the unnamed, width-checked path; `--columns` is rejected for it (there is
+    nothing to select by name). This function only reads; the name-matching rule lives in one place,
+    `forge.training.inference._column_order()`, and `predict` and `evaluate` both reach it.
     """
     if _is_csv(path):
-        return load_csv_features(path)
+        return load_csv_features(path, columns=columns)
+    if columns is not None:
+        raise CLIError("--columns selects header columns from a .csv INPUT; a JSON INPUT has no columns to select.")
     return _parse_numeric_input(path), None
 
 
@@ -504,6 +548,11 @@ def cmd_predict(args: argparse.Namespace) -> int:
             "artifact does not declare a task.\n"
             "Use the task-specific prediction API or resave the model with task metadata."
         )
+    if args.columns is not None and task not in ("regression", "tabular_classification"):
+        raise CLIError(
+            "--columns selects feature columns from a .csv INPUT for regression/tabular_classification "
+            f"artifacts; this artifact's task is '{task}'."
+        )
 
     if task == "sequence":
         # Milestone 90: unlike the other three tasks, the input is literal
@@ -529,7 +578,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
         return 0
 
     if task == "regression":
-        input_data, names = _read_numeric_input(args.input)
+        input_data, names = _read_numeric_input(args.input, args.columns)
         with _warnings_as_notes():
             result = predict_model(args.model, input_data, device=args.device, **_names_option(names))
         values = result.numpy().tolist()
@@ -545,7 +594,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
         # (label/confidence, or a raw index with no saved classes=) -- the
         # exact same output shape/printing `task == "classification"` above
         # already uses, since both delegate to _print_classification_result().
-        input_data, names = _read_numeric_input(args.input)
+        input_data, names = _read_numeric_input(args.input, args.columns)
         with _warnings_as_notes():
             results = predict_model(args.model, input_data, device=args.device, **_names_option(names))
         _print_classification_results(results, args.json, task="tabular_classification")
@@ -692,6 +741,11 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                 "an image-classification artifact takes no TARGETS file: the labels are the directory names "
                 "(INPUT/<class_name>/<image>)."
             )
+        if args.columns is not None:
+            raise CLIError(
+                "--columns selects header columns of a .csv INPUT; an image-classification artifact has no "
+                "columns to select."
+            )
         if not os.path.isdir(args.input):
             raise CLIError(
                 f"input '{args.input}' is not a directory -- image evaluation needs root/<class_name>/<image files>."
@@ -709,13 +763,20 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
             raise CLIError(f"a .csv INPUT needs --target COLUMN, the header name of its target column: "
                            f"forge model evaluate MODEL {args.input} --target COLUMN")
         # The header names travel with the arrays; `evaluate()` matches them to the artifact's (Milestone 119).
+        # --columns (Milestone 120) selects and orders exactly those feature columns instead of every
+        # non-target column -- the same load_csv() rule `forge model predict` reaches through _read_numeric_input().
         features, targets, names = load_csv(
             args.input, target=args.target, labels=task == "tabular_classification", return_feature_names=True,
+            columns=args.columns,
         )
     else:
         if args.target is not None:
             raise CLIError(
                 "--target names a column of a .csv INPUT; a .npy INPUT takes its targets as a TARGETS file."
+            )
+        if args.columns is not None:
+            raise CLIError(
+                "--columns selects header columns of a .csv INPUT; a .npy INPUT has no columns to select."
             )
         if args.targets is None:
             raise CLIError(f"a {task} artifact needs a TARGETS file: forge model evaluate MODEL INPUT TARGETS")

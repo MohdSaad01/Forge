@@ -126,21 +126,30 @@ X, y = forge.data.load_csv("diabetes.csv", target="Outcome", labels=True)   # in
 X, y = forge.data.load_csv("housing.csv", target="median_house_value")      # float64 regression target
 ```
 The file is comma-delimited UTF-8 with a header row; `target` names one column (exactly,
-never "the last column") and every other column is a numeric feature, kept in file order.
-Anything ambiguous is a `DataError` naming file, line and column: empty cells (nothing is
-imputed), `NaN`/`Inf`, text or `1_000`-style values in a feature column, ragged rows,
-duplicate or missing column names, a header-less or non-comma file, malformed quoting, a
-non-UTF-8 file. No categorical features, dates, other delimiters, column selection or
-streaming. It knows nothing of preprocessing, classes, target transforms or artifacts;
-those stay in the training/evaluation code that receives the arrays. Feature *names* do not
+never "the last column") and every other column is a numeric feature, kept in file order --
+unless `columns=[...]` (Milestone 120) is given, in which case exactly those header columns
+become the features, in exactly that order, and every other column (an `id`, say) is never
+read at all, not even validated. Anything ambiguous is a `DataError` naming file, line and
+column: empty cells (nothing is imputed), `NaN`/`Inf`, text or `1_000`-style values in a
+selected feature column, ragged rows, duplicate or missing column names, a header-less or
+non-comma file, malformed quoting, a non-UTF-8 file. No categorical features, dates, other
+delimiters, automatic id/timestamp detection or streaming -- column selection is explicit
+only. It knows nothing of preprocessing, classes, target transforms or artifacts; those stay
+in the training/evaluation code that receives the arrays. Feature *names* do not
 travel with the arrays themselves (an array has none); `load_csv(..., return_feature_names=True)`
-returns the header names beside `X, y` (Milestone 119), and `load_csv_features(path)` reads a
-file with no target column into `(X, names)`. Handed on as `feature_names=`, they let an artifact
-that recorded names match a CSV's columns by name, so a reordered CSV is aligned and a wrong column
-rejected downstream -- an artifact trained without names records only a feature count and still
-cannot detect a reordered CSV. Full contract: `forge/data/csv_reader.py`'s module docstring,
-`docs/development/m118-csv-tabular-workflow.md` and
-`docs/development/m119-persisted-tabular-feature-schema.md`.
+returns the header names beside `X, y` (Milestone 119; exactly `columns`, when given), and
+`load_csv_features(path, columns=...)` reads a file with no target column into `(X, names)`.
+Handed on as `feature_names=`, they let an artifact that recorded names match a CSV's columns
+by name, so a reordered CSV is aligned and a wrong column rejected downstream -- an artifact
+trained without names records only a feature count and still cannot detect a reordered CSV.
+Column *selection* (which raw file columns become `X`) and name *alignment* (what order the
+artifact needs them in) are deliberately two separate steps, never one mechanism: selection
+runs in the reader and knows nothing about any artifact; alignment runs downstream
+(`_column_order()`, `docs/development/m119-persisted-tabular-feature-schema.md`) and never reads a file.
+Full contract: `forge/data/csv_reader.py`'s module docstring,
+`docs/development/m118-csv-tabular-workflow.md`,
+`docs/development/m119-persisted-tabular-feature-schema.md` and
+`docs/development/m120-tabular-api-convergence.md`.
 
 ## DataLoader
 `DataLoader` (`forge/data/dataloader.py`) iterates a `Dataset` in batches:

@@ -670,3 +670,70 @@ def test_installed_cli_takes_an_unnamed_pre_m119_artifact_with_one_warning_line(
     _assert_same_evaluation(cli, reference)
     raw = _installed_cli(clean_install, outside_repo_dir, "model", "evaluate", "pima.forge", "holdout.csv", "--target", "Outcome", "--json")
     assert raw.stderr.startswith("Warning: ") and raw.stderr.count("\n") == 1 and "records no feature names" in raw.stderr
+
+
+# -- explicit column selection and feature-name retrofit from the installed wheel (Milestone 120) -------------
+#
+# Reuses `named_pima` (a real Pima artifact trained in the clean venv, plus the holdout in several column
+# layouts, including `extra_id` -- an id column the M119 tests above already prove is rejected without
+# `--columns`) rather than building a second fixture: `--columns` is a strictly narrower reading of the same
+# CSV, so the id-column CSV M119 already wrote is exactly the right input to prove it against.
+
+
+def test_installed_cli_evaluate_columns_excludes_the_id_and_matches_the_correct_csv(clean_install, outside_repo_dir, named_pima):
+    correct = _installed_cli(clean_install, outside_repo_dir, "model", "evaluate", "named.forge",
+                              named_pima["correct"].name, "--target", "Outcome", "--json")
+    with_id = _installed_cli(clean_install, outside_repo_dir, "model", "evaluate", "named.forge",
+                              named_pima["extra_id"].name, "--target", "Outcome", "--columns", *_PIMA_FEATURES, "--json")
+    assert correct.returncode == with_id.returncode == 0, with_id.stderr
+    assert correct.stdout == with_id.stdout and correct.stderr == with_id.stderr == ""
+
+
+def test_installed_cli_predict_columns_excludes_the_id(clean_install, outside_repo_dir, named_pima):
+    feature_only_with_id = _write_csv_columns(
+        outside_repo_dir / "predict_with_id.csv", _PIMA_DIR / "diabetes_holdout_eval.csv", _PIMA_FEATURES,
+        id_first=True, keep_target=False,
+    )
+    without_columns = _installed_cli(clean_install, outside_repo_dir, "model", "predict", "named.forge", feature_only_with_id.name, "--json")
+    assert without_columns.returncode == 1 and "'id'" in without_columns.stderr
+
+    with_columns = _installed_cli(clean_install, outside_repo_dir, "model", "predict", "named.forge", feature_only_with_id.name,
+                                   "--columns", *_PIMA_FEATURES, "--json")
+    ordered = _installed_cli(clean_install, outside_repo_dir, "model", "predict", "named.forge",
+                              named_pima["features_only"].name, "--json")
+    assert with_columns.returncode == ordered.returncode == 0, with_columns.stderr
+    assert with_columns.stdout == ordered.stdout
+
+
+def test_installed_cli_convert_feature_names_retrofit_changes_no_weights(clean_install, outside_repo_dir):
+    """`convert --feature-names`: a metadata-only edit, proven by parameter-file hash equality inside the real wheel."""
+    import zipfile
+
+    shutil.copy(_PIMA_DIR / "diabetes.csv", outside_repo_dir / "diabetes.csv")
+    script = outside_repo_dir / "consume_unnamed.py"
+    script.write_text(_CSV_TRAINING_CONSUMER)
+    ran = _run(clean_install, [str(script), "diabetes.csv", "unnamed.forge", "diabetes.csv"], outside_repo_dir)
+    assert ran.returncode == 0, ran.stderr
+
+    convert = _installed_cli(
+        clean_install, outside_repo_dir, "model", "convert", "unnamed.forge", "--device", "cpu",
+        "--output", "retrofit.forge", "--feature-names", *_PIMA_FEATURES,
+    )
+    assert convert.returncode == 0, convert.stderr
+
+    def param_hashes(path):
+        with zipfile.ZipFile(str(outside_repo_dir / path)) as zf:
+            return {n: hashlib.sha256(zf.read(n)).hexdigest() for n in zf.namelist() if n != "metadata.json"}
+
+    assert param_hashes("unnamed.forge") == param_hashes("retrofit.forge")
+
+    inspected = _installed_cli(clean_install, outside_repo_dir, "model", "inspect", "retrofit.forge", "--json")
+    assert json.loads(inspected.stdout)["input_feature_names"] == _PIMA_FEATURES
+
+    # a wrong count is refused, and writes nothing
+    bad = _installed_cli(
+        clean_install, outside_repo_dir, "model", "convert", "unnamed.forge", "--device", "cpu",
+        "--output", "bad.forge", "--feature-names", "a", "b",
+    )
+    assert bad.returncode == 1 and "input feature" in bad.stderr
+    assert not (outside_repo_dir / "bad.forge").exists()

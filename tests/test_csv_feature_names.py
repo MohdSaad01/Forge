@@ -169,9 +169,10 @@ def test_load_csv_features_reports_the_file(tmp_path):
 
 
 def test_load_csv_features_has_no_target_argument_and_no_labels():
+    """Milestone 120 added `columns=` (column selection); there is still no `target=`/`labels=`."""
     import inspect
 
-    assert list(inspect.signature(load_csv_features).parameters) == ["path"]
+    assert list(inspect.signature(load_csv_features).parameters) == ["path", "columns"]
 
 
 def test_non_utf8_input_is_reported_not_traceback(tmp_path):

@@ -90,7 +90,7 @@ caller of those functions would.
 
 ## Model conversion
 ```bash
-forge model convert MODEL --device {cpu,cuda} --output OUTPUT
+forge model convert MODEL --device {cpu,cuda} --output OUTPUT [--feature-names NAME [NAME ...]]
 ```
 Loads `MODEL` explicitly onto `--device` (`forge.load_model(MODEL,
 device=...)`) and saves the result to `OUTPUT` (`forge.save_model(...)`).
@@ -100,9 +100,32 @@ if convenient" behavior; requesting `--device cuda` with no CUDA backend
 available fails with a clear error and a non-zero exit status rather than
 silently falling back to CPU.
 
+**`--feature-names` (Milestone 120): attach feature names without retraining.** A tabular
+artifact saved before Milestone 119, or trained from unnamed arrays, cannot check a named CSV's
+column order (M119's own limitation). If the caller knows exactly what its input columns are,
+`--feature-names` retrofits them onto `OUTPUT`:
+```bash
+forge model convert diabetes_old.forge --device cpu --output diabetes_named.forge \
+    --feature-names Pregnancies Glucose BloodPressure SkinThickness Insulin BMI DiabetesPedigreeFunction Age
+```
+This is a metadata-only edit riding on `convert`'s existing reload/re-save: `MODEL`'s weights are
+loaded and saved back unchanged (`convert` was already exactly this sequence; only the
+`feature_names=` argument to `save_model()` differs), so no prediction changes for a correctly
+ordered NumPy input. `save_model()` itself still enforces the Milestone 119 rules -- the artifact
+must be a tabular task (`regression`/`tabular_classification`) whose input width Forge can read
+(a `Sequential` starting with `Linear`), and the names must be exactly one per input column, all
+distinct and non-empty -- so a wrong count or a duplicate is refused before anything is written:
+```text
+Error: save_model() feature_names= has 3 name(s), but the model's first Linear layer takes 8 input feature(s).
+```
+Omitting `--feature-names` keeps `convert`'s pre-existing behavior exactly: whatever feature names
+(or lack of them) `MODEL` already had are carried over to `OUTPUT` unchanged. There is no automatic
+way to *discover* the right names (e.g. from a CSV) -- they must be supplied explicitly, by someone
+who knows the model's column order.
+
 ## Model prediction (Milestone 72, made task-aware in Milestone 88, extended to sequence generation in Milestone 90 and tabular classification in Milestone 91)
 ```bash
-forge model predict MODEL INPUT [--device {cpu,cuda}] [--output PATH] [--length N] [--json]
+forge model predict MODEL INPUT [--device {cpu,cuda}] [--output PATH] [--length N] [--columns NAME [NAME ...]] [--json]
 ```
 Predicts from a saved `.forge` artifact using only what the file itself
 already carries -- the developer never has to know or pass which of
@@ -195,6 +218,23 @@ artifact that records no names (saved before M119, or trained from arrays) takes
 given and prints one `Warning: ... records no feature names ... cannot be verified` line on
 stderr after the result -- stdout, including `--json`, is unchanged.
 
+**`--columns` (Milestone 120): select which CSV columns are features.** A real CSV file often
+carries a column that is not a model feature (an `id`, say). Without `--columns`, every column of
+a `.csv` `INPUT` is a feature (`load_csv_features()`'s default) -- an `id` column left in the file
+is then an unexpected column, rejected by the name matching above. `--columns NAME [NAME ...]`
+selects **exactly** those header columns as the features, in **exactly** that order, regardless of
+where they sit in the file; every other column (the `id` included) is never read, never validated:
+```bash
+forge model predict diabetes.forge new_patients.csv \
+    --columns Pregnancies Glucose BloodPressure SkinThickness Insulin BMI DiabetesPedigreeFunction Age
+```
+Selection (`--columns`, which raw file columns become `X`) and the Milestone 119 name-alignment
+above (what order the artifact needs them in) are two separate steps in one pipeline -- selection
+never reorders for a specific artifact, alignment never reads the file. There is still no automatic
+id/timestamp detection: a column not listed in `--columns` is simply never read, whatever it is
+named. `--columns` is rejected for a JSON `INPUT` (there is no header to select from) and for a
+task with no CSV input at all (classification/segmentation/sequence).
+
 `--json` prints a stable, machine-readable result instead of the text above,
 e.g. `{"task": "classification", "class": "dog", "confidence": 0.942}` (or
 `{"task": "regression", "prediction": [[0.8134]]}` /
@@ -250,7 +290,7 @@ demonstrate as standalone scripts.
 
 ## Model evaluation (Milestone 117; CSV input Milestone 118)
 ```bash
-forge model evaluate MODEL INPUT [TARGETS] [--target COLUMN] [--device {cpu,cuda}] [--batch-size N] [--json]
+forge model evaluate MODEL INPUT [TARGETS] [--target COLUMN] [--columns NAME [NAME ...]] [--device {cpu,cuda}] [--batch-size N] [--json]
 ```
 Scores a saved `.forge` artifact on labeled data and prints the metrics -- the
 command-line form of `forge.load_predictor(MODEL).evaluate(X, y)` (Milestone
@@ -290,8 +330,7 @@ forge model evaluate housing.forge held_out.csv --target median_house_value --js
 - The first row is the header (never guessed); the file is comma-delimited UTF-8 with
   standard double-quote quoting. `--target` is matched exactly and is required -- there
   is no "last column" default -- and is removed from the features. **Every other column
-  is a numeric feature, in file order**; an ID or any other non-feature column must be
-  removed from the file first (there is no `--drop`).
+  is a numeric feature, in file order** -- unless `--columns` (below) is given.
 - A regression artifact's target column must be numbers (kept in native units, exactly as
   in a `.npy`). A classification artifact's is integers (class **indices**, into the
   *artifact's* class list) or text (class **names**, matched to the artifact's classes
@@ -316,6 +355,26 @@ forge model evaluate housing.forge held_out.csv --target median_house_value --js
   *count*: it cannot detect a reordered CSV, uses the columns as given, and after a
   successful run prints one `Warning:` line on stderr saying so (stdout is unchanged).
   A `.npy` input has no column names and is checked for width only -- as before.
+- **`--columns` selects which CSV columns are features (Milestone 120).** A real CSV file
+  often carries a column that is not a model feature (an `id`, say); without `--columns` it
+  is read as every other column, matched against the artifact's names above (rejected as an
+  unexpected column if the artifact has names; rejected outright if it is not numeric).
+  `--columns NAME [NAME ...]` selects **exactly** those header columns as the features, in
+  **exactly** that order, regardless of where they sit in the file -- every other column,
+  the `id` included, is never read, never validated:
+  ```bash
+  forge model evaluate diabetes.forge diabetes_with_id.csv --target Outcome \
+      --columns Pregnancies Glucose BloodPressure SkinThickness Insulin BMI DiabetesPedigreeFunction Age
+  ```
+  `--target` must not appear in `--columns` (the target is always removed automatically,
+  never listed as a feature too); an unknown or duplicated name in `--columns` is one
+  `Error:` line naming it. Selection and the name-alignment bullet above stay two separate
+  steps: `--columns` decides which raw file columns become `X` (unchanged by which artifact
+  they will be scored against); alignment then decides what order the artifact needs them in
+  (unchanged by how they were selected). `--columns` is rejected for a `.npy` input or an
+  image-classification directory, neither of which has a header to select from. `forge model
+  predict` accepts the identical `--columns` flag with the identical rule (above) -- the two
+  commands cannot differ because neither implements column selection itself.
 
 The output, the `--json` keys and the numbers are exactly those of the `.npy` form:
 the CSV path is an input reader and adds no key, metric or preprocessing.
@@ -470,8 +529,10 @@ never silently swallowed.
 - **`model evaluate` reads `.csv` files (Milestone 118), `.npy` files and image
   directories only.** A CSV is a header row plus numeric columns and one named
   target: no categorical/string features, no missing-value handling, no dates, no
-  other delimiters or encodings, no column selection/`--drop`, no DataFrames, no
-  `.npz`, no train/holdout splitting. It evaluates exactly
+  other delimiters or encodings, no DataFrames, no `.npz`, no train/holdout
+  splitting. Column selection (`--columns`, Milestone 120) is explicit only -- there
+  is still no automatic id/timestamp/target detection, and no `--drop` (the inverse
+  of `--columns`: name what to keep, not what to discard). It evaluates exactly
   the three tasks `ArtifactPredictor.evaluate()` does (tabular classification,
   regression, image classification). Its error messages are the evaluation API's
   own `DataError` text, so they may name `ArtifactPredictor.evaluate()`.

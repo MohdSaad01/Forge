@@ -175,6 +175,24 @@ names, so it is checked for width only, exactly as before; an artifact trained w
 names (every artifact saved before this existed) keeps working and cannot check columns.
 See [`docs/development/m119-persisted-tabular-feature-schema.md`](docs/development/m119-persisted-tabular-feature-schema.md).
 
+**Column selection.** A real CSV often carries a column that is not a feature -- an `id`,
+say -- and `columns=[...]` selects and orders exactly the columns to read, leaving the rest
+(the `id` included) unread and unvalidated:
+
+```python
+X, y, names = forge.data.load_csv(
+    "diabetes_with_id.csv", target="Outcome", labels=True, return_feature_names=True,
+    columns=["Pregnancies", "Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI", "DiabetesPedigreeFunction", "Age"],
+)
+```
+
+`forge model predict`/`forge model evaluate` accept the identical `--columns NAME [NAME
+...]` flag. There is still no automatic id/timestamp detection -- selection is always
+explicit. An existing artifact that has no feature names (trained before this existed, or
+from unnamed arrays) can have them attached without retraining: `forge model convert
+MODEL OUTPUT --device ... --feature-names NAME ...` -- a metadata-only edit; no weight or
+prediction changes. See [`docs/development/m120-tabular-api-convergence.md`](docs/development/m120-tabular-api-convergence.md).
+
 ### Use a saved model
 
 Any saved artifact can be loaded once and used for predictions. The
@@ -235,9 +253,11 @@ and text in a feature column are errors (Forge reads them, it never repairs them
 Against an artifact trained with `feature_names=`, the CSV's header names are matched to
 the model's columns: a reordered file scores exactly like the ordered one and a wrong
 column is one `Error:` line. `forge model predict MODEL rows.csv` (feature columns only)
-follows the same rule.
-See [`docs/development/cli.md`](docs/development/cli.md) and
-[`docs/development/m118-csv-tabular-workflow.md`](docs/development/m118-csv-tabular-workflow.md).
+follows the same rule. `--columns NAME [NAME ...]` on both commands selects and orders
+exactly those header columns as features, so a file with an `id` column needs no rewriting.
+See [`docs/development/cli.md`](docs/development/cli.md),
+[`docs/development/m118-csv-tabular-workflow.md`](docs/development/m118-csv-tabular-workflow.md) and
+[`docs/development/m120-tabular-api-convergence.md`](docs/development/m120-tabular-api-convergence.md).
 
 The repository includes a trained model you can use straight away:
 

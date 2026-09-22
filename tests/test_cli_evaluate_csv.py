@@ -310,7 +310,10 @@ def test_the_cli_reads_the_csv_through_the_public_reader_once(monkeypatch, scori
     model, csv_path = scoring
     evaluate_csv_json(capsys, model, csv_path)
     # Milestone 119: also asks the reader for the header names (`return_feature_names=True`); still one read.
-    assert len(calls) == 1 and calls[0][1] == {"target": "label", "labels": True, "return_feature_names": True}
+    # Milestone 120: also forwards `columns=` (None here -- no --columns was given); still one read.
+    assert len(calls) == 1 and calls[0][1] == {
+        "target": "label", "labels": True, "return_feature_names": True, "columns": None,
+    }
 
 
 # ============================================================================================ dispatch + compatibility

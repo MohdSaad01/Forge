@@ -27,8 +27,13 @@ A CSV file is accepted if, and only if, all of this holds. Anything else is a
   whitespace, must be non-empty and **unique**.
 - **`target=` names one column, explicitly** -- never "the last column". It is
   removed from the features. **Every other column is a numeric feature**, in file
-  order (never sorted, never reordered). There is no drop/ignore list: an ID or
-  any other column that is not a feature has to be removed from the file.
+  order (never sorted, never reordered) -- unless `columns=` is given (Milestone
+  120): then **exactly those columns**, in the order given, are the features, and
+  every other column (an `id`, a timestamp, anything not explicitly selected) is
+  ignored -- not read, not validated, not guessed. There is still no automatic
+  drop/ignore list: a column that is not a feature is either removed from the
+  file or left out of `columns=`; Forge never infers that a column named `id` is
+  not a feature.
 - **Every row has as many fields as the header.** Blank lines are skipped;
   a row of empty fields is not blank, it is missing data.
 - **Feature cells are decimal numbers** (`12`, `-3.5`, `.5`, `1e-3`), surrounding
@@ -57,6 +62,22 @@ labels) or `str` (text labels). `float64` keeps every digit of the file; Forge's
 functions cast to `float32` themselves, exactly as for any NumPy array a caller passes.
 The whole file is read into memory.
 
+**Explicit column selection (`columns=`, Milestone 120).** A real CSV often carries a
+column that is not a model feature -- an `id`, a timestamp, some other piece of
+metadata -- and until this milestone the only way to read it was to remove that
+column from the file first. `load_csv(path, target=..., columns=["Age", "Glucose",
+"BMI"])` (and `load_csv_features(path, columns=[...])`, which has no target) instead
+selects exactly those columns, in exactly that order, regardless of where they sit in
+the file; everything else in the file -- an `id` column included -- is never read.
+`columns=` is validated the same way `feature_names=` is (`forge.data.feature_names.
+validate_feature_names`: a non-empty list/tuple of distinct, non-blank strings), plus
+two CSV-specific rules: every name must be a real header column (an unknown one is a
+`DataError` naming it), and (for `load_csv()`) `target` must not appear in `columns`
+(the target is always removed automatically; listing it too is rejected, not silently
+dropped). There is still no automatic id/timestamp detection -- selection is always
+explicit, and omitting `columns=` is exactly the pre-Milestone-120 "every other column
+is a feature" contract, unchanged.
+
 Column **names are not in the arrays** -- an array has none. `load_csv(...,
 return_feature_names=True)` returns them beside `X` (Milestone 119), and
 `load_csv_features(path)` reads a file with no target at all. Handed on as
@@ -82,6 +103,7 @@ import re
 import numpy as np
 
 from ..exceptions import DataError
+from .feature_names import validate_feature_names
 
 # Decimal floats only, ASCII digits only. `float()` alone would also accept "1_000", "١٢٣" and "infinity".
 _NUMBER = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\Z", re.ASCII)
@@ -160,12 +182,52 @@ def _read_header(row: "list[str]", path: str, target: "str | None") -> "tuple[li
     return names, names.index(target)
 
 
+def _validate_columns_argument(columns: Any, fn: str) -> "tuple[str, ...]":
+    """`columns=` as a tuple of distinct, non-blank column names, or a `DataError` naming what is wrong (Milestone 120).
+
+    Same structural shape `forge.data.feature_names.validate_feature_names` already defines for
+    `feature_names=` (a non-empty `list`/`tuple` of distinct, non-empty, non-`str` types rejected) --
+    reused rather than re-invented, since a valid column selection and a valid `feature_names=` list
+    are the same kind of thing. The message names `columns`, not `feature_names`: the two arguments
+    are validated identically but mean different things (one selects input columns from a file, the
+    other records an artifact's schema) and should not be confused in an error a caller reads.
+    """
+    try:
+        return validate_feature_names(columns)
+    except DataError as exc:
+        # validate_feature_names()'s own message always starts with the literal word "feature_names";
+        # reword it for this argument rather than exposing the internal helper's own name.
+        reworded = str(exc).replace("feature_names", "columns", 1)
+        raise DataError(f"{fn}() {reworded}") from exc
+
+
+def _check_columns_against_header(
+    columns: "tuple[str, ...]", names: "list[str]", target: "str | None", where: str,
+) -> None:
+    """`columns=` against the file's actual header: every name must exist, and (with a target) none may be it (Milestone 120)."""
+    if target is not None and target in columns:
+        raise DataError(
+            f"{where}: columns includes the target column {target!r}. The target is always removed from "
+            "the features automatically; list only feature columns in columns."
+        )
+    header = set(names)
+    unknown = [c for c in columns if c not in header]
+    if unknown:
+        shown = ", ".join(repr(c) for c in unknown[:_MAX_LISTED]) + (", ..." if len(unknown) > _MAX_LISTED else "")
+        header_shown = ", ".join(repr(n) for n in names[:_MAX_LISTED]) + (", ..." if len(names) > _MAX_LISTED else "")
+        raise DataError(
+            f"{where}: columns names column(s) not in the header: {shown}. Columns are matched exactly "
+            f"(case-sensitive); the file has {len(names)}: {header_shown}."
+        )
+
+
 def load_csv(
     path: "str | os.PathLike",
     *,
     target: str,
     labels: bool = False,
     return_feature_names: bool = False,
+    columns: "Sequence[str] | None" = None,
 ) -> "tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, list[str]]":
     """Read a numeric CSV file into `(X, y)` NumPy arrays (Milestone 118).
 
@@ -176,22 +238,36 @@ def load_csv(
     # Milestone 119: keep the column names, so the artifact can check them later
     X, y, names = forge.data.load_csv("housing.csv", target="median_house_value", return_feature_names=True)
     result = forge.train_tabular_regressor(X, y, path="housing.forge", feature_names=names)
+
+    # Milestone 120: a real CSV that also carries an id column -- select the features explicitly
+    X, y, names = forge.data.load_csv(
+        "diabetes.csv", target="Outcome", columns=["Pregnancies", "Glucose", "BMI"], return_feature_names=True,
+    )
     ```
 
     - `path` -- the CSV file: comma-delimited UTF-8 with a header row (module docstring,
       **The contract**).
     - `target` -- the header name of the target column, matched exactly. It is removed from
-      the features; every other column is a numeric feature, kept in file order.
+      the features; every other column is a numeric feature, kept in file order -- unless
+      `columns=` is given.
     - `labels` -- `False` (default): the target is numbers, `y` is `float64` (regression; a
       non-numeric cell is named). `True`: the target is class labels (classification): a
       column of integers gives an `int64` `y` of class indices, a column of text a `str`
       `y` of class names, a mixture or a non-integer number is an error.
+    - `columns` -- `None` (default): every column except `target` is a feature, in file
+      order (unchanged). Otherwise (Milestone 120) a non-empty list/tuple of distinct header
+      names: **exactly** those columns become the features, in **exactly** the order given --
+      regardless of where they sit in the file -- and every other column (an `id`, a
+      timestamp, anything else not selected) is ignored outright: never read, never
+      validated, never guessed. `target` must not appear in `columns` (it is always removed
+      automatically -- listing it too is a `DataError`, not silently dropped); a name not in
+      the file's header is a `DataError` naming it; a duplicate name is a `DataError`.
     - `return_feature_names` -- `False` (default): return `(X, y)`. `True` (Milestone 119): return
       `(X, y, feature_names)`, the header names of the columns of `X` (the target excluded), in the
-      same order, from the *same read* of the file. Pass them to `train_tabular_*(..., feature_names=)`
-      to record them in the artifact, and to `predict()`/`evaluate(..., feature_names=)` to have a
-      named input checked against it. They are the header cells with surrounding whitespace
-      stripped -- nothing else about a name is changed.
+      same order, from the *same read* of the file -- exactly `columns`, when given. Pass them to
+      `train_tabular_*(..., feature_names=)` to record them in the artifact, and to
+      `predict()`/`evaluate(..., feature_names=)` to have a named input checked against it. They are
+      the header cells with surrounding whitespace stripped -- nothing else about a name is changed.
 
     Returns `(X, y)`: `X` `(rows, features)` `float64`, `y` `(rows,)`. They are plain
     arrays for `train_tabular_classifier()` / `train_tabular_regressor()` /
@@ -206,28 +282,40 @@ def load_csv(
         raise DataError(f"load_csv() labels must be True or False, got {labels!r}.")
     if not isinstance(return_feature_names, bool):
         raise DataError(f"load_csv() return_feature_names must be True or False, got {return_feature_names!r}.")
-    X, y, feature_names = _read_csv(os.fspath(path), target.strip(), labels)
+    checked_columns = _validate_columns_argument(columns, "load_csv") if columns is not None else None
+    X, y, feature_names = _read_csv(os.fspath(path), target.strip(), labels, checked_columns)
     return (X, y, feature_names) if return_feature_names else (X, y)
 
 
-def load_csv_features(path: "str | os.PathLike") -> "tuple[np.ndarray, list[str]]":
+def load_csv_features(
+    path: "str | os.PathLike", *, columns: "Sequence[str] | None" = None,
+) -> "tuple[np.ndarray, list[str]]":
     """Read a CSV file that has *no target column* into `(X, feature_names)` (Milestone 119).
 
     ```python
     X, names = forge.data.load_csv_features("new_patients.csv")
     forge.load_predictor("diabetes.forge").predict(X, feature_names=names)
+
+    # Milestone 120: the file also has an id column -- select the features explicitly
+    X, names = forge.data.load_csv_features("new_patients.csv", columns=["Pregnancies", "Glucose", "BMI"])
     ```
 
     The prediction-time counterpart of `load_csv()`: the same file contract (header row,
     comma-delimited UTF-8, unique non-empty names, numeric cells, no missing values),
-    except that **every** column is a feature, in file order. There is nothing to drop:
-    a target or `id` column left in the file is a feature column as far as this reader
-    knows, and a named artifact then rejects it as an unexpected column -- remove it from
-    the file. Returns `X` `(rows, features)` `float64` and the header names (whitespace
-    stripped) as a list. Raises `forge.DataError`, as `load_csv()` does.
+    except that there is no target column at all.
+
+    - `columns` -- `None` (default): **every** column is a feature, in file order (unchanged --
+      there is nothing to drop; a target or `id` column left in the file is a feature column as
+      far as this reader knows, and a named artifact then rejects it as an unexpected column).
+      Otherwise (Milestone 120), the same explicit selection `load_csv(..., columns=...)`
+      documents: exactly those columns, in exactly that order; every other column is ignored.
+
+    Returns `X` `(rows, features)` `float64` and the header names (whitespace stripped, or
+    exactly `columns` when given) as a list. Raises `forge.DataError`, as `load_csv()` does.
     """
     _check_path(path, "load_csv_features")
-    X, _, feature_names = _read_csv(os.fspath(path), None, False)
+    checked_columns = _validate_columns_argument(columns, "load_csv_features") if columns is not None else None
+    X, _, feature_names = _read_csv(os.fspath(path), None, False, checked_columns)
     return X, feature_names
 
 
@@ -237,9 +325,15 @@ def _check_path(path: "str | os.PathLike", fn: str) -> None:
 
 
 def _read_csv(
-    path: str, target: "str | None", labels: bool,
+    path: str, target: "str | None", labels: bool, columns: "tuple[str, ...] | None" = None,
 ) -> "tuple[np.ndarray, np.ndarray | None, list[str]]":
-    """The one reader behind `load_csv()`/`load_csv_features()`: `(X, y, feature_names)`, `y` is `None` without a target."""
+    """The one reader behind `load_csv()`/`load_csv_features()`: `(X, y, feature_names)`, `y` is `None` without a target.
+
+    `columns` (Milestone 120), when given, is already-validated (`_validate_columns_argument()`): the
+    feature columns to select, in the order to select them in. Selection and target-removal share one
+    mechanism -- `feature_indices`, the header positions of `feature_names` -- so there is exactly one
+    code path whether or not `columns` was given, not two.
+    """
     if not os.path.isfile(path):
         raise DataError(f"CSV file not found: {path}" if not os.path.exists(path) else f"CSV path is not a file: {path}")
 
@@ -252,13 +346,19 @@ def _read_csv(
             reader = csv.reader(handle, strict=True)
             names: "list[str] | None" = None
             target_index = -1
+            feature_indices: "list[int]" = []
             for row in reader:
                 if not row:  # a blank line
                     continue
                 line = reader.line_num
                 if names is None:
                     names, target_index = _read_header(row, path, target)
-                    feature_names = [n for i, n in enumerate(names) if i != target_index]
+                    if columns is not None:
+                        _check_columns_against_header(columns, names, target, where)
+                        feature_names = list(columns)
+                    else:
+                        feature_names = [n for i, n in enumerate(names) if i != target_index]
+                    feature_indices = [names.index(n) for n in feature_names]
                     continue
                 if len(row) != len(names):
                     raise DataError(
@@ -266,13 +366,13 @@ def _read_csv(
                         f"({names[0]!r}, ..., {names[-1]!r}). Every row needs one field per column."
                     )
                 cells = [cell.strip() for cell in row]
-                target_cell = cells.pop(target_index) if target is not None else None
                 features.append([
-                    _parse_number(cell, f"{where}, line {line}, column {name!r}", "feature")
-                    for cell, name in zip(cells, feature_names)
+                    _parse_number(cells[i], f"{where}, line {line}, column {name!r}", "feature")
+                    for i, name in zip(feature_indices, feature_names)
                 ])
                 if target is None:
                     continue
+                target_cell = cells[target_index]
                 if target_cell == "":
                     raise DataError(
                         f"{where}, line {line}, column {target!r}: empty target. A row without a target cannot "

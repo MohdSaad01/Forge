@@ -89,7 +89,11 @@ Public subpackages:
   records *which* feature each input column is in the artifact, so a named input
   (`predict(X, feature_names=...)`, a CSV header) is matched by name -- the same names in
   another order are reordered, any other difference is a `DataError`; a bare array is
-  checked for width only, as before.
+  checked for width only, as before. `forge.data.load_csv(..., columns=[...])`/
+  `load_csv_features(..., columns=[...])` (Milestone 120) select and order exactly those
+  header columns as features, so a real CSV carrying a non-feature column (an `id`, say) needs
+  no rewriting; `forge model convert MODEL OUTPUT --feature-names ...` retrofits feature names
+  onto an existing artifact with no retraining and no weight change.
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a
