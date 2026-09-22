@@ -259,6 +259,21 @@ See [`docs/development/cli.md`](docs/development/cli.md),
 [`docs/development/m118-csv-tabular-workflow.md`](docs/development/m118-csv-tabular-workflow.md) and
 [`docs/development/m120-tabular-api-convergence.md`](docs/development/m120-tabular-api-convergence.md).
 
+Training itself is also a command, one thin adapter over `train_tabular_classifier_csv()` /
+`train_tabular_regressor_csv()` / `train_image_classifier()`, chosen by `--task`:
+
+```bash
+forge model train diabetes.csv --task classification --target Outcome --output diabetes.forge
+forge model train housing.csv --task regression --target median_house_value --output housing.forge \
+    --target-transform standardize
+forge model train petimages/ --task image-classification --output pets.forge --epochs 5
+```
+
+Each writes an ordinary `.forge` artifact, immediately usable with `model inspect|predict|evaluate`
+above -- no CLI-only artifact format. See
+[`docs/development/m121-tabular-csv-training.md`](docs/development/m121-tabular-csv-training.md) and
+[`docs/development/m122-unified-model-training-cli.md`](docs/development/m122-unified-model-training-cli.md).
+
 The repository includes a trained model you can use straight away:
 
 ```text
@@ -365,7 +380,7 @@ artifact of any supported task type.
   `forge.predict_model()`, and per-task prediction functions for image
   classification, numeric regression, image-to-image segmentation, sequence
   generation, and tabular classification.
-- **Command line:** `forge model inspect|convert|predict|evaluate` and
+- **Command line:** `forge model inspect|convert|predict|evaluate|train` and
   `forge checkpoint inspect|convert`.
 - **Backends:** a NumPy CPU backend that works on any platform, and a CUDA
   backend with hand-written kernels, a caching memory allocator, streams, and

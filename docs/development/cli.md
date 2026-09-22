@@ -1,4 +1,4 @@
-# Forge Command-Line Interface (Milestone 19, extended in 72, 117 and 121)
+# Forge Command-Line Interface (Milestone 19, extended in 72, 117, 121 and 122)
 
 ## Purpose
 A thin command-line adapter over Forge's existing public persistence and
@@ -439,19 +439,31 @@ on CPU, and `--device cuda` requires a real CUDA backend (no fallback).
 Evaluation is read-only: the artifact, the inputs and the directory around them
 are unchanged afterwards.
 
-## Model training (Milestone 121)
+## Model training (Milestone 121, image classification added in Milestone 122)
 ```bash
 forge model train DATA.csv --task {classification,regression} --target COLUMN --output PATH \
     [--columns NAME [NAME ...]] [--device {cpu,cuda}] [--epochs N] [--batch-size N] \
     [--learning-rate LR] [--seed N] [--target-transform standardize] [--json]
+
+forge model train IMAGE_DIR --task image-classification --output PATH \
+    [--device {cpu,cuda}] [--epochs N] [--batch-size N] [--learning-rate LR] [--seed N] [--json]
 ```
-The command-line door onto `forge.train_tabular_classifier_csv()` / `forge.train_tabular_regressor_csv()`
-(Milestone 121) -- the CSV-to-artifact counterpart of `model predict`/`model evaluate`. It is a thin adapter
-and nothing else: `--task` alone picks which of the two Python functions to call (there is no
-architecture/data-driven guess, and no third training system lives here), and every other flag is forwarded
-to that function **only when the caller actually passed it** -- an omitted flag is exactly that function's own
-default (100 epochs for classification, 500 for regression, batch size 32, learning rate `1e-3`, seed `0`,
-`cpu`), never a second, CLI-specific default that could drift from the Python API's.
+The command-line door onto three existing high-level Python functions -- `forge.
+train_tabular_classifier_csv()` / `forge.train_tabular_regressor_csv()` (Milestone 121) for `--task
+classification`/`--task regression`, and `forge.train_image_classifier()` (Milestone 122) for `--task
+image-classification`. It is a thin adapter and nothing else: `--task` alone picks which of the three Python
+functions to call (there is no architecture/data-driven guess -- an explicit `--task` is authoritative, and
+no fourth training system lives here), and every other flag is forwarded to that function **only when the
+caller actually passed it** -- an omitted flag is exactly that function's own default (100 epochs for tabular
+classification, 500 for tabular regression, 5 for image classification; batch size 32; learning rate `1e-3`
+tabular / `4e-4` image; seed `0`; `cpu`), never a second, CLI-specific default that could drift from the
+Python API's.
+
+| Input | `--task` | Backend API |
+|---|---|---|
+| `.csv` file | `classification` | `train_tabular_classifier_csv()` |
+| `.csv` file | `regression` | `train_tabular_regressor_csv()` |
+| `ImageFolder`-layout directory | `image-classification` | `train_image_classifier()` |
 
 ```bash
 forge model train patients.csv --task classification --target Outcome --output patients.forge \
@@ -479,9 +491,9 @@ Validation MSE: 3.5e+09 (baseline 1.33e+10)
 Validation MAE: 40501.1
 ```
 
-**`DATA` must be a `.csv` file** (chosen by extension alone, exactly as `predict`/`evaluate` choose their CSV
-path) -- no other input format trains through this command yet; `--target` (the header name of the target
-column, removed from the features automatically) is required. `--columns` is the identical Milestone 120
+**`DATA` must be a `.csv` file for `--task classification`/`--task regression`** (chosen by extension alone,
+exactly as `predict`/`evaluate` choose their CSV path); `--target` (the header name of the target column,
+removed from the features automatically) is required for these two tasks. `--columns` is the identical Milestone 120
 selection `predict`/`evaluate` already use: omit it and every non-target column becomes a feature, in file
 order (the M118 default); give it and **exactly** those header columns become the features, in **exactly**
 that order -- so a production CSV carrying an `id` column needs no rewriting to train from, exactly as it
@@ -500,16 +512,49 @@ own selected column names (in the order they end up in) become the artifact's `I
 
 **`--target-transform standardize`** (regression only, Milestone 116): train on standardized targets, fitted
 on the training split only, with the fitted transform saved in the artifact so `predict`/`evaluate` and every
-number in the printed/`--json` result are in native units. Rejected with `--task classification`.
+number in the printed/`--json` result are in native units. Rejected with `--task classification` or `--task
+image-classification`.
+
+**`--task image-classification`** (Milestone 122): `DATA` must instead be an `ImageFolder`-layout directory
+(`root/<class_name>/<image files>`, the same contract `forge.data.ImageFolder`/`model evaluate`'s image path
+already use) -- a `.csv` file, or any other non-directory path, is refused with a clear error naming both the
+declared task and what was actually found. `--target`, `--columns` and `--target-transform` all name CSV
+concepts this task has none of, and are rejected outright rather than silently ignored -- classes come from
+the directory's own subdirectory names, exactly as `train_image_classifier()`'s own contract already
+specifies:
+```bash
+forge model train petimages/ --task image-classification --output pets.forge \
+    --epochs 5 --batch-size 32 --device cuda
+```
+```text
+Trained classification model -> 'pets.forge'
+Samples: 25000 (train 20000, validation 5000)
+Classes: cat, dog
+Epochs completed: 5
+Validation accuracy: 87.42%
+```
+The artifact is saved with `task="classification"` (the same value `forge model predict`/`forge model
+evaluate` already use for every image classifier -- not `"image-classification"`, which is this command's
+own `--task` vocabulary, not the artifact's) and `classes=` the discovered directory names, so it is
+immediately usable with `model inspect`/`model predict IMAGE`/`model evaluate IMAGE_DIR`, no different from
+one trained through `forge.train_image_classifier()` directly. `--json` reports `task`, `artifact_path`,
+`dataset_size`, `train_size`, `val_size`, `classes`, `epochs_completed`, `skipped_images` (a count, matching
+`on_error="skip"`'s default) and `validation_accuracy` -- the fields of `ImageClassifierResult` this command
+actually has a stable use for, not the full dataclass (`history`/`model` are Python objects, not JSON).
+Training always runs with `verbose=False` regardless of `train_image_classifier()`'s own `verbose=True`
+default -- the CLI's own one-line (or `--json`) summary is the only training output, never per-epoch or
+skipped-file lines mixed into it.
 
 **CLI scope.** Only the flags above are exposed -- `task`, `target`, `columns`, `output`, `device`, `epochs`,
 `batch-size`, `learning-rate`, `seed`, and (regression only) `target-transform`. Every other Python-API
-keyword (`classes`, `val_fraction`, `missing_columns`, `missing_value`, `patience`, `model=`, `verbose`) has a
-stable, well-tested default that is not yet a demonstrated CLI need; a workflow that needs one of them calls
-`forge.train_tabular_classifier_csv()`/`forge.train_tabular_regressor_csv()` (or the array
-`train_tabular_classifier()`/`train_tabular_regressor()`) directly. This is a deliberate scope decision, not
-an oversight -- the brief this milestone implements explicitly warns against turning the CLI into "a giant
-argument surface merely because the underlying Python API has many parameters."
+keyword (`classes`, `val_fraction`, `missing_columns`, `missing_value`, `patience`, `model=`, `verbose`,
+and -- for `--task image-classification` -- `image_size`, `on_error`) has a stable, well-tested default that
+is not yet a demonstrated CLI need; a workflow that needs one of them calls
+`forge.train_tabular_classifier_csv()`/`forge.train_tabular_regressor_csv()`/`forge.train_image_classifier()`
+(or the array `train_tabular_classifier()`/`train_tabular_regressor()`) directly. This is a deliberate scope
+decision, not an oversight -- the brief this milestone implements explicitly warns against turning the CLI
+into "a giant argument surface merely because the underlying Python API has many parameters," and Milestone
+122's own brief repeats the same warning specifically for the new image-classification path.
 
 `--json` prints one JSON document built from the returned `TabularClassificationResult`/
 `TabularRegressionResult`'s own fields (`task`, `artifact_path`, `samples`, `features`, `train_samples`,
@@ -569,9 +614,9 @@ about. Inspection commands never touch a device or a backend at all.
   or if omitted and the model was saved from `"cuda"` -- identical policy to
   `forge.load_model()`'s own (**Device semantics**,
   `docs/architecture/persistence.md`).
-- `model train` (Milestone 121): requires CUDA only if `--device cuda` is passed explicitly (omitted, it
-  trains on `cpu` -- `forge.train_tabular_classifier_csv()`/`forge.train_tabular_regressor_csv()`'s own
-  default); no fallback if CUDA is requested and unavailable.
+- `model train` (Milestone 121; image classification in Milestone 122): requires CUDA only if `--device cuda`
+  is passed explicitly (omitted, it trains on `cpu` -- every one of the three underlying training functions'
+  own default); no fallback if CUDA is requested and unavailable, for any of the three `--task` values.
 - `benchmark`: CUDA-dependent categories (`transfer`, and the CUDA half of
   `forward`/`backward`/`training`) produce no results when CUDA is
   unavailable, exactly as `python -m benchmarks` already behaves
@@ -612,13 +657,16 @@ never silently swallowed.
   sequence. There is no generic `forge predict` command spanning every
   Forge workload (autoencoders, ...) -- those have a different natural
   input shape with no single saved-artifact-describable file convention yet.
-- **`model train` (Milestone 121) trains only from a `.csv` file**, and only the two tabular tasks
-  (`classification`/`regression`) -- there is no CLI training door for image classification, segmentation or
-  sequence workloads, and no `.npy`/array input (an in-memory array trains through the Python
-  `train_tabular_classifier()`/`train_tabular_regressor()` directly). Its flag surface is a deliberately
-  narrower subset of the Python API's -- `classes=`, `val_fraction=`, `missing_columns=`, `missing_value=`,
-  `patience=`, `model=` and `verbose=` are not exposed; a workflow needing one of them calls
-  `forge.train_tabular_classifier_csv()`/`forge.train_tabular_regressor_csv()` (or the array API) directly.
+- **`model train` trains from a `.csv` file (tabular classification/regression, Milestone 121) or an
+  `ImageFolder`-layout directory (image classification, Milestone 122)** -- there is no CLI training door
+  for segmentation or sequence workloads, and no `.npy`/array input for the tabular tasks (an in-memory array
+  trains through the Python `train_tabular_classifier()`/`train_tabular_regressor()` directly). Its flag
+  surface is a deliberately narrower subset of each Python API's -- `classes=`, `val_fraction=`,
+  `missing_columns=`, `missing_value=`, `patience=`, `model=`, `verbose=`, and (image classification only)
+  `image_size=`/`on_error=` are not exposed; a workflow needing one of them calls
+  `forge.train_tabular_classifier_csv()`/`forge.train_tabular_regressor_csv()`/`forge.train_image_classifier()`
+  (or the array API) directly. `--task` is always explicit and authoritative -- the command never guesses a
+  task from whether `DATA` is a file or a directory.
 - **`model evaluate` reads `.csv` files (Milestone 118), `.npy` files and image
   directories only.** A CSV is a header row plus numeric columns and one named
   target: no categorical/string features, no missing-value handling, no dates, no

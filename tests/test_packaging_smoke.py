@@ -900,3 +900,99 @@ def test_installed_cli_model_train_reports_a_bad_invocation_without_a_traceback(
         assert result.returncode == 1 and result.stdout == ""
         assert result.stderr.startswith("Error: ") and "Traceback" not in result.stderr
         assert expected in result.stderr, result.stderr
+
+
+# -- image-classification training from the installed wheel (Milestone 122) -----------------------------------
+#
+# `forge model train DIR --task image-classification` is new in this milestone -- the CLI door onto the
+# already-installed-wheel-tested `forge.train_image_classifier()`. Same arrangement as every training test
+# above: a fresh consumer process in the clean venv, run from a directory outside the repository, compared
+# against the identical Python-API call for cross-API parity (the brief's own requirement: "the CLI must be
+# an adapter, not a second implementation").
+
+_IMAGE_TRAIN_KWARGS = dict(epochs=2, batch_size=4, seed=0, device="cpu")
+
+
+def _make_image_classification_dir(root: Path) -> Path:
+    data = root / "pets"
+    for cls, base_fill in [("cat", 40), ("dog", 210)]:
+        class_dir = data / cls
+        class_dir.mkdir(parents=True)
+        for i in range(8):
+            Image.fromarray(np.full((16, 16, 3), (base_fill + i) % 256, dtype=np.uint8), mode="RGB").save(
+                class_dir / f"{i}.png"
+            )
+    return data
+
+
+def test_installed_cli_trains_an_image_classifier_and_matches_the_python_api(clean_install, outside_repo_dir):
+    data_dir = _make_image_classification_dir(outside_repo_dir)
+
+    script = outside_repo_dir / "consume_image_wrapper.py"
+    script.write_text('''
+import json, sys
+import forge
+result = forge.train_image_classifier(
+    sys.argv[1], path=sys.argv[2], epochs=2, batch_size=4, seed=0, device="cpu",
+    verbose=False,
+)
+print(json.dumps({
+    "file": forge.__file__, "classes": result.classes, "dataset_size": result.dataset_size,
+    "train_size": result.train_size, "val_size": result.val_size,
+    "validation_accuracy": result.val_metrics.get("accuracy"),
+}))
+''')
+    reference = _run(clean_install, [str(script), str(data_dir), "reference.forge"], outside_repo_dir)
+    assert reference.returncode == 0, reference.stderr
+    reference_report = json.loads(reference.stdout)
+    assert "site-packages" in reference_report["file"] and str(REPO_ROOT) not in reference_report["file"]
+
+    cli = _installed_cli(
+        clean_install, outside_repo_dir, "model", "train", str(data_dir), "--task", "image-classification",
+        "--output", "cli.forge", "--epochs", "2", "--batch-size", "4", "--seed", "0", "--device", "cpu", "--json",
+    )
+    assert cli.returncode == 0, cli.stderr
+    cli_report = json.loads(cli.stdout)
+
+    assert cli_report["task"] == "classification"
+    assert cli_report["classes"] == reference_report["classes"] == ["cat", "dog"]
+    assert cli_report["dataset_size"] == reference_report["dataset_size"] == 16
+    assert cli_report["train_size"] == reference_report["train_size"]
+    assert cli_report["val_size"] == reference_report["val_size"]
+    assert cli_report["validation_accuracy"] == pytest.approx(reference_report["validation_accuracy"])
+
+    # Fresh-process, third invocation: inspect/predict/evaluate on the CLI-trained artifact, no CLI reference at all.
+    inspected = _installed_cli(clean_install, outside_repo_dir, "model", "inspect", "cli.forge", "--json")
+    assert inspected.returncode == 0
+    inspected_payload = json.loads(inspected.stdout)
+    assert inspected_payload["task"] == "classification" and inspected_payload["classes"] == ["cat", "dog"]
+
+    sample_image = next((data_dir / "cat").glob("*.png"))
+    predicted = _installed_cli(clean_install, outside_repo_dir, "model", "predict", "cli.forge", str(sample_image), "--json")
+    assert predicted.returncode == 0
+    assert json.loads(predicted.stdout)["class"] in ["cat", "dog"]
+
+    evaluated = _installed_cli(clean_install, outside_repo_dir, "model", "evaluate", "cli.forge", str(data_dir), "--json")
+    assert evaluated.returncode == 0
+    evaluated_payload = json.loads(evaluated.stdout)
+    assert evaluated_payload["task"] == "classification" and evaluated_payload["samples"] == 16
+
+
+def test_installed_cli_model_train_rejects_bad_image_classification_invocations_without_a_traceback(
+    clean_install, outside_repo_dir,
+):
+    data_dir = _make_image_classification_dir(outside_repo_dir)
+    csv_path = outside_repo_dir / "not_images.csv"
+    csv_path.write_text("f0,f1,target\n0.1,0.2,0\n")
+
+    cases = [
+        ([str(csv_path), "--task", "image-classification", "--output", "m.forge"], "is not a directory"),
+        ([str(data_dir), "--task", "image-classification", "--target", "label", "--output", "m.forge"], "--target"),
+        ([str(data_dir), "--task", "image-classification", "--columns", "a", "--output", "m.forge"], "--columns"),
+        ([str(data_dir), "--task", "classification", "--target", "label", "--output", "m.forge"], "image-classification"),
+    ]
+    for args, expected in cases:
+        result = _installed_cli(clean_install, outside_repo_dir, "model", "train", *args)
+        assert result.returncode == 1 and result.stdout == ""
+        assert result.stderr.startswith("Error: ") and "Traceback" not in result.stderr
+        assert expected in result.stderr, result.stderr

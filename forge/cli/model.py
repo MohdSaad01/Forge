@@ -167,7 +167,7 @@ from ..serialization import (
 )
 from ..training import (
     ClassificationEvaluationResult, ClassificationPrediction, RegressionEvaluationResult, load_predictor,
-    predict_model, train_tabular_classifier_csv, train_tabular_regressor_csv,
+    predict_model, train_image_classifier, train_tabular_classifier_csv, train_tabular_regressor_csv,
 )
 from ._archive_info import count_elements, module_training_state, read_model_metadata, walk_modules, walk_parameters
 from .errors import CLIError
@@ -271,17 +271,27 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
 
     train_parser = sub.add_parser(
         "train",
-        help="Train a tabular classifier or regressor directly from a CSV file and save it as a portable artifact",
-    )
-    train_parser.add_argument("data", help="Path to a .csv file with a header row (Milestone 121)")
-    train_parser.add_argument(
-        "--task", required=True, choices=["classification", "regression"],
-        help="Which tabular workflow to train: forge.train_tabular_classifier_csv() or "
-        "forge.train_tabular_regressor_csv()",
+        help="Train a tabular classifier/regressor from a CSV file, or an image classifier from an ImageFolder "
+        "directory, and save it as a portable artifact",
     )
     train_parser.add_argument(
-        "--target", required=True, metavar="COLUMN",
-        help="The header name of the target column; removed from the features automatically",
+        "data",
+        help="Path to a .csv file with a header row (--task classification/regression, Milestone 121), or an "
+        "ImageFolder-layout directory root/<class_name>/<image files> (--task image-classification, "
+        "Milestone 122)",
+    )
+    train_parser.add_argument(
+        "--task", required=True, choices=["classification", "regression", "image-classification"],
+        help="Which workflow to train: forge.train_tabular_classifier_csv() (DATA is a .csv file), "
+        "forge.train_tabular_regressor_csv() (DATA is a .csv file), or forge.train_image_classifier() "
+        "(DATA is an ImageFolder directory, --task image-classification, Milestone 122). Explicit and "
+        "authoritative -- never guessed from DATA.",
+    )
+    train_parser.add_argument(
+        "--target", default=None, metavar="COLUMN",
+        help="The header name of the target column; removed from the features automatically. Required for "
+        "--task classification/regression; rejected for --task image-classification, whose classes come "
+        "from the directory names instead (Milestone 122).",
     )
     train_parser.add_argument(
         "--output", required=True, metavar="PATH",
@@ -290,35 +300,44 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
     train_parser.add_argument(
         "--columns", nargs="+", default=None, metavar="NAME",
         help="Read only these header columns as features, in this order -- e.g. to skip an id column -- "
-        "instead of every non-target column (Milestone 120 selection, identical to predict/evaluate)",
+        "instead of every non-target column (Milestone 120 selection, identical to predict/evaluate). "
+        "Rejected for --task image-classification, which has no CSV columns (Milestone 122).",
     )
     train_parser.add_argument(
         "--device", default=None, choices=["cpu", "cuda"],
-        help="Device to train on (default: the training API's own default, cpu)",
+        help="Device to train on (default: the selected training API's own default, cpu)",
     )
     train_parser.add_argument(
         "--epochs", type=int, default=None,
-        help="Upper bound on training epochs (default: the Python API's own default -- 100 for "
-        "classification, 500 for regression)",
+        help="Upper bound on training epochs (default: the selected training API's own default -- 100 for "
+        "tabular classification, 500 for tabular regression, 5 for image classification)",
     )
     train_parser.add_argument(
-        "--batch-size", type=int, default=None, help="Training batch size (default: the Python API's own default, 32)",
+        "--batch-size", type=int, default=None,
+        help="Training batch size (default: the selected training API's own default, 32)",
     )
     train_parser.add_argument(
         "--learning-rate", type=float, default=None, metavar="LR",
-        help="Adam learning rate (default: the Python API's own default, 1e-3)",
+        help="Adam learning rate (default: the selected training API's own default -- 1e-3 for the tabular "
+        "tasks, 4e-4 for image classification)",
     )
     train_parser.add_argument(
         "--seed", type=int, default=None,
-        help="Split/shuffle/default-model-initialization seed (default: the Python API's own default, 0)",
+        help="Split/shuffle/default-model-initialization seed (default: the selected training API's own "
+        "default, 0)",
     )
     train_parser.add_argument(
         "--target-transform", default=None, choices=["standardize"], metavar="standardize",
         help="Regression only (Milestone 116): train on standardized targets, saved and predicted in native "
-        "units. Rejected for --task classification.",
+        "units. Rejected for --task classification/image-classification.",
     )
     train_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of text")
-    train_parser.set_defaults(func=cmd_train)
+    # _parser: Milestone 122 -- --target's requiredness depends on --task (required for the two tabular
+    # tasks, rejected for image-classification), which argparse's own `required=` can't express. cmd_train
+    # calls back into this exact parser's .error() for a missing --target, so that case still fails the same
+    # way (usage message on stderr, exit status 2, SystemExit) as every other argparse-enforced requirement
+    # here -- not a second, CLIError-shaped error path for what is really a usage error.
+    train_parser.set_defaults(func=cmd_train, _parser=train_parser)
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -864,13 +883,17 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
-# -- train (Milestone 121) -------------------------------------------------------------------------------------
+# -- train (Milestone 121, image classification added in Milestone 122) ----------------------------------------
 #
-# A thin adapter over exactly two Python functions -- train_tabular_classifier_csv() / train_tabular_regressor_csv()
-# (forge/training/tabular_csv.py), themselves thin wrappers over load_csv() + the unmodified array trainers. --task
-# is the sole dispatch signal (there is no architecture/data-driven guess, exactly like predict/evaluate's task
-# routing above); every other flag is forwarded only when given, so an omitted flag is that function's own default,
-# never a second CLI-specific one.
+# A thin adapter over exactly three existing Python functions -- train_tabular_classifier_csv() /
+# train_tabular_regressor_csv() (forge/training/tabular_csv.py) for --task classification/regression, and
+# train_image_classifier() (forge/training/image_classifier.py) for --task image-classification. --task is the
+# sole dispatch signal (there is no architecture/data-driven guess, exactly like predict/evaluate's task routing
+# above -- see this module's docstring); every other flag is forwarded only when given, so an omitted flag is
+# that function's own default, never a second CLI-specific one. No fourth training system is introduced here:
+# cmd_train() and its two task-shaped helpers below translate CLI arguments into one existing call and print
+# that call's own result -- validation, preprocessing, model construction, training and artifact creation all
+# remain the underlying APIs' responsibility.
 
 
 def _forwarded_training_kwargs(args: argparse.Namespace) -> dict:
@@ -889,11 +912,90 @@ def _forwarded_training_kwargs(args: argparse.Namespace) -> dict:
 
 
 def cmd_train(args: argparse.Namespace) -> int:
+    if args.task == "image-classification":
+        return _cmd_train_image(args)
+    return _cmd_train_tabular(args)
+
+
+def _cmd_train_image(args: argparse.Namespace) -> int:
+    """`--task image-classification`: DATA is an ImageFolder directory, trained via `train_image_classifier()`."""
+    if args.target is not None:
+        raise CLIError(
+            "--target names a target column of a .csv INPUT, used only by --task classification/regression; "
+            f"--task image-classification takes no --target -- '{args.data}' is trained as an ImageFolder "
+            "directory whose classes come from its subdirectory names (root/<class_name>/<image files>)."
+        )
+    if args.columns is not None:
+        raise CLIError(
+            "--columns selects .csv feature columns, used only by --task classification/regression; "
+            "--task image-classification takes no --columns -- an image directory has no columns to select."
+        )
+    if args.target_transform is not None:
+        raise CLIError("--target-transform applies only to --task regression.")
+    if not os.path.isdir(args.data):
+        raise CLIError(
+            f"--task image-classification trains from an ImageFolder-layout directory "
+            f"(root/<class_name>/<image files>); '{args.data}' is not a directory."
+        )
+    output_dir = os.path.dirname(os.path.abspath(args.output)) or "."
+    if not os.path.isdir(output_dir):
+        raise CLIError(f"cannot write to '{args.output}': directory '{output_dir}' does not exist.")
+
+    kwargs = _forwarded_training_kwargs(args)
+    # verbose=False (train_image_classifier()'s own default is True): a CLI training run always ends in
+    # exactly one summary -- text or --json -- never per-epoch/skipped-file prints mixed into it, matching
+    # the already-quiet verbose=False the tabular CSV trainers use by default for this same CLI command.
+    result = train_image_classifier(args.data, path=args.output, verbose=False, **kwargs)
+
+    val_accuracy = result.val_metrics.get("accuracy")
+    payload = {
+        "task": "classification",
+        "artifact_path": result.artifact_path,
+        "dataset_size": result.dataset_size,
+        "train_size": result.train_size,
+        "val_size": result.val_size,
+        "classes": result.classes,
+        "epochs_completed": result.history.epochs_completed,
+        "skipped_images": len(result.skipped_images),
+        "validation_accuracy": val_accuracy,
+    }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Trained {payload['task']} model -> '{payload['artifact_path']}'")
+        print(
+            f"Samples: {payload['dataset_size']} (train {payload['train_size']}, "
+            f"validation {payload['val_size']})"
+        )
+        print(f"Classes: {', '.join(payload['classes'])}")
+        print(f"Epochs completed: {payload['epochs_completed']}")
+        if payload["skipped_images"]:
+            print(f"Skipped unreadable images: {payload['skipped_images']}")
+        if val_accuracy is not None:
+            print(f"Validation accuracy: {val_accuracy:.2%}")
+    return 0
+
+
+def _cmd_train_tabular(args: argparse.Namespace) -> int:
+    """`--task classification`/`--task regression`: DATA is a .csv file (Milestone 121, unchanged)."""
+    if args.target is None:
+        # --target's requiredness depends on --task (see the _parser default set alongside this
+        # subparser) -- this is really the same "missing required argument" usage error argparse would
+        # raise itself if --target were unconditionally required=True, not a CLIError.
+        args._parser.error("the following arguments are required: --target")
     if not os.path.isfile(args.data):
+        if os.path.isdir(args.data):
+            raise CLIError(
+                f"--task {args.task} reads a .csv file (Milestone 121); '{args.data}' is a directory. "
+                "Use --task image-classification to train an image classifier from it instead (Milestone 122)."
+            )
         raise CLIError(f"input file not found: {args.data}")
     if os.path.splitext(args.data)[1].lower() != ".csv":
         raise CLIError(
-            "forge model train reads a .csv file (Milestone 121); no other input format is supported yet."
+            "forge model train reads a .csv file for --task classification/regression (Milestone 121); "
+            f"'{args.data}' is not a .csv file. Use --task image-classification to train from an "
+            "ImageFolder-layout directory instead (Milestone 122)."
         )
     output_dir = os.path.dirname(os.path.abspath(args.output)) or "."
     if not os.path.isdir(output_dir):
