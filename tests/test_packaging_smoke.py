@@ -16,6 +16,7 @@ dependency install) is the same regardless of which behavior is under test.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import shutil
@@ -737,3 +738,165 @@ def test_installed_cli_convert_feature_names_retrofit_changes_no_weights(clean_i
     )
     assert bad.returncode == 1 and "input feature" in bad.stderr
     assert not (outside_repo_dir / "bad.forge").exists()
+
+
+# -- CSV-to-artifact training from the installed wheel (Milestone 121) ----------------------------------------
+#
+# `train_tabular_classifier_csv()`/`train_tabular_regressor_csv()` and `forge model train` are new in this
+# milestone; nothing above exercises them. Same arrangement as every other CSV test in this file: a real,
+# id-bearing Pima CSV (an actual production-shaped file, not a rewritten one), a fresh consumer process in the
+# clean venv (numpy + Pillow only, no pandas), run from a directory outside the repository.
+
+_CSV_TRAINING_WRAPPER_CONSUMER = '''
+import json, sys
+import forge
+
+assert "site-packages" in forge.__file__, forge.__file__
+result = forge.train_tabular_classifier_csv(
+    sys.argv[1], target="Outcome", path=sys.argv[2],
+    columns=["Pregnancies", "Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI",
+             "DiabetesPedigreeFunction", "Age"],
+    classes=["no_diabetes", "diabetes"], missing_columns=[1, 2, 3, 4, 5], seed=0, epochs=15,
+)
+schema = forge.inspect_model(sys.argv[2]).input_schema
+print(json.dumps({
+    "file": forge.__file__, "features": result.features, "samples": result.samples,
+    "classes": result.classes, "validation_accuracy": result.validation_accuracy,
+    "validation_loss": result.validation_loss, "recorded_names": list(schema.feature_names),
+}))
+'''
+
+
+@pytest.fixture()
+def pima_with_id_csv(outside_repo_dir):
+    """A real, id-bearing production-shaped Pima CSV -- the exact friction `columns=`/`--columns` close."""
+    with open(_PIMA_DIR / "diabetes.csv", newline="") as fh:
+        rows = list(csv.reader(fh))
+    header, body = rows[0], rows[1:]
+    out = outside_repo_dir / "diabetes_with_id.csv"
+    with open(out, "w", newline="") as fh:
+        writer = csv.writer(fh, lineterminator="\n")
+        writer.writerow(["patient_id", *header])
+        for i, row in enumerate(body):
+            writer.writerow([10000 + i, *row])
+    return out
+
+
+def test_installed_forge_trains_directly_from_an_id_bearing_csv_with_the_new_wrapper(clean_install, outside_repo_dir, pima_with_id_csv):
+    """`train_tabular_classifier_csv()` -- the M121 function itself -- trains straight from the id-bearing file."""
+    script = outside_repo_dir / "consume_wrapper.py"
+    script.write_text(_CSV_TRAINING_WRAPPER_CONSUMER)
+    ran = _run(clean_install, [str(script), str(pima_with_id_csv), "wrapper.forge"], outside_repo_dir)
+    assert ran.returncode == 0, ran.stderr
+    report = json.loads(ran.stdout)
+    assert "site-packages" in report["file"] and str(REPO_ROOT) not in report["file"]
+    assert report["features"] == 8 and report["samples"] == 768
+    assert report["classes"] == ["no_diabetes", "diabetes"]
+    assert report["recorded_names"] == _PIMA_FEATURES
+
+    # Identical to the same training done the M118/M120 way (load_csv + the unchanged array trainer) on the
+    # id-free file, run in this (dev-tree) process.
+    data = np.genfromtxt(_PIMA_DIR / "diabetes.csv", delimiter=",", skip_header=1)
+    reference = forge.train_tabular_classifier(
+        data[:, :-1], data[:, -1].astype(int), path=outside_repo_dir / "reference.forge",
+        classes=["no_diabetes", "diabetes"], missing_columns=[1, 2, 3, 4, 5], seed=0, epochs=15,
+    )
+    assert report["validation_accuracy"] == reference.validation_accuracy
+    assert report["validation_loss"] == pytest.approx(reference.validation_loss, rel=1e-6)
+
+
+def test_installed_cli_model_train_excludes_the_id_and_matches_the_python_wrapper(clean_install, outside_repo_dir, pima_with_id_csv):
+    """`forge model train` on the exact same id-bearing file the previous test used, compared to that function's own call."""
+    script = outside_repo_dir / "consume_wrapper_reference.py"
+    script.write_text('''
+import json, sys
+import forge
+result = forge.train_tabular_classifier_csv(
+    sys.argv[1], target="Outcome", path=sys.argv[2],
+    columns=["Pregnancies", "Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI",
+             "DiabetesPedigreeFunction", "Age"],
+    seed=0, epochs=15,
+)
+print(json.dumps({"validation_accuracy": result.validation_accuracy, "features": result.features}))
+''')
+    reference = _run(clean_install, [str(script), str(pima_with_id_csv), "cli_reference.forge"], outside_repo_dir)
+    assert reference.returncode == 0, reference.stderr
+    reference_report = json.loads(reference.stdout)
+
+    cli = _installed_cli(
+        clean_install, outside_repo_dir, "model", "train", str(pima_with_id_csv), "--task", "classification",
+        "--target", "Outcome", "--output", "cli.forge", "--columns", *_PIMA_FEATURES, "--seed", "0",
+        "--epochs", "15", "--json",
+    )
+    assert cli.returncode == 0, cli.stderr
+    cli_report = json.loads(cli.stdout)
+    assert cli_report["validation_accuracy"] == reference_report["validation_accuracy"]
+    assert cli_report["features"] == reference_report["features"] == 8
+
+    # Fresh-process, third invocation: the CLI-trained artifact is a standalone, portable file.
+    predictor_check = _run(
+        clean_install,
+        ["-c", "import forge; p = forge.load_predictor('cli.forge'); print(p.classes)"],
+        outside_repo_dir,
+    )
+    assert predictor_check.returncode == 0 and "0" in predictor_check.stdout and "1" in predictor_check.stdout
+
+
+_CSV_REGRESSOR_WRAPPER_CONSUMER = '''
+import json, sys
+import forge
+
+result = forge.train_tabular_regressor_csv(
+    sys.argv[1], target="median_house_value", path=sys.argv[2],
+    columns=["income", "age", "rooms"], target_transform="standardize", seed=3, epochs=150,
+)
+print(json.dumps({
+    "features": result.features, "validation_mse": result.validation_mse,
+    "baseline_mse": result.baseline_mse, "has_target_transform": result.target_transform is not None,
+}))
+'''
+
+
+def test_installed_forge_trains_a_standardized_regressor_from_an_id_bearing_csv(clean_install, outside_repo_dir):
+    """`train_tabular_regressor_csv(..., target_transform='standardize')` from a realistic-scale, id-bearing CSV."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, 3)) * np.array([1000.0, 0.01, 5.0]) + np.array([500.0, 1.0, 20.0])
+    z = (X - X.mean(axis=0)) / X.std(axis=0)
+    y = 2.0e5 + 1.0e5 * (z[:, 0] - 0.5 * z[:, 1]) + 3.0e3 * rng.normal(size=300)
+    csv_path = outside_repo_dir / "housing_with_id.csv"
+    with open(csv_path, "w", newline="") as fh:
+        fh.write("parcel_id,median_house_value,income,age,rooms\n")
+        for i, (target, row) in enumerate(zip(y, X)):
+            fh.write(",".join([str(900000 + i), repr(float(target)), *(repr(float(v)) for v in row)]) + "\n")
+
+    script = outside_repo_dir / "consume_regressor.py"
+    script.write_text(_CSV_REGRESSOR_WRAPPER_CONSUMER)
+    ran = _run(clean_install, [str(script), str(csv_path), "housing_wrapper.forge"], outside_repo_dir)
+    assert ran.returncode == 0, ran.stderr
+    report = json.loads(ran.stdout)
+    assert report["features"] == 3 and report["has_target_transform"] is True
+    assert report["baseline_mse"] > 1e9 and report["validation_mse"] > 1e3       # native dollars, not z-scores
+    assert report["validation_mse"] < 0.2 * report["baseline_mse"]
+
+    cli = _installed_cli(
+        clean_install, outside_repo_dir, "model", "train", str(csv_path), "--task", "regression",
+        "--target", "median_house_value", "--output", "housing_cli.forge", "--columns", "income", "age", "rooms",
+        "--target-transform", "standardize", "--seed", "3", "--epochs", "150", "--json",
+    )
+    assert cli.returncode == 0, cli.stderr
+    cli_report = json.loads(cli.stdout)
+    assert cli_report["validation_mse"] == report["validation_mse"]
+
+
+def test_installed_cli_model_train_reports_a_bad_invocation_without_a_traceback(clean_install, outside_repo_dir, pima_with_id_csv):
+    cases = [
+        (["missing.csv", "--task", "classification", "--target", "Outcome", "--output", "m.forge"], "input file not found"),
+        ([str(pima_with_id_csv), "--task", "classification", "--target", "nope", "--output", "m.forge"], "not in the header"),
+        ([str(pima_with_id_csv), "--task", "classification", "--target", "Outcome", "--output", "m.forge",
+          "--columns", "does_not_exist"], "not in the header"),
+    ]
+    for args, expected in cases:
+        result = _installed_cli(clean_install, outside_repo_dir, "model", "train", *args)
+        assert result.returncode == 1 and result.stdout == ""
+        assert result.stderr.startswith("Error: ") and "Traceback" not in result.stderr
+        assert expected in result.stderr, result.stderr

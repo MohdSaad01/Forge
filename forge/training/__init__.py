@@ -34,6 +34,7 @@ from .tabular import (
     train_tabular_classifier,
     train_tabular_regressor,
 )
+from .tabular_csv import train_tabular_classifier_csv, train_tabular_regressor_csv
 from .trainer import EpochResult, EvaluationResult, Trainer, TrainingHistory
 
 __all__ = [
@@ -73,4 +74,6 @@ __all__ = [
     "train_tabular_regressor",
     "TabularClassificationResult",
     "TabularRegressionResult",
+    "train_tabular_classifier_csv",
+    "train_tabular_regressor_csv",
 ]

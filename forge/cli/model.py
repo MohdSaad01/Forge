@@ -135,6 +135,17 @@ re-saves the exact model weights unchanged, so this is a metadata-only edit; `sa
 the task to be tabular and the count to match the model's actual input width (one name per column), so a wrong
 retrofit is refused, never guessed. Omitting `--feature-names` keeps `convert`'s existing behaviour: whatever names
 (or lack of them) the input artifact already had.
+
+`train` (**Milestone 121**) is the CLI door onto `forge.train_tabular_classifier_csv()` /
+`forge.train_tabular_regressor_csv()` -- `forge model train DATA.csv --task {classification,regression}
+--target COLUMN --output PATH [--columns NAME [NAME ...]] ...`. It is a thin adapter and nothing else: `--task`
+alone picks which of the two Python functions to call (there is no architecture/data-driven guess), every other
+flag is forwarded to that function only when the caller actually gave it (an omitted flag is exactly that
+function's own default -- never a second, CLI-specific default), and the printed summary/`--json` payload is
+built from the returned `TabularClassificationResult`/`TabularRegressionResult`'s own fields. `--columns` is the
+identical Milestone 120 selection `predict`/`evaluate` already use, now reaching training too: an id-bearing
+production CSV needs no rewriting to train from, exactly as it needs none to predict/evaluate from. See
+`docs/development/cli.md` and `docs/development/m121-tabular-csv-training.md`.
 """
 
 from __future__ import annotations
@@ -156,7 +167,7 @@ from ..serialization import (
 )
 from ..training import (
     ClassificationEvaluationResult, ClassificationPrediction, RegressionEvaluationResult, load_predictor,
-    predict_model,
+    predict_model, train_tabular_classifier_csv, train_tabular_regressor_csv,
 )
 from ._archive_info import count_elements, module_training_state, read_model_metadata, walk_modules, walk_parameters
 from .errors import CLIError
@@ -257,6 +268,57 @@ def add_parser(subparsers: "argparse._SubParsersAction") -> None:
     )
     evaluate_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of text")
     evaluate_parser.set_defaults(func=cmd_evaluate)
+
+    train_parser = sub.add_parser(
+        "train",
+        help="Train a tabular classifier or regressor directly from a CSV file and save it as a portable artifact",
+    )
+    train_parser.add_argument("data", help="Path to a .csv file with a header row (Milestone 121)")
+    train_parser.add_argument(
+        "--task", required=True, choices=["classification", "regression"],
+        help="Which tabular workflow to train: forge.train_tabular_classifier_csv() or "
+        "forge.train_tabular_regressor_csv()",
+    )
+    train_parser.add_argument(
+        "--target", required=True, metavar="COLUMN",
+        help="The header name of the target column; removed from the features automatically",
+    )
+    train_parser.add_argument(
+        "--output", required=True, metavar="PATH",
+        help="Where to write the trained .forge artifact; its directory must already exist",
+    )
+    train_parser.add_argument(
+        "--columns", nargs="+", default=None, metavar="NAME",
+        help="Read only these header columns as features, in this order -- e.g. to skip an id column -- "
+        "instead of every non-target column (Milestone 120 selection, identical to predict/evaluate)",
+    )
+    train_parser.add_argument(
+        "--device", default=None, choices=["cpu", "cuda"],
+        help="Device to train on (default: the training API's own default, cpu)",
+    )
+    train_parser.add_argument(
+        "--epochs", type=int, default=None,
+        help="Upper bound on training epochs (default: the Python API's own default -- 100 for "
+        "classification, 500 for regression)",
+    )
+    train_parser.add_argument(
+        "--batch-size", type=int, default=None, help="Training batch size (default: the Python API's own default, 32)",
+    )
+    train_parser.add_argument(
+        "--learning-rate", type=float, default=None, metavar="LR",
+        help="Adam learning rate (default: the Python API's own default, 1e-3)",
+    )
+    train_parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Split/shuffle/default-model-initialization seed (default: the Python API's own default, 0)",
+    )
+    train_parser.add_argument(
+        "--target-transform", default=None, choices=["standardize"], metavar="standardize",
+        help="Regression only (Milestone 116): train on standardized targets, saved and predicted in native "
+        "units. Rejected for --task classification.",
+    )
+    train_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of text")
+    train_parser.set_defaults(func=cmd_train)
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -799,4 +861,94 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         print(text)
     else:
         _print_evaluation(result)
+    return 0
+
+
+# -- train (Milestone 121) -------------------------------------------------------------------------------------
+#
+# A thin adapter over exactly two Python functions -- train_tabular_classifier_csv() / train_tabular_regressor_csv()
+# (forge/training/tabular_csv.py), themselves thin wrappers over load_csv() + the unmodified array trainers. --task
+# is the sole dispatch signal (there is no architecture/data-driven guess, exactly like predict/evaluate's task
+# routing above); every other flag is forwarded only when given, so an omitted flag is that function's own default,
+# never a second CLI-specific one.
+
+
+def _forwarded_training_kwargs(args: argparse.Namespace) -> dict:
+    kwargs = {}
+    if args.device is not None:
+        kwargs["device"] = args.device
+    if args.epochs is not None:
+        kwargs["epochs"] = args.epochs
+    if args.batch_size is not None:
+        kwargs["batch_size"] = args.batch_size
+    if args.learning_rate is not None:
+        kwargs["learning_rate"] = args.learning_rate
+    if args.seed is not None:
+        kwargs["seed"] = args.seed
+    return kwargs
+
+
+def cmd_train(args: argparse.Namespace) -> int:
+    if not os.path.isfile(args.data):
+        raise CLIError(f"input file not found: {args.data}")
+    if os.path.splitext(args.data)[1].lower() != ".csv":
+        raise CLIError(
+            "forge model train reads a .csv file (Milestone 121); no other input format is supported yet."
+        )
+    output_dir = os.path.dirname(os.path.abspath(args.output)) or "."
+    if not os.path.isdir(output_dir):
+        raise CLIError(f"cannot write to '{args.output}': directory '{output_dir}' does not exist.")
+    if args.target_transform is not None and args.task != "regression":
+        raise CLIError("--target-transform applies only to --task regression.")
+
+    kwargs = _forwarded_training_kwargs(args)
+    if args.task == "classification":
+        result = train_tabular_classifier_csv(
+            args.data, target=args.target, path=args.output, columns=args.columns, **kwargs,
+        )
+        payload = {
+            "task": result.task,
+            "artifact_path": result.artifact_path,
+            "samples": result.samples,
+            "features": result.features,
+            "train_samples": result.train_samples,
+            "validation_samples": result.validation_samples,
+            "classes": result.classes,
+            "epochs_completed": result.epochs_completed,
+            "validation_accuracy": result.validation_accuracy,
+            "baseline_accuracy": result.baseline_accuracy,
+        }
+    else:
+        if args.target_transform is not None:
+            kwargs["target_transform"] = args.target_transform
+        result = train_tabular_regressor_csv(
+            args.data, target=args.target, path=args.output, columns=args.columns, **kwargs,
+        )
+        payload = {
+            "task": result.task,
+            "artifact_path": result.artifact_path,
+            "samples": result.samples,
+            "features": result.features,
+            "outputs": result.outputs,
+            "train_samples": result.train_samples,
+            "validation_samples": result.validation_samples,
+            "epochs_completed": result.epochs_completed,
+            "validation_mse": result.validation_mse,
+            "validation_mae": result.validation_mae,
+            "baseline_mse": result.baseline_mse,
+        }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Trained {payload['task']} model -> '{payload['artifact_path']}'")
+        print(f"Samples: {payload['samples']} (train {payload['train_samples']}, validation {payload['validation_samples']})")
+        print(f"Features: {payload['features']}")
+        print(f"Epochs completed: {payload['epochs_completed']}")
+        if args.task == "classification":
+            print(f"Classes: {', '.join(payload['classes'])}")
+            print(f"Validation accuracy: {payload['validation_accuracy']:.2%} (baseline {payload['baseline_accuracy']:.2%})")
+        else:
+            print(f"Validation MSE: {payload['validation_mse']:.6g} (baseline {payload['baseline_mse']:.6g})")
+            print(f"Validation MAE: {payload['validation_mae']:.6g}")
     return 0

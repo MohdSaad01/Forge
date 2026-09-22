@@ -1,4 +1,4 @@
-# Forge Command-Line Interface (Milestone 19, extended in 72 and 117)
+# Forge Command-Line Interface (Milestone 19, extended in 72, 117 and 121)
 
 ## Purpose
 A thin command-line adapter over Forge's existing public persistence and
@@ -30,6 +30,7 @@ forge model inspect --help
 forge model convert --help
 forge model predict --help
 forge model evaluate --help
+forge model train --help
 forge checkpoint --help
 forge checkpoint inspect --help
 forge checkpoint convert --help
@@ -438,6 +439,88 @@ on CPU, and `--device cuda` requires a real CUDA backend (no fallback).
 Evaluation is read-only: the artifact, the inputs and the directory around them
 are unchanged afterwards.
 
+## Model training (Milestone 121)
+```bash
+forge model train DATA.csv --task {classification,regression} --target COLUMN --output PATH \
+    [--columns NAME [NAME ...]] [--device {cpu,cuda}] [--epochs N] [--batch-size N] \
+    [--learning-rate LR] [--seed N] [--target-transform standardize] [--json]
+```
+The command-line door onto `forge.train_tabular_classifier_csv()` / `forge.train_tabular_regressor_csv()`
+(Milestone 121) -- the CSV-to-artifact counterpart of `model predict`/`model evaluate`. It is a thin adapter
+and nothing else: `--task` alone picks which of the two Python functions to call (there is no
+architecture/data-driven guess, and no third training system lives here), and every other flag is forwarded
+to that function **only when the caller actually passed it** -- an omitted flag is exactly that function's own
+default (100 epochs for classification, 500 for regression, batch size 32, learning rate `1e-3`, seed `0`,
+`cpu`), never a second, CLI-specific default that could drift from the Python API's.
+
+```bash
+forge model train patients.csv --task classification --target Outcome --output patients.forge \
+    --columns Pregnancies Glucose BloodPressure SkinThickness Insulin BMI DiabetesPedigreeFunction Age
+```
+```text
+Trained tabular_classification model -> 'patients.forge'
+Samples: 768 (train 614, validation 154)
+Features: 8
+Epochs completed: 100
+Classes: no_diabetes, diabetes
+Validation accuracy: 78.39% (baseline 65.10%)
+```
+```bash
+forge model train housing.csv --task regression --target median_house_value --output housing.forge \
+    --columns median_income housing_median_age total_rooms total_bedrooms population households latitude longitude \
+    --target-transform standardize
+```
+```text
+Trained regression model -> 'housing.forge'
+Samples: 3000 (train 2400, validation 600)
+Features: 8
+Epochs completed: 500
+Validation MSE: 3.5e+09 (baseline 1.33e+10)
+Validation MAE: 40501.1
+```
+
+**`DATA` must be a `.csv` file** (chosen by extension alone, exactly as `predict`/`evaluate` choose their CSV
+path) -- no other input format trains through this command yet; `--target` (the header name of the target
+column, removed from the features automatically) is required. `--columns` is the identical Milestone 120
+selection `predict`/`evaluate` already use: omit it and every non-target column becomes a feature, in file
+order (the M118 default); give it and **exactly** those header columns become the features, in **exactly**
+that order -- so a production CSV carrying an `id` column needs no rewriting to train from, exactly as it
+needs none to predict/evaluate from:
+```bash
+forge model train diabetes_with_id.csv --task classification --target Outcome --output pima.forge \
+    --columns Pregnancies Glucose BloodPressure SkinThickness Insulin BMI DiabetesPedigreeFunction Age
+```
+`--target` must not appear in `--columns` (the same `load_csv()` rejection `predict`/`evaluate` already
+surface, naming the column); an unknown or duplicated `--columns` entry is likewise the reader's own error.
+
+**Feature names are persisted automatically -- there is no `--feature-names` flag on this command.** The CSV's
+own selected column names (in the order they end up in) become the artifact's `InputSchema.feature_names`
+(Milestone 119) with no extra step: a later reordered CSV or named array is aligned by
+`predict`/`evaluate`/`ArtifactPredictor` exactly as for any other named artifact.
+
+**`--target-transform standardize`** (regression only, Milestone 116): train on standardized targets, fitted
+on the training split only, with the fitted transform saved in the artifact so `predict`/`evaluate` and every
+number in the printed/`--json` result are in native units. Rejected with `--task classification`.
+
+**CLI scope.** Only the flags above are exposed -- `task`, `target`, `columns`, `output`, `device`, `epochs`,
+`batch-size`, `learning-rate`, `seed`, and (regression only) `target-transform`. Every other Python-API
+keyword (`classes`, `val_fraction`, `missing_columns`, `missing_value`, `patience`, `model=`, `verbose`) has a
+stable, well-tested default that is not yet a demonstrated CLI need; a workflow that needs one of them calls
+`forge.train_tabular_classifier_csv()`/`forge.train_tabular_regressor_csv()` (or the array
+`train_tabular_classifier()`/`train_tabular_regressor()`) directly. This is a deliberate scope decision, not
+an oversight -- the brief this milestone implements explicitly warns against turning the CLI into "a giant
+argument surface merely because the underlying Python API has many parameters."
+
+`--json` prints one JSON document built from the returned `TabularClassificationResult`/
+`TabularRegressionResult`'s own fields (`task`, `artifact_path`, `samples`, `features`, `train_samples`,
+`validation_samples`, `epochs_completed`, plus `classes`/`validation_accuracy`/`baseline_accuracy` for
+classification or `outputs`/`validation_mse`/`validation_mae`/`baseline_mse` for regression) -- not the full
+dataclass (`history`/`model` are Python objects, not JSON).
+
+`--output`'s directory must already exist (the same rule `model predict --output`/`model convert --output`
+already enforce); the file itself is created by this command. `--device` follows `model predict`/`model
+evaluate`: optional, and CUDA is required only when `--device cuda` is passed explicitly (no fallback).
+
 ## Checkpoint conversion
 ```bash
 forge checkpoint convert CHECKPOINT --device {cpu,cuda} --output OUTPUT
@@ -486,6 +569,9 @@ about. Inspection commands never touch a device or a backend at all.
   or if omitted and the model was saved from `"cuda"` -- identical policy to
   `forge.load_model()`'s own (**Device semantics**,
   `docs/architecture/persistence.md`).
+- `model train` (Milestone 121): requires CUDA only if `--device cuda` is passed explicitly (omitted, it
+  trains on `cpu` -- `forge.train_tabular_classifier_csv()`/`forge.train_tabular_regressor_csv()`'s own
+  default); no fallback if CUDA is requested and unavailable.
 - `benchmark`: CUDA-dependent categories (`transfer`, and the CUDA half of
   `forward`/`backward`/`training`) produce no results when CUDA is
   unavailable, exactly as `python -m benchmarks` already behaves
@@ -526,6 +612,13 @@ never silently swallowed.
   sequence. There is no generic `forge predict` command spanning every
   Forge workload (autoencoders, ...) -- those have a different natural
   input shape with no single saved-artifact-describable file convention yet.
+- **`model train` (Milestone 121) trains only from a `.csv` file**, and only the two tabular tasks
+  (`classification`/`regression`) -- there is no CLI training door for image classification, segmentation or
+  sequence workloads, and no `.npy`/array input (an in-memory array trains through the Python
+  `train_tabular_classifier()`/`train_tabular_regressor()` directly). Its flag surface is a deliberately
+  narrower subset of the Python API's -- `classes=`, `val_fraction=`, `missing_columns=`, `missing_value=`,
+  `patience=`, `model=` and `verbose=` are not exposed; a workflow needing one of them calls
+  `forge.train_tabular_classifier_csv()`/`forge.train_tabular_regressor_csv()` (or the array API) directly.
 - **`model evaluate` reads `.csv` files (Milestone 118), `.npy` files and image
   directories only.** A CSV is a header row plus numeric columns and one named
   target: no categorical/string features, no missing-value handling, no dates, no

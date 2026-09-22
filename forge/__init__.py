@@ -93,7 +93,13 @@ Public subpackages:
   `load_csv_features(..., columns=[...])` (Milestone 120) select and order exactly those
   header columns as features, so a real CSV carrying a non-feature column (an `id`, say) needs
   no rewriting; `forge model convert MODEL OUTPUT --feature-names ...` retrofits feature names
-  onto an existing artifact with no retraining and no weight change.
+  onto an existing artifact with no retraining and no weight change. `forge.train_tabular_classifier_csv()`
+  / `forge.train_tabular_regressor_csv()` (Milestone 121) close the remaining manual step: `load_csv(...,
+  columns=..., return_feature_names=True)` followed by `train_tabular_classifier()`/`train_tabular_regressor()`
+  with `feature_names=` threaded through, written once -- train directly from a `.csv` path with an explicit
+  `columns=` selection and get back the identical `TabularClassificationResult`/`TabularRegressionResult`,
+  with the artifact's feature schema persisted automatically; `forge model train DATA.csv --task ... --target
+  ... --output ...` is the CLI door onto the same two functions.
 - `forge.serialization` -- `save_model`/`load_model`,
   `save_checkpoint`/`load_checkpoint`, `load_preprocessing` (the
   preprocessing-transform configuration optionally saved alongside a
@@ -181,7 +187,9 @@ from .training import (
     train_and_save,
     train_image_classifier,
     train_tabular_classifier,
+    train_tabular_classifier_csv,
     train_tabular_regressor,
+    train_tabular_regressor_csv,
 )
 
 __version__ = "0.1.0"
@@ -245,4 +253,6 @@ __all__ = [
     "train_tabular_regressor",
     "TabularClassificationResult",
     "TabularRegressionResult",
+    "train_tabular_classifier_csv",
+    "train_tabular_regressor_csv",
 ]

@@ -1639,8 +1639,14 @@ semantics. Decisions worth recording:
 
 **Limits.** Only what the real workloads justified: no stratified split (a class
 with no training rows is rejected instead), no class weights, no target transform other
-than the opt-in `"standardize"`, no DataFrame/time-series behaviour, no file reading (a CSV is read into arrays by
-`forge.data.load_csv()`, M118, before the call). On the reference 940MX these small
+than the opt-in `"standardize"`, no DataFrame/time-series behaviour. `train_tabular_classifier()`/
+`train_tabular_regressor()` themselves still take arrays only; a CSV is read into arrays by
+`forge.data.load_csv()` (M118) before the call, or, since **Milestone 121**, `forge.
+train_tabular_classifier_csv()`/`forge.train_tabular_regressor_csv()` (`forge/training/tabular_csv.py`) do
+exactly that -- `load_csv(csv_path, ..., columns=, return_feature_names=True)` then this module's own
+functions, unmodified, with the resulting names threaded into `feature_names=` automatically. A thin
+orchestration layer, not a second training path: see that module's own docstring and
+`docs/development/m121-tabular-csv-training.md`. On the reference 940MX these small
 MLPs train about 5x *faster on CPU* than on CUDA (per-batch kernel-launch
 overhead dominates), so `device="cuda"` is supported and hardware-tested but not
 a speed-up here. Measurements: `docs/development/m114-tabular-workflows.md`.
