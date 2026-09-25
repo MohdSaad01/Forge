@@ -44,7 +44,7 @@
 
 ### CLI
 - Provide CLI entry points that call the same underlying framework services as the Python API.
-- Planned commands include train, evaluate, predict, and benchmark.
+- Implemented: `forge model train|evaluate|predict|inspect|convert`, `forge checkpoint inspect|convert`, and `forge benchmark` (a repository-only development tool). See `docs/development/cli.md`.
 
 ### Benchmarking
 - Provide reproducible timing/metadata for supported operations.

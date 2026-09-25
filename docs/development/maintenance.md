@@ -1,8 +1,10 @@
 # Forge Maintenance Model (Milestone 110)
 
-Forge reached 1.0 at Milestone 106 (`docs/development/progress.md`): the
+Forge declared 1.0 at Milestone 106 (`docs/development/progress.md`): the
 framework itself is feature-complete for everything the current examples
-need. Milestone 110 closes the milestone-driven feature-accumulation model
+need. Milestones 111-122 then added the high-level tabular/CSV/CLI workflow
+surface listed below, and Forge is now **feature-frozen** at version `1.0.0`
+(see **Version** below). Milestone 110 closes the milestone-driven feature-accumulation model
 (`docs/development/roadmap.md`/`workflow.md`) and replaces it with a
 maintenance model for the phase Forge is now in.
 
@@ -30,12 +32,19 @@ change (see **Release discipline** below), not an ordinary bug fix:
 | Inference | `predict()`, the five `predict_*_artifact()` functions, `predict_model()`, `load_predictor()`/`ArtifactPredictor` | `docs/architecture/training-engine.md` |
 | High-level image classification | `forge.train_image_classifier()`, `ImageFolder(on_error=)` | `forge/training/image_classifier.py` module docstring |
 | High-level tabular classification/regression | `forge.train_tabular_classifier()`, `forge.train_tabular_regressor()`, `ArtifactPredictor.evaluate()` | `forge/training/tabular.py` module docstring, `docs/development/m114-tabular-workflows.md` |
+| CSV input | `forge.data.load_csv()` (target column, explicit column selection, feature names) and `load_csv_features()`; stdlib `csv` + NumPy, no pandas | `docs/development/m118-csv-tabular-workflow.md`, `m120-tabular-api-convergence.md` |
+| CSV-to-artifact training | `forge.train_tabular_classifier_csv()`, `forge.train_tabular_regressor_csv()` | `docs/development/m121-tabular-csv-training.md` |
+| Persisted tabular metadata | Optional `feature_names` in the artifact (named input matched by name, reorder-or-reject); optional persisted regression target transform (`target_transform="standardize"`, format version 3 only when used) | `docs/architecture/persistence.md`, `m116-persisted-target-transforms.md`, `m119-persisted-tabular-feature-schema.md` |
+| CLI | `forge model inspect`, `convert`, `predict`, `evaluate`, `train` (`--task classification|regression|image-classification`); `forge checkpoint inspect|convert`; `forge benchmark` (development tool, repository only) | `docs/development/cli.md`, `m117`, `m122` reports |
 | Packaging | `pip install`/wheel+sdist build, CLI entry point | M93, M105, M106 in `progress.md` |
 
 Not supported, and not implicitly promised by any of the above: attention/
 Transformer layers, convolution beyond 2D, distributed/multi-GPU training,
-mixed-precision training, ONNX or other framework interop (see `README.md`'s
-**Project scope and philosophy**).
+mixed-precision training, ONNX or other framework interop, a serving
+platform, a model registry, hyperparameter search, cloud training,
+categorical-data preprocessing, automatic ID-column detection, automatic
+missing-value imputation, and a pandas dependency (see `README.md`'s
+**Current capabilities** and `docs/product/scope.md`).
 
 ## 2. Regression baseline
 
@@ -45,16 +54,18 @@ Run before and after any change:
 python -m pytest tests/ -q
 ```
 
-Baseline recorded at Milestone 115 (2026-09-20, reference hardware, CUDA
-present; 2802 at Issue I1, plus 43 tests for M113's `evaluate()`, 164 for
-M114's tabular workflows and 24 for M115's image-classifier preflight):
+Current closure/release baseline, recorded by the final validation after
+Milestone 122 (reference hardware, CUDA present):
 
 ```text
-Total:   3033
-Passed:  3033
-Failed:  0
-Skipped: 0
+3904 passed
+0 failed
+0 skipped
 ```
+
+This is the count at closure, not a permanent constant: a legitimate
+maintenance fix may change it, and the baseline is then re-recorded here with
+the change that explains it.
 
 A change that drops this to fewer passing tests, or that changes this
 number without a corresponding `tests/` change explaining why, is a
@@ -63,9 +74,19 @@ before proceeding, regardless of what triggered the change.
 
 CI (`.github/workflows/ci.yml`) runs the CPU-visible half of this suite
 (CUDA tests skip cleanly without a GPU) plus a wheel-build/install smoke
-test on every push to `main`, on Python 3.11 and 3.13. The full number
+test on every push to `main`, on Python 3.11 and 3.13. The full count
 above additionally exercises every CUDA-specific test, and is only
 reproducible on the reference GPU.
+
+## Version
+
+The package version is `1.0.0`, defined once in `forge/__init__.py`
+(`forge.__version__`); `pyproject.toml` reads it dynamically, so
+`forge --version`, `forge.__version__`, and the wheel metadata always agree.
+Before the closing pass the package still reported its inception value
+`0.1.0` while the documentation described Forge 1.0/1.x; the documentation
+was right about the project's intent, so the package was brought up to it.
+The Patch/Minor/Major meanings in section 5 apply from `1.0.0` onward.
 
 ## 3. Real-world smoke test
 

@@ -23,5 +23,8 @@
 - Enterprise-scale orchestration.
 - Pretending unsupported hardware/features work.
 
+## Feature freeze (Forge 1.0.0)
+The implementation is feature-frozen; only maintenance changes follow (`docs/development/maintenance.md`). The following are explicitly not part of Forge and are not planned: Transformer/attention layers, 3D convolution, multi-GPU or distributed training, mixed precision, ONNX or other framework interop, a serving platform, a model registry, hyperparameter search, cloud training, a categorical-data framework, automatic ID-column detection, a pandas requirement, and automatic missing-value imputation.
+
 ## Scope rule
 Future capabilities may influence interfaces, but implementation should prioritize representative, working functionality over breadth.

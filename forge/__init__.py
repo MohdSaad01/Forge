@@ -192,7 +192,7 @@ from .training import (
     train_tabular_regressor_csv,
 )
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 __all__ = [
     "Tensor",

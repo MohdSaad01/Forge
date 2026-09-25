@@ -26,9 +26,11 @@ Build a model → Train it → Evaluate it → Save it → Load it later → Use
 Forge offers two levels of API. **Low-level building blocks** (tensors,
 modules, losses, optimizers, data loaders, a `Trainer`) give you control over
 every part of a model and its training. **Higher-level workflows** wrap common
-combinations of those pieces so that routine tasks take a few lines. Not every
-kind of model has a high-level workflow yet; where one exists, it is built on
-the same public building blocks you can use directly.
+combinations of those pieces so that routine tasks take a few lines. One-call
+workflows exist for image classification, tabular classification, and tabular
+regression; other kinds of model use the building blocks directly. Every
+high-level workflow is built on the same public building blocks you can use
+yourself.
 
 ## What can you build with Forge?
 
@@ -371,7 +373,14 @@ artifact of any supported task type.
 - **Training and evaluation:** `forge.train()`, `Trainer` with validation,
   metrics, and early stopping, and checkpointing with exact resume; one-call
   workflows `train_image_classifier()`, `train_tabular_classifier()`, and
-  `train_tabular_regressor()`; `ArtifactPredictor.evaluate()` for saved artifacts.
+  `train_tabular_regressor()` (plus `train_tabular_classifier_csv()` /
+  `train_tabular_regressor_csv()` for a CSV file); `ArtifactPredictor.evaluate()`
+  for saved artifacts.
+- **CSV and tabular artifacts:** `forge.data.load_csv()` (with column selection)
+  reads a numeric CSV without pandas; tabular artifacts can persist their
+  feature names, so named CSV input is matched by name, and regression
+  artifacts can persist a target standardization so predictions come back in
+  the target's own units.
 - **Persistence:** `.forge` model artifacts and training checkpoints. Loading
   reconstructs models only from a registry of known Forge classes and never
   executes code from the file. `forge.inspect_model()` reports what an artifact
@@ -454,27 +463,27 @@ Use `--device cuda` on a machine where CUDA is available.
 
 ## Project status
 
-Forge has a substantial implemented framework surface and is usable for real
-workflows: models can be built, trained, evaluated, saved, loaded, and used for
-inference on CPU and CUDA, including against real external datasets. It is
-developed by a single maintainer and is not a replacement for PyTorch or
-TensorFlow.
+**Forge 1.0.0 is feature-frozen.** The package version, `forge --version`, and
+the built wheel all report `1.0.0`. It is usable for real workflows: models can
+be built, trained, evaluated, saved, loaded, and used for inference on CPU and
+CUDA, including against real external datasets. It is developed by a single
+maintainer and is not a replacement for PyTorch or TensorFlow. It is not
+published on PyPI.
 
-Development has moved from building out the framework milestone by milestone to
-maintaining it and validating it against real use. The test suite, a
-wheel-build smoke test, and a real-dataset smoke test guard against
-regressions, and new features are added in response to demonstrated needs, bugs,
-and missing capabilities rather than to fill a backlog. See
-[`docs/development/maintenance.md`](docs/development/maintenance.md) for how
-this works in practice.
+The closing validation (after Milestone 122) ran the full test suite (3,904
+passed, 0 failed, 0 skipped on the reference machine, CUDA present) and
+exercised, on both CPU and CUDA, real image data, real tabular classification
+and regression data, the Python API and CLI workflows, and artifact
+portability (fresh process, and CPU to CUDA). A wheel built from a clean
+`git archive` installed and worked from outside the repository. CI runs the
+CPU-visible tests and a packaging smoke test on Python 3.11 and 3.13. CUDA has
+been hardware-verified on one GPU only (see Installation).
 
 ## What's next
 
-More high-level workflow APIs may follow as Forge matures. The image and
-tabular workflows above are a first step toward making common tasks
-progressively easier without removing the lower-level building blocks
-underneath. What comes next depends on the workloads and problems that turn up
-as Forge is used.
+No further feature work is planned. Forge is in maintenance: bug fixes,
+regressions, and documentation corrections, driven by problems found in real
+use. See [`docs/development/maintenance.md`](docs/development/maintenance.md).
 
 ## Documentation
 
